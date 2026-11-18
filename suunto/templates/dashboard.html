@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ title }}</h1>
+{% if message %}<p role="status">{{ message }}</p>{% endif %}
+{% if settings_minutes is defined %}
+<section>
+  {% if saved %}<p role="status">已保存同步间隔。</p>{% endif %}
+  <form method="post" action="/settings" class="controls">
+    <label>同步间隔（分钟）<input type="number" name="minutes" min="1" max="1440" value="{{ settings_minutes }}" required></label>
+    <button>保存</button>
+  </form>
+  <p>时区 Asia/Shanghai</p>
+</section>
+{% endif %}
+{% if show_period %}
+<div class="controls">
+  <a class="button {% if weekly %}secondary{% endif %}" href="/training?period=day">按日</a>
+  <a class="button {% if not weekly %}secondary{% endif %}" href="/training?period=week">按周</a>
+</div>
+{% endif %}
+{% if filters %}
+<form method="get" action="/activities" class="controls">
+  <label>开始日期<input name="start" type="date" value="{{ start or '' }}"></label>
+  <label>结束日期<input name="end" type="date" value="{{ end or '' }}"></label>
+  <button>筛选</button>
+</form>
+{% endif %}
+{% if charts is defined %}
+<script src="/static/chart.umd.min.js" defer></script>
+<script src="/static/charts.js" defer></script>
+<div class="cards">
+  {% for chart in charts %}
+  <section>
+    <h2>{{ chart.title }}</h2>
+    {% if chart.labels %}
+    <div class="plot"><canvas role="img" aria-label="{{ chart.title }}"></canvas></div>
+    <script type="application/json" class="chart-data">{{ chart|tojson }}</script>
+    {% else %}
+    <p>这段时间暂无数据。</p>
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>
+{% endif %}
+{% if headings %}
+<section class="table-wrap">
+  {% if rows %}
+  <table>
+    <thead><tr>{% for heading in headings %}<th scope="col">{{ heading }}</th>{% endfor %}</tr></thead>
+    <tbody>{% for row in rows %}<tr>
+      {% for cell in row %}<td>{{ cell if cell is not none and cell != '' else '—' }}</td>{% endfor %}
+    </tr>{% endfor %}</tbody>
+  </table>
+  {% else %}
+  <p>暂无符合条件的记录。</p>
+  {% endif %}
+</section>
+{% endif %}
+{% if sync_status %}
+<section>
+  <p>上次完整同步 {{ sync_status.last_success_at or '—' }}</p>
+  <div class="controls">
+    <form method="post" action="/sync"><button>立即同步</button></form>
+    <a href="/export.csv" class="button secondary">下载全部 CSV</a>
+  </div>
+</section>
+<section class="table-wrap">
+  <h2>同步记录</h2>
+  {% if sync_status.runs %}
+  <table>
+    <thead><tr><th scope="col">开始</th><th scope="col">状态</th><th scope="col">处理</th><th scope="col">新增或更新</th></tr></thead>
+    <tbody>{% for run in sync_status.runs %}
+      <tr><td>{{ run.started_at }}</td><td>{{ run.status }}</td><td>{{ run.received }}</td><td>{{ run.changed }}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+  {% else %}<p>暂无同步记录。</p>{% endif %}
+</section>
+{% if sync_status.errors %}
+<section>
+  <h2>失败日志</h2>
+  <ul>{% for error in sync_status.errors %}
+    <li>批次 {{ error.run_id }} · {{ error.source }} · {{ error.message }}</li>
+  {% endfor %}</ul>
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

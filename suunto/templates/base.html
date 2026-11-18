@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or '首页' }} · Suunto 内网看板</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">Suunto 内网看板</a>
+    <nav aria-label="主导航">
+      <a href="/training">训练趋势</a>
+      <a href="/activities">运动活动</a>
+      <a href="/sleep-recovery">睡眠与恢复</a>
+      <a href="/daily-activity">日常活动</a>
+      <a href="/routes">保存路线</a>
+      <a href="/sync-status">同步状态</a>
+      <a href="/settings">设置</a>
+    </nav>
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>

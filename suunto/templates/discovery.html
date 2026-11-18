@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block content %}
+    <h1>首页概览</h1>
+    {% if message %}<p role="status">{{ message }}</p>{% endif %}
+    <section>
+      <h2>活动概览</h2>
+      {% if overview %}
+      <div class="cards">
+        {% for item in overview %}
+        <article>
+          <h3>近 {{ item.days }} 天</h3>
+          <dl>
+            <div><dt>活动次数</dt><dd>{{ item.n }}</dd></div>
+            <div><dt>总距离</dt><dd>{{ '%.1f km'|format(item.km) if item.km is not none else '—' }}</dd></div>
+            <div><dt>总时长</dt><dd>{{ '%.1f 小时'|format(item.hours) if item.hours is not none else '—' }}</dd></div>
+          </dl>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}<p>暂无已入库活动。完成授权后运行一次同步。</p>{% endif %}
+    </section>
+    <section>
+      <h2>同步</h2>
+      <p>上次完整同步 {{ sync_status.last_success_at or '—' }}</p>
+      <form method="post" action="/sync"><button>立即同步</button></form>
+      {% if sync_status.runs %}
+      <ul>{% for run in sync_status.runs[:5] %}
+        <li>{{ run.started_at }} · {{ run.status }} · 写入或更新 {{ run.changed }} 条</li>
+      {% endfor %}</ul>
+      {% endif %}
+      {% if sync_status.errors %}
+      <details><summary>最近同步错误</summary>
+        <ul>{% for error in sync_status.errors[:10] %}<li>{{ error.source }} · {{ error.message }}</li>{% endfor %}</ul>
+      </details>
+      {% endif %}
+    </section>
+    <section>
+      <h2>MCP 连接状态</h2>
+      {% if discovery.status == 'ready' %}<p>已读取 {{ discovery.tools|length }} 个工具。</p>
+      {% elif discovery.status == 'probing' %}<p>正在探测。稍后刷新页面。</p>
+      {% else %}<p>{{ discovery.message or '等待授权。' }}</p>{% endif %}
+      {% if discovery.checked_at %}<p>探测时间 {{ discovery.checked_at }}</p>{% endif %}
+      <form method="post" action="/probe"><button>重新探测</button></form>
+      {% if discovery.tools %}
+      <ul>{% for tool in discovery.tools %}<li><code>{{ tool.name }}</code></li>{% endfor %}</ul>
+      {% endif %}
+    </section>
+    <section>
+      <h2>Suunto 授权</h2>
+      {% if authorization_url %}
+      <p><a class="button" href="{{ authorization_url }}" target="_blank" rel="noopener noreferrer">打开 Suunto 授权页</a></p>
+      <p>如果自动回调未完成，复制地址栏中的回调地址，回到此页面提交。</p>
+      {% else %}
+      <form method="post" action="/oauth/start"><button>生成授权链接</button></form>
+      {% endif %}
+      <form method="post" action="/oauth/manual">
+        <label for="authorization">回调地址或授权码</label>
+        <input id="authorization" name="authorization" type="password" autocomplete="off" required maxlength="8192">
+        <button>提交授权</button>
+      </form>
+    </section>
+{% endblock %}

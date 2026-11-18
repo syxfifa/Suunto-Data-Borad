@@ -21,6 +21,7 @@ import httpx
 MCP_URL = "https://mcp.suunto.cn/open/mcp"
 ISSUER = "https://mcp.suunto.cn"
 REDIRECT = "http://127.0.0.1:8000/oauth/callback"
+AUTHORIZATION_TIMEOUT = 600
 SCOPE = "mcp:tools"
 READ_TOOLS = frozenset({
     "list_user_workouts", "get_workout_detail", "get_sleep_summary", "get_recovery_summary",
@@ -147,45 +148,45 @@ class Client:
                 raise MCPError(f"OAuth 端点无效（{key}）。")
         return data
 
-    def begin(self):
+    def begin(self, redirect_uri=REDIRECT):
         with self.lock:
             metadata = self.metadata()
             credential = self.credential()
             client_id = credential.get("client_id")
-            if not client_id:
+            if not client_id or credential.get("redirect_uri", REDIRECT) != redirect_uri:
                 data = self.oauth_json("POST", metadata["registration_endpoint"], json={
                     "client_name": "Suunto LAN Dashboard", "application_type": "native",
-                    "redirect_uris": [REDIRECT], "grant_types": ["authorization_code", "refresh_token"],
+                    "redirect_uris": [redirect_uri], "grant_types": ["authorization_code", "refresh_token"],
                     "response_types": ["code"], "token_endpoint_auth_method": "none", "scope": SCOPE,
                 })
                 client_id = data.get("client_id")
                 if not isinstance(client_id, str) or not client_id:
                     raise MCPError("动态注册未返回有效的 client_id。")
-                save_json(self.path, {"client_id": client_id})
             state = secrets.token_urlsafe(32)
             verifier = secrets.token_urlsafe(48)
             digest = hashlib.sha256(verifier.encode()).digest()
             challenge = base64.urlsafe_b64encode(digest).decode().rstrip("=")
-            self.pending = (state, verifier, time.monotonic() + 300)
+            self.pending = (state, verifier, time.monotonic() + AUTHORIZATION_TIMEOUT, client_id, redirect_uri)
             url = metadata["authorization_endpoint"] + "?" + urlencode({
-                "response_type": "code", "client_id": client_id, "redirect_uri": REDIRECT, "resource": MCP_URL,
+                "response_type": "code", "client_id": client_id, "redirect_uri": redirect_uri, "resource": MCP_URL,
                 "scope": SCOPE, "state": state, "code_challenge": challenge, "code_challenge_method": "S256",
             })
             return url, state
 
-    def complete(self, code, browser_state, returned_state=None, issuer=None):
+    def complete(self, code, browser_state, returned_state=None, issuer=None, *, callback_uri=None):
         with self.lock:
             if not self.pending or not code:
                 raise NeedsAuthorization("请先创建授权链接。")
-            expected, verifier, deadline = self.pending
+            expected, verifier, deadline, client_id, redirect_uri = self.pending
             if (time.monotonic() > deadline or
                     not secrets.compare_digest(expected.encode(), browser_state.encode()) or
                     (returned_state is not None and not secrets.compare_digest(expected.encode(), returned_state.encode())) or
-                    issuer not in (None, ISSUER)):
+                    issuer not in (None, ISSUER) or callback_uri not in (None, redirect_uri)):
                 raise NeedsAuthorization("授权会话已过期或者 state/issuer 无效。")
             self.pending = None
-            return self.exchange(self.credential(), grant_type="authorization_code",
-                                 code=code, code_verifier=verifier, redirect_uri=REDIRECT)
+            return self.exchange({"client_id": client_id, "redirect_uri": redirect_uri},
+                                 grant_type="authorization_code", code=code, code_verifier=verifier,
+                                 redirect_uri=redirect_uri)
 
     def exchange(self, credential, **grant):
         started = time.time()

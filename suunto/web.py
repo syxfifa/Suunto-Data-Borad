@@ -3,19 +3,22 @@
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time as clock_time, timedelta
+from ipaddress import ip_address
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Annotated
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 from fastapi import Cookie, FastAPI, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
-from .mcp import Client, MCPError, NeedsAuthorization, READ_TOOLS, REDIRECT
+from .mcp import AUTHORIZATION_TIMEOUT, Client, MCPError, NeedsAuthorization, READ_TOOLS
 from .config import Config
 from .store import Store
 from .sync import Synchronizer, TZ
@@ -25,6 +28,30 @@ from .views import csv_cells, daily_charts, records, summary_chart, table_rows, 
 TEMPLATES = Jinja2Templates(directory=Path(__file__).with_name("templates"))
 LOG = logging.getLogger(__name__)
 NO_CACHE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+
+
+def dashboard_callback(request):
+    """Use the same origin that holds the browser's OAuth state cookie."""
+    try:
+        origin = urlsplit(str(request.base_url))
+        host = origin.hostname
+        port = origin.port
+    except ValueError as exc:
+        raise MCPError("看板访问地址无效。") from exc
+    if origin.scheme not in ("http", "https") or not host or origin.username is not None:
+        raise MCPError("看板访问地址无效。")
+    try:
+        address = ip_address(host)
+        local = (address.is_private or address.is_loopback) and not address.is_unspecified
+    except ValueError:
+        local = host == "localhost" or (
+            host.endswith((".local", ".lan", ".home.arpa")) and re.fullmatch(r"[a-z0-9.-]+", host))
+    if not local:
+        raise MCPError("请用服务器的内网 IP 地址打开看板，再发起授权。")
+    authority = f"[{host}]" if ":" in host else host
+    if port is not None:
+        authority += f":{port}"
+    return f"{origin.scheme}://{authority}/oauth/callback"
 
 
 class SampleRequest(BaseModel):
@@ -114,7 +141,7 @@ def create_app(data_dir=None, *, client=None):
     app = FastAPI(title="Suunto 内网看板", lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
 
-    def page(request, *, message=None, url=None):
+    def page(request, *, message=None):
         status = store.status()
         today = datetime.now(TZ)
         overview = []
@@ -132,14 +159,19 @@ def create_app(data_dir=None, *, client=None):
                 overview.append({"days": days, **row})
         return TEMPLATES.TemplateResponse(
             request=request, name="discovery.html",
-            context={"discovery": discovery, "message": message, "authorization_url": url,
+            context={"discovery": discovery, "message": message,
                      "sync_status": status, "overview": overview},
             headers=NO_CACHE,
         )
 
     @app.get("/")
-    def index(request: Request):
-        return page(request)
+    def index(request: Request, authorized: bool = False, refresh_required: bool = False):
+        message = None
+        if authorized and mcp.credential().get("access_token"):
+            message = "Suunto 授权成功，已安排同步。请在「同步状态」查看进度。"
+            if refresh_required:
+                message += " 本次授权未返回刷新令牌，到期后需重新授权。"
+        return page(request, message=message)
 
     @app.get("/healthz")
     def health():
@@ -149,52 +181,55 @@ def create_app(data_dir=None, *, client=None):
     @app.post("/oauth/start")
     def authorize(request: Request):
         try:
-            url, state = mcp.begin()
+            redirect_uri = dashboard_callback(request)
+            origin = request.headers.get("origin")
+            if origin and origin != redirect_uri.removesuffix("/oauth/callback"):
+                raise MCPError("请从看板页面发起授权。")
+            url, state = mcp.begin(redirect_uri)
         except MCPError as exc:
             LOG.warning("OAuth registration or discovery failed: %s", exc)
             return page(request, message=str(exc))
-        result = page(request, url=url)
-        result.set_cookie("suunto_oauth_state", state, max_age=300, httponly=True, samesite="lax")
+        result = RedirectResponse(url, status_code=303, headers=NO_CACHE)
+        result.set_cookie("suunto_oauth_state", state, max_age=AUTHORIZATION_TIMEOUT, httponly=True,
+                          samesite="lax", secure=request.url.scheme == "https")
         return result
 
-    def complete(request, code, browser_state, returned_state=None, issuer=None):
+    def sync_after_authorization():
+        probe()
         try:
-            credentials = mcp.complete(code, browser_state, returned_state, issuer)
+            sync.run("oauth")
+        except Exception:
+            LOG.exception("Synchronization after OAuth failed")
+
+    def complete(request, code, browser_state, returned_state, issuer, callback_uri):
+        try:
+            credentials = mcp.complete(code, browser_state, returned_state, issuer, callback_uri=callback_uri)
         except MCPError as exc:
             LOG.warning("OAuth completion failed: %s", exc)
             return page(request, message=str(exc))
-        probe()
+        discovery.update(status="probing", tools=[], message=None)
+        target = "/?authorized=true"
         if not credentials.get("refresh_token"):
-            response = page(request, message="本次授权未返回 refresh token，访问令牌到期后需重新授权。")
-        else:
-            response = RedirectResponse("/", status_code=303, headers=NO_CACHE)
+            target += "&refresh_required=true"
+        response = RedirectResponse(target, status_code=303, headers=NO_CACHE,
+                                    background=BackgroundTask(sync_after_authorization))
         response.delete_cookie("suunto_oauth_state")
         return response
 
     @app.get("/oauth/callback")
-    def callback(request: Request, code: str = "", state: str = "", iss: str | None = None,
+    def callback(request: Request, code: str = "", state: str = "", iss: str | None = None, error: str = "",
                  suunto_oauth_state: Annotated[str, Cookie()] = ""):
         if not suunto_oauth_state:
-            return page(request, message="请复制地址栏中的完整回调地址，回到原页面手动提交。")
+            return page(request, message="授权会话已失效，请在当前浏览器重新连接 Suunto。")
+        if error:
+            return page(request, message="Suunto 未完成授权，请返回首页重新发起。")
         if not code or not state:
             return page(request, message="回调未收到授权码和 state，请重新授权。")
-        return complete(request, code, suunto_oauth_state, state, iss)
-
-    @app.post("/oauth/manual")
-    def paste(request: Request, authorization: Annotated[str, Form(max_length=8192)],
-              suunto_oauth_state: Annotated[str, Cookie()] = ""):
-        value = authorization.strip()
-        if "://" in value:
-            try:
-                target = urlsplit(value)
-                query = parse_qs(target.query)
-                if target._replace(query="", fragment="").geturl() != REDIRECT:
-                    raise ValueError()
-                code, state = query["code"][0], query["state"][0]
-            except (KeyError, ValueError):
-                return page(request, message="请粘贴包含 code 和 state 的完整回调地址。")
-            return complete(request, code, suunto_oauth_state, state, query.get("iss", [None])[0])
-        return complete(request, value, suunto_oauth_state)
+        try:
+            redirect_uri = dashboard_callback(request)
+        except MCPError as exc:
+            return page(request, message=str(exc))
+        return complete(request, code, suunto_oauth_state, state, iss, redirect_uri)
 
     @app.post("/probe")
     def browser_probe():

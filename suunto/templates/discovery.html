@@ -47,16 +47,7 @@
     </section>
     <section>
       <h2>Suunto 授权</h2>
-      {% if authorization_url %}
-      <p><a class="button" href="{{ authorization_url }}" target="_blank" rel="noopener noreferrer">打开 Suunto 授权页</a></p>
-      <p>如果自动回调未完成，复制地址栏中的回调地址，回到此页面提交。</p>
-      {% else %}
-      <form method="post" action="/oauth/start"><button>生成授权链接</button></form>
-      {% endif %}
-      <form method="post" action="/oauth/manual">
-        <label for="authorization">回调地址或授权码</label>
-        <input id="authorization" name="authorization" type="password" autocomplete="off" required maxlength="8192">
-        <button>提交授权</button>
-      </form>
+      <form method="post" action="/oauth/start"><button>连接 Suunto</button></form>
+      <p>完成 Suunto 授权后，浏览器会返回当前看板并开始同步。</p>
     </section>
 {% endblock %}

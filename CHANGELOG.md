@@ -1,5 +1,9 @@
 # Suunto Data Borad 变更记录
 
+## 0.1.2
+
+- 使用当前看板的内网地址完成 Suunto OAuth 回调。授权后自动返回首页并开始同步。
+
 ## 0.1.1
 
 - 部署用 Compose 直接指定 Docker Hub 镜像；CI 使用临时覆盖文件验收刚构建的镜像。

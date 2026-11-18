@@ -6,16 +6,19 @@ from urllib.parse import parse_qs, urlsplit
 from fastapi.testclient import TestClient
 import httpx
 
-from suunto.mcp import Client, ISSUER, REDIRECT
+from suunto.mcp import Client, ISSUER, REDIRECT, save_json
 from suunto.web import create_app
 
 
 class ProbeTest(unittest.TestCase):
+    lan_origin = "http://192.168.1.50:8000"
+
     def setUp(self):
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.grants = []
         self.tool_calls = []
+        self.redirect = self.lan_origin + "/oauth/callback"
         transport = httpx.MockTransport(self.server)
         self.mcp = Client(directory.name, httpx.Client(transport=transport))
         self.addCleanup(self.mcp.http.close)
@@ -29,7 +32,7 @@ class ProbeTest(unittest.TestCase):
                 "code_challenge_methods_supported": ["S256"],
             })
         if path == "/register":
-            self.assertEqual(json.loads(request.content)["redirect_uris"], [REDIRECT])
+            self.assertEqual(json.loads(request.content)["redirect_uris"], [self.redirect])
             return httpx.Response(201, json={"client_id": "client"})
         if path == "/token":
             form = parse_qs(request.content.decode())
@@ -37,6 +40,7 @@ class ProbeTest(unittest.TestCase):
             if "code" in form:
                 self.assertEqual(form["code"], ["one-time-code"])
                 self.assertIn("code_verifier", form)
+                self.assertEqual(form["redirect_uri"], [self.redirect])
             return httpx.Response(200, json={
                 "access_token": "token", "refresh_token": "refresh", "expires_in": 3600,
             })
@@ -54,19 +58,31 @@ class ProbeTest(unittest.TestCase):
                           "nextCursor": "next"}
         else:
             self.tool_calls.append(packet["params"]["name"])
-            result = {"content": [{"type": "text", "text": '[{"distance":2.5},{"distance":null}]'}]}
+            data = [{"routeId": "route-a"}] if "page" in packet["params"]["arguments"] else [
+                {"distance": 2.5}, {"distance": None}]
+            result = {"content": [{"type": "text", "text": json.dumps(data)}]}
         packet = {"id": packet["id"], "jsonrpc": "2.0", "result": result}
         return httpx.Response(200, headers={"content-type": "text/event-stream"},
                               text=f"data: {json.dumps(packet)}\n\n")
 
     def test_callback_pagination_and_only_read_tools(self):
-        with TestClient(create_app(client=self.mcp)) as browser:
+        with TestClient(create_app(client=self.mcp), base_url=self.lan_origin) as browser:
             self.assertEqual(browser.post("/api/probe").json()["status"], "authorization_required")
-            browser.post("/oauth/start")
+            self.assertNotIn("/oauth/manual", browser.get("/").text)
+            start = browser.post("/oauth/start", follow_redirects=False)
+            self.assertEqual(start.status_code, 303)
+            location = urlsplit(start.headers["location"])
+            self.assertEqual(location.netloc, "mcp.suunto.cn")
+            self.assertEqual(parse_qs(location.query)["redirect_uri"], [self.redirect])
             state = browser.cookies["suunto_oauth_state"]
             browser.get("/oauth/callback", params={"code": "one-time-code", "state": "invalid"})
             self.assertFalse(self.grants)
-            browser.get("/oauth/callback", params={"code": "one-time-code", "state": state})
+            callback = browser.get("/oauth/callback", params={"code": "one-time-code", "state": state})
+            self.assertIn("Suunto 授权成功", callback.text)
+            sync = browser.get("/api/status").json()
+            self.assertEqual(sync["runs"][0]["trigger"], "oauth")
+            self.assertEqual(sync["counts"]["routes"], 1)
+            self.tool_calls.clear()
             tools = browser.post("/api/probe").json()["tools"]
             self.assertEqual([tool["allowed_read"] for tool in tools], [True, False])
             for name in ("activate_training_program", "list_user_workouts"):
@@ -75,11 +91,16 @@ class ProbeTest(unittest.TestCase):
             self.assertEqual(payload["observed_fields"]["content[][]/distance"], ["null", "number"])
             self.assertEqual(self.tool_calls, ["list_user_routes"])
 
-    def test_manual_code_and_refresh(self):
-        with TestClient(create_app(client=self.mcp)) as browser:
-            browser.post("/oauth/start")
-            browser.post("/oauth/manual", data={"authorization": "one-time-code"})
+    def test_lan_registration_preserves_existing_token_until_callback(self):
+        save_json(self.mcp.path, {"client_id": "previous", "redirect_uri": REDIRECT,
+                                 "access_token": "existing", "refresh_at": 9_999_999_999})
+        with TestClient(create_app(client=self.mcp), base_url=self.lan_origin) as browser:
+            browser.post("/oauth/start", follow_redirects=False)
+            self.assertEqual(self.mcp.credential()["access_token"], "existing")
+            state = browser.cookies["suunto_oauth_state"]
+            browser.get("/oauth/callback", params={"code": "one-time-code", "state": state})
             self.assertEqual(self.grants, ["authorization_code"])
+            self.assertEqual(self.mcp.credential()["redirect_uri"], self.redirect)
             with self.mcp.lock:
                 state = self.mcp.credential()
                 state["refresh_at"] = 0

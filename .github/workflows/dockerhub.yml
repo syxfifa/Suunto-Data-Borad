@@ -10,6 +10,7 @@ permissions:
 
 env:
   DOCKERHUB_USERNAME: jjsyx123
+  SUUNTO_IMAGE: suunto-data-borad:local
 
 concurrency:
   group: suunto-image-${{ github.ref }}
@@ -33,13 +34,13 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           load: true
-          tags: suunto-data-borad:local
+          tags: ${{ env.SUUNTO_IMAGE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Run tests on both architectures
         run: |
           for platform in linux/amd64 linux/arm64; do
-            docker run --rm --platform "$platform" suunto-data-borad:local \
+            docker run --rm --platform "$platform" "$SUUNTO_IMAGE" \
               python -m unittest discover -s tests -v
           done
       - name: Verify Compose startup and volume persistence
@@ -77,7 +78,7 @@ jobs:
         run: |
           repo="docker.io/${DOCKERHUB_USERNAME,,}/suunto-data-borad"
           short_sha="${GITHUB_SHA:0:12}"
-          docker tag suunto-data-borad:local "$repo:$short_sha"
-          docker tag suunto-data-borad:local "$repo:latest"
+          docker tag "$SUUNTO_IMAGE" "$repo:$short_sha"
+          docker tag "$SUUNTO_IMAGE" "$repo:latest"
           docker push "$repo:$short_sha"
           docker push "$repo:latest"

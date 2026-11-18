@@ -11,10 +11,11 @@
 
 ## NAS / PVE 首次启动
 
-上传项目到装有 Docker 和 Compose v2 的 NAS 或 PVE 中的 Linux 虚拟机。在服务器 SSH 终端进入项目目录后执行：
+把 `docker-compose.yml` 上传到装有 Docker 和 Compose v2 的 NAS 或 PVE 中的 Linux 虚拟机。升级时用它覆盖原目录里的同名文件，以继续使用已有数据卷。在服务器 SSH 终端进入该目录后执行：
 
 ```sh
-docker compose up -d --build
+docker compose pull app
+docker compose up -d
 docker compose ps
 ```
 
@@ -48,7 +49,7 @@ docker compose exec app python -m suunto sample list_user_routes '{"page":0,"siz
 
 ## SQLite 同步验收
 
-已运行过上一阶段的实例，上传更新后在原目录重新运行 `docker compose up -d --build`。继续使用原来的命名卷，授权凭据会保留。浏览器授权成功后，点击首页「立即同步」，也可以在服务器执行：
+已运行过上一阶段的实例，继续使用原来的 Compose 目录和命名卷，授权凭据会保留。浏览器授权成功后，点击首页「立即同步」，也可以在服务器执行：
 
 ```sh
 docker compose exec app python -m suunto sync
@@ -69,11 +70,12 @@ SQLite 中的时间索引用北京时间。原始返回字段保存在 JSON 记�
 
 ## NAS/PVE 升级验收
 
-在原项目目录覆盖新版源码并运行以下命令。保留原有 Compose 项目和命名卷，可继续使用已有授权、数据库和配置。
+在原项目目录运行以下命令。保留原有 Compose 项目和命名卷，可继续使用已有授权、数据库和配置。
 
 ```sh
 docker compose config --quiet
-docker compose up -d --build
+docker compose pull app
+docker compose up -d
 docker compose ps
 docker compose exec app python -m unittest discover -s tests -v
 ```
@@ -88,15 +90,7 @@ docker compose exec app python -m unittest discover -s tests -v
 2. 工作流的 Docker Hub 用户名为 `jjsyx123`。在 GitHub 仓库的 Settings → Secrets and variables → Actions 添加具有镜像写权限的 `DOCKERHUB_TOKEN`。
 3. 推送到 `main` 后，工作流会构建 AMD64 和 ARM64 镜像，在两种架构运行测试，并检查 Compose 启动和设置持久化。验收通过后发布 `latest` 和 12 位提交哈希标签。缺少令牌时，工作流只构建和测试。
 
-使用已发布的镜像部署时，在原 NAS 项目目录的 `docker-compose.yml` 中保留端口和卷，把 `app` 服务的 `image` 改为 `docker.io/jjsyx123/suunto-data-borad:latest`（或固定的短提交标签），删掉同一服务里的 `build: .`。然后执行：
-
-```sh
-docker compose pull app
-docker compose up -d --no-build
-docker compose ps
-```
-
-私有镜像需先在 NAS 的终端运行 `docker login`。使用源码部署的命令仍是 `docker compose up -d --build`。
+Compose 默认使用 `docker.io/jjsyx123/suunto-data-borad:latest`。需要固定版本时，可把 `image` 改成带发布标签的完整镜像名。私有镜像需先在 NAS 的终端运行 `docker login`。
 
 ## 排查
 

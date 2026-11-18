@@ -82,9 +82,13 @@ docker compose exec app python -m unittest discover -s tests -v
 
 1. 把完整项目（包括隐藏的 `.github/` 目录）提交到 GitHub，在 Docker Hub 创建 `suunto-data-borad` 仓库。
 2. 工作流的 Docker Hub 用户名为 `jjsyx123`。在 GitHub 仓库的 Settings → Secrets and variables → Actions 添加具有镜像写权限的 `DOCKERHUB_TOKEN`。
-3. 推送到 `main` 后，工作流会构建 AMD64 和 ARM64 镜像，在两种架构运行测试，并检查 Compose 启动和设置持久化。验收通过后发布 `latest` 和 12 位提交哈希标签。缺少令牌时，工作流只构建和测试。
+3. 推送到 `main` 后，工作流会构建 AMD64 和 ARM64 镜像，在两种架构运行测试，并检查 Compose 启动和设置持久化。验收通过后发布 `latest`、12 位提交哈希和 `VERSION` 中的版本标签。已发布的版本标签会保留原镜像。缺少令牌时，工作流只构建和测试。
 
 Compose 默认使用 `docker.io/jjsyx123/suunto-data-borad:latest`。需要固定版本时，可把 `image` 改成带发布标签的完整镜像名。私有镜像需先在 NAS 的终端运行 `docker login`。
+
+## 版本管理
+
+修改应用、测试、镜像或部署配置时，同时更新 `VERSION` 和 [变更记录](CHANGELOG.md)。修复升补丁版本，新增兼容功能升次版本，破坏兼容性的调整升主版本。提交前运行 `python -m unittest discover -s tests -v`，把代码、版本和变更记录一起提交到 GitHub。发布通过后，NAS 可拉取 `latest` 升级，或者固定到指定版本。
 
 ## 排查
 

@@ -21,6 +21,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Check release version
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          version="$(cat VERSION)"
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error file=VERSION::Use a version in MAJOR.MINOR.PATCH format."
+            exit 1
+          fi
+          if [[ -n "$BEFORE_SHA" ]] && git cat-file -e "$BEFORE_SHA:VERSION" 2>/dev/null; then
+            previous="$(git show "$BEFORE_SHA:VERSION")"
+            if [[ "$version" != "$previous" && "$(printf '%s\n' "$previous" "$version" | sort -V | tail -1)" != "$version" ]]; then
+              echo "::error file=VERSION::A release version cannot decrease."
+              exit 1
+            fi
+            if [[ "$version" == "$previous" ]] && ! git diff --quiet "$BEFORE_SHA" "$GITHUB_SHA" -- \
+              suunto tests Dockerfile requirements.txt .dockerignore docker-compose.yml .github/workflows/dockerhub.yml; then
+              echo "::error file=VERSION::Increase VERSION when changing application, image, or deployment files."
+              exit 1
+            fi
+          fi
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
       - uses: docker/setup-docker-action@v5
         with:
           daemon-config: '{"features":{"containerd-snapshotter":true}}'
@@ -35,6 +59,9 @@ jobs:
           platforms: linux/amd64,linux/arm64
           load: true
           tags: ${{ env.SUUNTO_IMAGE }}
+          labels: |
+            org.opencontainers.image.version=${{ env.RELEASE_VERSION }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Run tests on both architectures
@@ -80,5 +107,11 @@ jobs:
           short_sha="${GITHUB_SHA:0:12}"
           docker tag "$SUUNTO_IMAGE" "$repo:$short_sha"
           docker tag "$SUUNTO_IMAGE" "$repo:latest"
+          if docker buildx imagetools inspect "$repo:$RELEASE_VERSION" >/dev/null 2>&1; then
+            echo "Version $RELEASE_VERSION is already available."
+          else
+            docker tag "$SUUNTO_IMAGE" "$repo:$RELEASE_VERSION"
+            docker push "$repo:$RELEASE_VERSION"
+          fi
           docker push "$repo:$short_sha"
           docker push "$repo:latest"

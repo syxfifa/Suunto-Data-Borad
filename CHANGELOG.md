@@ -1,5 +1,9 @@
 # Suunto Data Borad 变更记录
 
+## 0.1.1
+
+- 部署用 Compose 直接指定 Docker Hub 镜像；CI 使用临时覆盖文件验收刚构建的镜像。
+
 ## 0.1.0
 
 - 建立语义化版本和 Docker Hub 版本标签。

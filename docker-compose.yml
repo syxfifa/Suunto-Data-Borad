@@ -1,6 +1,6 @@
 services:
   app:
-    image: "${SUUNTO_IMAGE:-docker.io/jjsyx123/suunto-data-borad:latest}"
+    image: "jjsyx123/suunto-data-borad:latest"
     restart: unless-stopped
     ports:
       - "8000:8000"

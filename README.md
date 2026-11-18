@@ -19,20 +19,14 @@ docker compose up -d
 docker compose ps
 ```
 
-Compose 默认绑定服务器回环接口。电脑另开终端，将用户名和地址换成自己的服务器信息，并保持 SSH 窗口运行：
-
-```sh
-ssh -N -L 8000:127.0.0.1:8000 用户名@NAS或虚拟机IP
-```
-
-在同一台电脑的浏览器打开 [首页](http://127.0.0.1:8000)。容器卷保存 `/data/token.json`、`/data/suunto.sqlite` 和设置页保存产生的 `/data/config.json`。
+在同一内网的电脑或手机上打开 `http://服务器内网IP:8000`。Compose 将 8000 端口发布到服务器的所有网络接口。此看板供内网使用，请勿通过路由器端口转发暴露到公网。容器卷保存 `/data/token.json`、`/data/suunto.sqlite` 和设置页保存产生的 `/data/config.json`。
 
 ## OAuth 应用注册和两种授权方式
 
 点击「生成授权链接」。首次由程序读取官方 OAuth 元数据，经动态客户端注册获取 client ID，注册固定回调 `http://127.0.0.1:8000/oauth/callback`。随后点击「打开 Suunto 授权页」，使用 Suunto App 的账号登录并同意。客户端使用 Authorization Code + PKCE S256。
 
-- **网页回调**。从上述回环地址进入授权页面，并保留 SSH 转发。授权后浏览器回调，页面会显示实际探测到的工具。
-- **手动粘贴**。若在同一浏览器通过 NAS 内网地址访问页面，且电脑回环端口未转发，授权结束后浏览器可能提示无法连接。复制地址栏里包含授权码和 state 的完整回调地址，返回原页面粘贴提交。也可仅粘贴 code 值。请在五分钟内使用启动授权的同一浏览器提交，页面使用该浏览器的授权会话完成交换。如要用内网 IP 访问页面，将 Compose 端口映射里的 `127.0.0.1` 改为服务器的内网 IP，再重建服务。
+- **手动粘贴**。通过 NAS 内网 IP 打开看板。Suunto 授权结束后，浏览器跳到 `127.0.0.1` 时可能提示无法连接。复制地址栏中包含授权码和 state 的完整回调地址，在五分钟内回到原看板页面粘贴提交。也可仅粘贴 code 值。
+- **网页回调**。如需自动回调，在电脑运行 `ssh -N -L 8000:127.0.0.1:8000 用户名@服务器内网IP`，保持连接，从电脑浏览器打开 `http://127.0.0.1:8000` 发起授权。
 
 ## 验收 tools/list 和实际返回字段
 
@@ -57,7 +51,7 @@ docker compose exec app python -m suunto sync
 
 首次同步从近 28 天开始，恢复采样按天查询。初次可能需等几分钟。之后默认每 30 分钟运行，各数据源从自己的进度继续，并回扫前两天以更新迟到记录。路线按修改时间分页，每天额外完整扫描一次，以发现缺少修改时间的路线。已存的运动详情正常情况下只读取一次。
 
-在首页看到活动次数、距离和时长后，再运行一次同步。记录数量应保持稳定，除非 Suunto 上有新增记录或值发生变化。失败条目可在首页展开，也可访问 [同步状态接口](http://127.0.0.1:8000/api/status)。数据库是同一卷下的 `/data/suunto.sqlite`。升级时保留该卷。
+在首页看到活动次数、距离和时长后，再运行一次同步。记录数量应保持稳定，除非 Suunto 上有新增记录或值发生变化。失败条目可在首页展开，也可访问 `http://服务器内网IP:8000/api/status`。数据库是同一卷下的 `/data/suunto.sqlite`。升级时保留该卷。
 
 SQLite 中的时间索引用北京时间。原始返回字段保存在 JSON 记录内。运动按 `workoutId`，睡眠按 `SleepId` 和采样时间，恢复按采样时间，日常活动按指标、来源和采样时间，路线按 `routeId` 去重。单条坏数据记入错误列表。某个日期窗口请求失败时，该源进度保留在最后成功窗口，其他数据源仍可继续。
 
@@ -80,9 +74,9 @@ docker compose ps
 docker compose exec app python -m unittest discover -s tests -v
 ```
 
-1. 等到 `docker compose ps` 中的 `app` 显示 `healthy`，或通过 SSH 转发打开 [健康检查](http://127.0.0.1:8000/healthz)，确认返回 `{"status":"ok"}`。这表示网页服务和 SQLite 可以访问。账号授权状态由下一步单独检查。
-2. 执行 `docker compose exec app python -m suunto probe`。若为 `authorization_required`，先在网页授权。显示 `ready` 后执行 `docker compose exec app python -m suunto sync`。在[同步状态](http://127.0.0.1:8000/sync-status)确认写入数量和失败原因。连续两次同步时，若远端记录无新增或修订，第二次写入应为 0。
-3. 在[设置](http://127.0.0.1:8000/settings)保存一个同步间隔，运行 `docker compose restart app`。待容器恢复健康后，确认间隔和已有数据仍在。
+1. 等到 `docker compose ps` 中的 `app` 显示 `healthy`，或打开 `http://服务器内网IP:8000/healthz`，确认返回 `{"status":"ok"}`。这表示网页服务和 SQLite 可以访问。账号授权状态由下一步单独检查。
+2. 执行 `docker compose exec app python -m suunto probe`。若为 `authorization_required`，先在网页授权。显示 `ready` 后执行 `docker compose exec app python -m suunto sync`。在看板的「同步状态」页确认写入数量和失败原因。连续两次同步时，若远端记录无新增或修订，第二次写入应为 0。
+3. 在看板的「设置」页保存一个同步间隔，运行 `docker compose restart app`。待容器恢复健康后，确认间隔和已有数据仍在。
 
 ## 可选 Docker Hub 发布
 

@@ -49,8 +49,8 @@ jobs:
           curl --fail --silent --show-error http://127.0.0.1:8000/healthz
           curl --fail --silent --show-error --data "minutes=15" http://127.0.0.1:8000/settings
           docker compose restart app
-          curl --fail --silent --show-error --retry 12 --retry-connrefused --retry-delay 2 \
-            http://127.0.0.1:8000/healthz
+          docker compose up -d --no-build --wait --wait-timeout 90
+          curl --fail --silent --show-error http://127.0.0.1:8000/healthz
           docker compose exec -T app python -c 'import json; from pathlib import Path; assert json.loads(Path("/data/config.json").read_bytes())["sync_interval_minutes"] == 15'
       - name: Show Compose logs when a check fails
         if: failure()

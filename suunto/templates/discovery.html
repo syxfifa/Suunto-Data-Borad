@@ -47,7 +47,12 @@
     </section>
     <section>
       <h2>Suunto 授权</h2>
+      {% if oauth_error %}<p role="alert">{{ oauth_error }}</p>{% endif %}
+      {% if request.url.path == '/oauth/callback' %}
+      <a href="/">返回首页重新连接 Suunto</a>
+      {% else %}
       <form method="post" action="/oauth/start"><button>连接 Suunto</button></form>
+      {% endif %}
       <p>完成 Suunto 授权后，浏览器会返回当前看板并开始同步。</p>
     </section>
 {% endblock %}

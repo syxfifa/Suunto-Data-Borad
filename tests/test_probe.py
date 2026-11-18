@@ -107,3 +107,33 @@ class ProbeTest(unittest.TestCase):
                 self.mcp.path.write_text(json.dumps(state))
             self.assertEqual(browser.post("/api/probe").json()["status"], "ready")
             self.assertEqual(self.grants, ["authorization_code", "refresh_token"])
+
+    def assert_oauth_at(self, origin):
+        self.redirect = origin + "/oauth/callback"
+        with TestClient(create_app(client=self.mcp), base_url=origin) as browser:
+            self.assertEqual(browser.get("/").headers["referrer-policy"], "same-origin")
+            for invalid_origin in ("null", "https://other.example.com"):
+                response = browser.post("/oauth/start", headers={"Origin": invalid_origin}, follow_redirects=False)
+                self.assertIn('<p role="alert">请从看板页面发起授权。</p>', response.text)
+                self.assertIsNone(self.mcp.pending)
+            start = browser.post("/oauth/start", headers={"Origin": origin}, follow_redirects=False)
+            self.assertEqual(start.status_code, 303)
+            params = parse_qs(urlsplit(start.headers["location"]).query)
+            self.assertEqual(params["redirect_uri"], [self.redirect])
+            callback = browser.get("/oauth/callback", params={"code": "one-time-code", "state": params["state"][0]},
+                                   follow_redirects=False)
+            self.assertEqual(callback.headers["location"], "/?authorized=true")
+            self.assertEqual(self.grants, ["authorization_code"])
+            self.assertEqual(browser.get("/api/status").json()["runs"][0]["trigger"], "oauth")
+
+    def test_custom_http_domain_and_port_complete_oauth(self):
+        self.assert_oauth_at("http://dashboard.example.com:7383")
+
+    def test_custom_https_domain_and_port_complete_oauth(self):
+        self.assert_oauth_at("https://training.example.org:9443")
+
+    def test_https_domain_with_default_port_completes_oauth(self):
+        self.assert_oauth_at("https://sports.example.net")
+
+    def test_private_ip_with_custom_port_completes_oauth(self):
+        self.assert_oauth_at("http://10.72.0.42:18000")

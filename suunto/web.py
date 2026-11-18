@@ -28,6 +28,9 @@ from .views import csv_cells, daily_charts, records, summary_chart, table_rows, 
 TEMPLATES = Jinja2Templates(directory=Path(__file__).with_name("templates"))
 LOG = logging.getLogger(__name__)
 NO_CACHE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+# Browsers can send Origin: null on a form POST from a no-referrer page.
+HOME_HEADERS = {**NO_CACHE, "Referrer-Policy": "same-origin"}
+DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
 
 def dashboard_callback(request):
@@ -41,15 +44,14 @@ def dashboard_callback(request):
     if origin.scheme not in ("http", "https") or not host or origin.username is not None:
         raise MCPError("看板访问地址无效。")
     try:
-        address = ip_address(host)
-        local = (address.is_private or address.is_loopback) and not address.is_unspecified
+        valid_host = not ip_address(host).is_unspecified
     except ValueError:
-        local = host == "localhost" or (
-            host.endswith((".local", ".lan", ".home.arpa")) and re.fullmatch(r"[a-z0-9.-]+", host))
-    if not local:
-        raise MCPError("请用服务器的内网 IP 地址打开看板，再发起授权。")
+        name = host.removesuffix(".")
+        valid_host = len(name) <= 253 and all(DNS_LABEL.fullmatch(label) for label in name.split("."))
+    if not valid_host:
+        raise MCPError("看板访问地址无效，请使用服务器 IP 或域名打开看板。")
     authority = f"[{host}]" if ":" in host else host
-    if port is not None:
+    if port is not None and port != {"http": 80, "https": 443}[origin.scheme]:
         authority += f":{port}"
     return f"{origin.scheme}://{authority}/oauth/callback"
 
@@ -141,7 +143,7 @@ def create_app(data_dir=None, *, client=None):
     app = FastAPI(title="Suunto 内网看板", lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
 
-    def page(request, *, message=None):
+    def page(request, *, message=None, oauth_error=None):
         status = store.status()
         today = datetime.now(TZ)
         overview = []
@@ -159,9 +161,9 @@ def create_app(data_dir=None, *, client=None):
                 overview.append({"days": days, **row})
         return TEMPLATES.TemplateResponse(
             request=request, name="discovery.html",
-            context={"discovery": discovery, "message": message,
+            context={"discovery": discovery, "message": message, "oauth_error": oauth_error,
                      "sync_status": status, "overview": overview},
-            headers=NO_CACHE,
+            headers=HOME_HEADERS if request.url.path != "/oauth/callback" else NO_CACHE,
         )
 
     @app.get("/")
@@ -188,7 +190,7 @@ def create_app(data_dir=None, *, client=None):
             url, state = mcp.begin(redirect_uri)
         except MCPError as exc:
             LOG.warning("OAuth registration or discovery failed: %s", exc)
-            return page(request, message=str(exc))
+            return page(request, oauth_error=str(exc))
         result = RedirectResponse(url, status_code=303, headers=NO_CACHE)
         result.set_cookie("suunto_oauth_state", state, max_age=AUTHORIZATION_TIMEOUT, httponly=True,
                           samesite="lax", secure=request.url.scheme == "https")

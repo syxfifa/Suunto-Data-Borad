@@ -1,3 +1,7 @@
 /data/
 /.deps/
 __pycache__/
+token.json
+config.json
+suunto.sqlite
+suunto.sqlite-*

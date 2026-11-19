@@ -282,19 +282,28 @@ def create_app(data_dir=None, *, client=None):
 
     @app.get("/activities")
     def workouts(request: Request, start: str = "", end: str = ""):
+        activity_span = store.query(
+            "SELECT min(occurred_at) AS first, max(occurred_at) AS last FROM records WHERE source='workouts'"
+        )[0]
+        available_days = store.query("""
+            SELECT DISTINCT substr(occurred_at, 1, 10) AS day FROM records
+            WHERE source='workouts' AND occurred_at IS NOT NULL ORDER BY day DESC LIMIT 90
+        """)
+        filters = {"filters": True, "activity_span": activity_span, "available_days": available_days}
+        start, end = start.strip(), end.strip()
         try:
-            first = date.fromisoformat(start) if start else None
-            last = date.fromisoformat(end) if end else None
+            first = date.fromisoformat(start.replace("/", "-")) if start else None
+            last = date.fromisoformat(end.replace("/", "-")) if end else None
             if last == date.max or (first and last and last < first):
                 raise ValueError
         except ValueError:
-            return dashboard(request, "运动活动", filters=True, start=start, end=end,
-                             message="请选择有效的日期，结束日期应等于或晚于开始日期。")
-        if first is None and last is None and not request.query_params:
+            return dashboard(request, "运动活动", **filters, start=start, end=end,
+                             message="请选择有效的日期（YYYY-MM-DD），结束日期应等于或晚于开始日期。")
+        if first is None and last is None and not {"start", "end"}.intersection(request.query_params):
             first = datetime.now(TZ).date() - timedelta(days=27)
         begin = datetime.combine(first, clock_time.min, TZ) if first else None
         finish = datetime.combine(last + timedelta(days=1), clock_time.min, TZ) if last else None
-        return dashboard(request, "运动活动", filters=True, start=first, end=last,
+        return dashboard(request, "运动活动", **filters, start=first, end=last,
                          headings=("北京时间", "运动类型", "距离（km）", "时长（分钟）", "平均心率", "训练效果 PTE"),
                          rows=table_rows(records(store, "workouts", begin, finish), "workouts"))
 

@@ -41,9 +41,15 @@
 </div>
 {% endif %}
 {% if filters %}
+{% if activity_span.first %}
+<p>本地活动日期范围（北京时间）{{ activity_span.first[:10] }} 至 {{ activity_span.last[:10] }}。可输入日期，或从输入框的建议中选取已有活动的日期。</p>
+{% else %}
+<p>本地还没有活动记录。可在<a href="/settings">设置</a>查看同步状态。</p>
+{% endif %}
+<datalist id="activity-days">{% for item in available_days %}<option value="{{ item.day }}"></option>{% endfor %}</datalist>
 <form method="get" action="/activities" class="controls">
-  <label>开始日期<input name="start" type="date" value="{{ start or '' }}"></label>
-  <label>结束日期<input name="end" type="date" value="{{ end or '' }}"></label>
+  <label>开始日期<input name="start" type="text" list="activity-days" placeholder="YYYY-MM-DD" maxlength="10" autocomplete="off" value="{{ start or '' }}"></label>
+  <label>结束日期<input name="end" type="text" list="activity-days" placeholder="YYYY-MM-DD" maxlength="10" autocomplete="off" value="{{ end or '' }}"></label>
   <button type="submit">筛选</button>
   <a class="button secondary" href="/activities?start=&amp;end=">全部日期</a>
 </form>
@@ -66,11 +72,14 @@
 </div>
 {% endif %}
 {% if route_maps is defined and route_maps|select|list %}
-<p>路线地图展示 Suunto 提供的位置点。点击地点才会连接 OpenStreetMap，向其发送该点坐标。</p>
-<script src="/static/route-map.js" defer></script>
+<p>点击起点、参考中心或终点，在看板内预览位置。</p>
+<script src="/static/route-map.js?v=0.1.6" defer></script>
 <section id="route-map" hidden>
-  <h2>路线位置</h2>
-  <iframe title="OpenStreetMap 路线位置" referrerpolicy="no-referrer"></iframe>
+  <h2>路线位置预览</h2>
+  <p id="route-point" role="status"></p>
+  <canvas width="680" height="280" role="img" aria-label="Suunto 路线位置点相对示意图"></canvas>
+  <p>预览展示位置点的相对方位。打开底图会向 OpenStreetMap 发送所选点的坐标。</p>
+  <a id="route-map-link" class="button" target="_blank" rel="noopener noreferrer">在 OpenStreetMap 打开底图</a>
 </section>
 {% endif %}
 {% if headings %}
@@ -81,7 +90,7 @@
     <tbody>{% for row in rows %}<tr>
       {% for cell in row %}<td>{{ cell if cell is not none and cell != '' else '—' }}</td>{% endfor %}
       {% if route_maps is defined %}
-      <td>
+      <td class="route-points" data-route="{{ row[0] or '' }}">
         {% for point in route_maps[loop.index0] %}
         <button type="button" class="map-point" data-lat="{{ point.lat }}" data-lon="{{ point.lon }}">{{ point.label }}</button>
         {% else %}暂无位置点{% endfor %}

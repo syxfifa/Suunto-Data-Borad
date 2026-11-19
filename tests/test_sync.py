@@ -48,8 +48,10 @@ class SampleMCP:
         elif name == "list_user_routes":
             data = [{"routeId": "route-a", "description": "A", "totalDistance": 2000, "modified": None,
                      "startPoint": {"latitude": 30.5, "longitude": 120.5},
-                     "endPoint": {"latitude": 999, "longitude": 120.6}},
-                    {"routeId": "route-b", "description": "B"}]
+                     "centerPoint": {"latitude": 30.51, "longitude": 120.53},
+                     "endPoint": {"latitude": 30.52, "longitude": 120.57}},
+                    {"routeId": "route-b", "description": "B",
+                     "endPoint": {"latitude": 999, "longitude": 120.6}}]
         return {"content": [{"type": "text", "text": json.dumps(data)}]}
 
 
@@ -101,8 +103,13 @@ class SyncTest(unittest.TestCase):
             self.assertEqual(page.status_code, 200)
             self.assertIn("2026-11-16T21:00:00+08:00", page.text)
             self.assertIn("训练效果 PTE", page.text)
+            self.assertIn('id="activity-days"', page.text)
+            self.assertIn('<option value="2026-11-16">', page.text)
+            self.assertIn('name="end" type="text"', page.text)
+            self.assertIn("本地活动日期范围", page.text)
             for query in ("start=2026-11-16&end=", "start=&end=2026-11-16", "start=&end="):
                 self.assertIn("2026-11-16T21:00:00+08:00", browser.get(f"/activities?{query}").text)
+            self.assertIn("2026-11-16T21:00:00+08:00", browser.get("/activities?end=2026%2F11%2F16").text)
             self.assertIn("请选择有效的日期", browser.get(
                 "/activities?start=2026-11-17&end=2026-11-16").text)
             self.assertNotIn("2026-11-16T21:00:00+08:00", browser.get(
@@ -121,6 +128,8 @@ class SyncTest(unittest.TestCase):
             self.assertIn('data-lat="30.5"', routes)
             self.assertNotIn('data-lat="999"', routes)
             self.assertIn("暂无位置点", routes)
+            self.assertIn("路线位置预览", routes)
+            self.assertNotIn("<iframe", routes)
             self.assertNotIn("openstreetmap.org", routes)
             config = json.loads((Path(data_dir) / "config.json").read_bytes())
             self.assertEqual(config, {"sync_interval_minutes": 15, "timezone": "Asia/Shanghai"})

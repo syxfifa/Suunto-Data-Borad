@@ -36,6 +36,38 @@ CREATE TABLE IF NOT EXISTS sync_errors (
     source TEXT NOT NULL,
     message TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS coverage (
+    source TEXT NOT NULL,
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    PRIMARY KEY (source, start_at)
+);
+CREATE TABLE IF NOT EXISTS backfill (
+    source TEXT PRIMARY KEY,
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    next_at TEXT NOT NULL,
+    error TEXT
+);
+CREATE TABLE IF NOT EXISTS sync_failures (
+    source TEXT PRIMARY KEY,
+    start_at TEXT,
+    end_at TEXT,
+    message TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workout_details (
+    record_key TEXT PRIMARY KEY,
+    fingerprint TEXT,
+    status TEXT NOT NULL,
+    retry_at TEXT
+);
+CREATE TABLE IF NOT EXISTS source_success (
+    source TEXT PRIMARY KEY,
+    checked_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS removed_routes (
+    record_key TEXT PRIMARY KEY
+);
 """
 
 
@@ -86,7 +118,8 @@ class Store:
             db.execute("INSERT INTO sync_errors(run_id, source, message) VALUES (?, ?, ?)",
                        (run_id, source, message))
 
-    def commit(self, run_id, source, rows, *, until=None, full_scan_at=None):
+    def commit(self, run_id, source, rows, *, until=None, full_scan_at=None,
+               interval=None, history_until=None, active_routes=None, details=(), checked_at=None):
         """Commit the records and cursor as one operation, including identical replay."""
         with self.connect() as db:
             saved = db.executemany("""
@@ -104,17 +137,97 @@ class Store:
                       scanned_until=max(cursors.scanned_until, excluded.scanned_until),
                       full_scan_at=coalesce(excluded.full_scan_at, cursors.full_scan_at)
                     """, (source, until, full_scan_at))
+            if interval is not None:
+                start, end = interval
+                previous = db.execute("""
+                    SELECT min(start_at), max(end_at) FROM coverage
+                    WHERE source=? AND start_at<=? AND end_at>=?
+                    """, (source, end, start)).fetchone()
+                db.execute("DELETE FROM coverage WHERE source=? AND start_at<=? AND end_at>=?",
+                           (source, end, start))
+                db.execute("INSERT INTO coverage VALUES (?, ?, ?)",
+                           (source, min(start, previous[0] or start), max(end, previous[1] or end)))
+            if history_until is not None:
+                db.execute("UPDATE backfill SET next_at=?, error=NULL WHERE source=?", (history_until, source))
+            if checked_at is not None:
+                db.execute("INSERT OR REPLACE INTO source_success VALUES (?, ?)", (source, checked_at))
+            db.executemany("INSERT OR REPLACE INTO workout_details VALUES (?, ?, ?, ?)", details)
+            if source == "routes":
+                db.executemany("DELETE FROM removed_routes WHERE record_key=?", ((key,) for key, _, _ in rows))
+            if active_routes is not None:
+                db.execute("""
+                    INSERT OR IGNORE INTO removed_routes
+                    SELECT record_key FROM records WHERE source='routes'
+                    """)
+                db.executemany("DELETE FROM removed_routes WHERE record_key=?", ((key,) for key in active_routes))
+
+    def coverage(self, source):
+        return self.query("SELECT start_at, end_at FROM coverage WHERE source=? ORDER BY start_at", (source,))
+
+    def failure(self, source, start, end, message):
+        with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO sync_failures VALUES (?, ?, ?, ?)", (source, start, end, message))
+
+    def clear_failure(self, source, interval=None):
+        with self.connect() as db:
+            if interval is None:
+                db.execute("DELETE FROM sync_failures WHERE source=?", (source,))
+            else:
+                db.execute("DELETE FROM sync_failures WHERE source=? AND (start_at IS NULL OR "
+                           "(start_at>=? AND end_at<=?))", (source, *interval))
+
+    def prepare_backfill(self, sources, start, end):
+        with self.connect() as db:
+            db.execute("DELETE FROM backfill")
+            db.executemany("INSERT INTO backfill VALUES (?, ?, ?, ?, NULL)",
+                           ((source, start, end, start) for source in sources))
+
+    def backfill_error(self, source, message):
+        with self.connect() as db:
+            db.execute("UPDATE backfill SET error=? WHERE source=?", (message, source))
+
+    def detail_state(self, key, fingerprint, status, retry_at=None):
+        with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO workout_details VALUES (?, ?, ?, ?)",
+                       (key, fingerprint, status, retry_at))
+
+    def detail_states(self, keys):
+        keys = tuple(keys)
+        placeholders = ",".join("?" for _ in keys)
+        return {row["record_key"]: row for row in self.query(
+            f"SELECT * FROM workout_details WHERE record_key IN ({placeholders})", keys)} if keys else {}
+
+    def details_due(self, at, limit):
+        return self.query("""
+            SELECT r.record_key, r.occurred_at, r.payload, d.fingerprint
+            FROM records r LEFT JOIN workout_details d USING(record_key)
+            WHERE r.source='workouts' AND
+                  (d.status='pending' AND (d.retry_at IS NULL OR d.retry_at<=?)
+                   OR d.status IS NULL AND json_type(r.payload, '$.summary') IS NOT 'object')
+            ORDER BY coalesce(d.retry_at, ''), r.occurred_at DESC LIMIT ?
+            """, (at, limit))
 
     def record(self, source, key):
         found = self.query("SELECT payload FROM records WHERE source=? AND record_key=?", (source, key))
         return json.loads(found[0]["payload"]) if found else None
 
     def status(self):
-        success = self.query("SELECT max(finished_at) AS at FROM sync_runs WHERE status='ok'")[0]["at"]
+        success = self.query("""
+            SELECT max(finished_at) AS at FROM sync_runs
+            WHERE status='ok' AND trigger NOT IN ('backfill', 'details')
+            """)[0]["at"]
         return {
             "last_success_at": success,
             "counts": {row["source"]: row["n"] for row in self.query(
                 "SELECT source, count(*) AS n FROM records GROUP BY source")},
             "runs": self.query("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 20"),
             "errors": self.query("SELECT * FROM sync_errors ORDER BY id DESC LIMIT 50"),
+            "backfill": self.query("SELECT * FROM backfill ORDER BY rowid"),
+            "failures": {r["source"]: r for r in self.query("SELECT * FROM sync_failures")},
+            "source_success": {r["source"]: r["checked_at"] for r in self.query("SELECT * FROM source_success")},
+            "sources": self.query("""
+                SELECT source, count(*) AS n, min(occurred_at) AS first, max(occurred_at) AS last
+                FROM records WHERE source!='routes' OR record_key NOT IN (SELECT record_key FROM removed_routes)
+                GROUP BY source
+                """),
         }

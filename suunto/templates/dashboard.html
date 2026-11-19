@@ -34,7 +34,7 @@
     </section>
 {% endif %}
 {% if show_period %}
-<p>最近 90 天。没有本地活动记录的日期或周显示为 0。</p>
+<p>最近 90 天。查完且没有活动记为 0。尚未确认覆盖或指标缺失时留空。按周查看时，部分覆盖的周仅统计已入库记录。</p>
 <div class="controls">
   <a class="button {% if weekly %}secondary{% endif %}" href="/training?period=day">按日</a>
   <a class="button {% if not weekly %}secondary{% endif %}" href="/training?period=week">按周</a>
@@ -53,6 +53,10 @@
   <button type="submit">筛选</button>
   <a class="button secondary" href="/activities?start=&amp;end=">全部日期</a>
 </form>
+<div class="controls">
+  {% for label, first in presets %}<a class="button secondary" href="/activities?start={{ first }}&amp;end={{ today }}">{{ label }}</a>{% endfor %}
+</div>
+{% if result_count is defined %}<p>共 {{ result_count }} 条活动</p>{% endif %}
 {% endif %}
 {% if charts is defined %}
 <script src="/static/chart.umd.min.js" defer></script>
@@ -86,9 +90,17 @@
 <section class="table-wrap">
   {% if rows %}
   <table>
-    <thead><tr>{% for heading in headings %}<th scope="col">{{ heading }}</th>{% endfor %}</tr></thead>
+    <thead><tr>{% for heading in headings %}<th scope="col">{{ heading }}</th>{% endfor %}
+      {% if activity_keys is defined %}<th scope="col">运动详情</th>{% endif %}
+    </tr></thead>
     <tbody>{% for row in rows %}<tr>
       {% for cell in row %}<td>{{ cell if cell is not none and cell != '' else '—' }}</td>{% endfor %}
+      {% if activity_keys is defined %}
+      <td><form method="post" action="/workout-details">
+        <input type="hidden" name="key" value="{{ activity_keys[loop.index0] }}">
+        <button>重新读取</button>
+      </form></td>
+      {% endif %}
       {% if route_maps is defined %}
       <td class="route-points" data-route="{{ row[0] or '' }}">
         {% for point in route_maps[loop.index0] %}
@@ -98,8 +110,15 @@
       {% endif %}
     </tr>{% endfor %}</tbody>
   </table>
+  {% if pages is defined and pages > 1 %}
+  <nav aria-label="活动分页">
+    {% if page > 1 %}<a href="/activities?start={{ start or '' }}&amp;end={{ end or '' }}&amp;page={{ page-1 }}">上一页</a>{% endif %}
+    <span>第 {{ page }} / {{ pages }} 页</span>
+    {% if page < pages %}<a href="/activities?start={{ start or '' }}&amp;end={{ end or '' }}&amp;page={{ page+1 }}">下一页</a>{% endif %}
+  </nav>
+  {% endif %}
   {% else %}
-  <p>暂无符合条件的记录。</p>
+  <p>{{ empty_message or '暂无符合条件的记录。' }}</p>
   {% endif %}
 </section>
 {% endif %}
@@ -107,18 +126,76 @@
 <section id="sync">
   <h2>同步</h2>
   <p>上次完整同步 {{ sync_status.last_success_at or '—' }}</p>
+  {% if sync_status.running %}
+  <p role="status">同步任务进行中{% if sync_status.current_source %} · {{ source_labels.get(sync_status.current_source, sync_status.current_source) }}{% endif %}。刷新本页可查看进度。</p>
+  {% endif %}
+  {% if sync_status.retry_after %}<p>Suunto 正在限流。约 {{ sync_status.retry_after }} 秒后可重试。</p>{% endif %}
   <div class="controls">
     <form method="post" action="/sync"><button>立即同步</button></form>
+    <form method="post" action="/workout-details"><button>补齐缺失的运动详情</button></form>
     <a href="/export.csv" class="button secondary">下载全部 CSV</a>
   </div>
+</section>
+<section class="table-wrap">
+  <h2>数据覆盖</h2>
+  <table>
+    <thead><tr><th>数据来源</th><th>已确认的查询范围（北京时间）</th><th>本地记录</th><th>同步状态</th></tr></thead>
+    <tbody>{% for source in sources %}
+    <tr><th scope="row">{{ source.label }}</th>
+      <td>{% for item in source.coverage %}<div>{{ item.start_at }} 至 {{ item.end_at }}</div>
+          {% else %}{% if source.name == 'routes' and source.cursor and source.cursor.full_scan_at %}
+          最近完整扫描 {{ source.cursor.full_scan_at }}{% else %}待确认{% endif %}{% endfor %}</td>
+      <td>{{ source.span.n if source.span else 0 }} 条
+        {% if source.span and source.span.first %}<div>{{ source.span.first[:10] }} 至 {{ source.span.last[:10] }}</div>{% endif %}</td>
+      <td>{% if source.failure %}{{ source.failure.message }}
+        {% if source.failure.start_at %}<div>{{ source.failure.start_at }} 至 {{ source.failure.end_at }}</div>{% endif %}
+        {% elif discovery.status == 'ready' and not source.available %}MCP 未公开此工具
+        {% elif source.cursor %}增量已处理至 {{ source.cursor.scanned_until }}{% else %}等待增量同步{% endif %}
+        {% if source.checked_at %}<div>最近成功查询 {{ source.checked_at }}</div>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table>
+</section>
+<section class="table-wrap">
+  <h2>历史补采</h2>
+  <p>补采运动、睡眠、恢复和日常活动。日期使用北京时间，包含结束当天。</p>
+  {% set pending = sync_status.backfill_pending %}
+  {% if sync_status.backfill %}
+  <table>
+    <thead><tr><th>数据来源</th><th>目标范围</th><th>当前进度</th></tr></thead>
+    <tbody>{% for item in sync_status.backfill %}<tr><th scope="row">{{ source_labels[item.source] }}</th>
+      <td>{{ item.start_at }} 至 {{ item.end_at }}</td>
+      <td>{% if item.next_at == item.end_at %}范围已处理{% else %}已处理至 {{ item.next_at }}{% endif %}
+      {% if item.error %}<div>{{ item.error }}</div>{% endif %}</td></tr>{% endfor %}</tbody>
+  </table>
+  {% endif %}
+  {% if sync_status.task == "backfill" %}
+  <form method="post" action="/backfill"><button name="mode" value="pause">暂停补采</button></form>
+  {% elif pending %}
+  <form method="post" action="/backfill" class="controls"><button name="mode" value="resume">继续上次补采</button></form>
+  {% endif %}
+  <form method="post" action="/backfill" class="controls">
+    <button name="mode" value="90">补采近 90 天</button>
+    <button name="mode" value="365">补采近一年</button>
+  </form>
+  <form method="post" action="/backfill" class="controls">
+    <label>开始日期<input name="start" type="date" required></label>
+    <label>结束日期<input name="end" type="date" required></label>
+    <button name="mode" value="custom">自定义补采</button>
+    {% if pending %}<button name="mode" value="replace">用此日期替换未完成的任务</button>{% endif %}
+  </form>
 </section>
 <section class="table-wrap">
   <h2>同步记录</h2>
   {% if sync_status.runs %}
   <table>
-    <thead><tr><th scope="col">开始</th><th scope="col">状态</th><th scope="col">处理</th><th scope="col">新增或更新</th></tr></thead>
+    <thead><tr><th scope="col">开始</th><th scope="col">类型</th><th scope="col">状态</th><th scope="col">处理</th><th scope="col">新增或更新</th></tr></thead>
     <tbody>{% for run in sync_status.runs %}
-      <tr><td>{{ run.started_at }}</td><td>{{ run.status }}</td><td>{{ run.received }}</td><td>{{ run.changed }}</td></tr>
+      <tr><td>{{ run.started_at }}</td>
+        <td>{{ {'backfill': '历史补采', 'details': '运动详情', 'web': '手动同步', 'scheduled': '定时同步',
+                'oauth': '授权后同步', 'cli': '命令行同步'}.get(run.trigger, run.trigger) }}</td>
+        <td>{{ {'paused': '已暂停', 'interrupted': '已中断', 'running': '进行中', 'partial': '部分完成',
+                'ok': '完成', 'failed': '失败', 'authorization_required': '等待授权'}.get(run.status, run.status) }}</td>
+        <td>{{ run.received }}</td><td>{{ run.changed }}</td></tr>
     {% endfor %}</tbody>
   </table>
   {% else %}<p>暂无同步记录。</p>{% endif %}

@@ -2,12 +2,14 @@ from datetime import date, datetime, timedelta
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 import unittest
+from unittest.mock import Mock
 
 from fastapi.testclient import TestClient
 
 from suunto.mcp import MCPError, NeedsAuthorization
-from suunto.store import Store
+from suunto.store import SCHEMA, Store
 from suunto.sync import SOURCES, Synchronizer, TZ
 from suunto.views import workout_chart
 from suunto.web import create_app
@@ -17,6 +19,10 @@ class SampleMCP:
     def __init__(self):
         self.calls = []
         self.fail_sleep = False
+        self.fail_detail = False
+        self.duration = 1500
+        self.fail_recovery_after = None
+        self.route_data = None
         self.no_auth = False
 
     def tools(self):
@@ -28,10 +34,12 @@ class SampleMCP:
         self.calls.append((name, args))
         stamp = "2026-11-16T21:00:00+08:00"
         window_covers_stamp = args.get("startDate", "") <= stamp < args.get("endDate", "z")
-        workout = {"workoutId": "workout-a", "startTime": stamp, "totalDistance": 5000, "totalTimeSeconds": 1500}
+        workout = {"workoutId": "workout-a", "startTime": stamp, "totalDistance": 5000, "totalTimeSeconds": self.duration}
         if name == "list_user_workouts":
             data = [workout, {"startTime": "invalid"}] if window_covers_stamp else []
         elif name == "get_workout_detail":
+            if self.fail_detail:
+                raise MCPError("详情暂时不可用。")
             data = {**workout, "summary": {"pte": 3}}
         elif name == "get_sleep_summary":
             if self.fail_sleep:
@@ -39,6 +47,8 @@ class SampleMCP:
             record = {"timestamp": stamp, "entryData": {"SleepId": 1, "Duration": 24000}}
             data = {"data": [record, record] if window_covers_stamp else []}
         elif name == "get_recovery_summary":
+            if self.fail_recovery_after and args["startDate"] >= self.fail_recovery_after:
+                raise MCPError("HTTP 429")
             data = {"data": [{"timestamp": stamp, "entryData": {"Balance": 0.3, "StressState": 0}}]
                     if window_covers_stamp else []}
         elif name == "get_daily_activity_summary":
@@ -52,6 +62,8 @@ class SampleMCP:
                      "endPoint": {"latitude": 30.52, "longitude": 120.57}},
                     {"routeId": "route-b", "description": "B",
                      "endPoint": {"latitude": 999, "longitude": 120.6}}]
+            if self.route_data is not None:
+                data = self.route_data(args)
         return {"content": [{"type": "text", "text": json.dumps(data)}]}
 
 
@@ -141,9 +153,101 @@ class SyncTest(unittest.TestCase):
     def test_training_includes_empty_days_and_weeks(self):
         first, last = date(2026, 11, 16), date(2026, 11, 24)
         entries = [("2026-11-17T09:00:00+08:00", {"totalDistance": 5000})]
-        distance, duration = workout_chart(entries, False, first, last)
-        self.assertEqual(distance["columns"]["距离"], [0, 5, 0, 0, 0, 0, 0, 0, 0])
+        coverage = [{"start_at": "2026-11-16T00:00:00+08:00", "end_at": "2026-11-23T00:00:00+08:00"}]
+        distance, duration = workout_chart(entries, False, first, last, coverage, TZ)
+        self.assertEqual(distance["columns"]["距离"], [0, 5, 0, 0, 0, 0, 0, None, None])
         self.assertEqual(duration["columns"]["时长"][:3], [0, None, 0])
-        distance, _ = workout_chart(entries, True, first, last)
-        self.assertEqual(distance["labels"], ["2026-11-16", "2026-11-23"])
-        self.assertEqual(distance["columns"]["距离"], [5, 0])
+        distance, _ = workout_chart(entries, True, first, last, coverage, TZ)
+        self.assertEqual(distance["labels"], ["2026-11-16", "2026-11-23（部分覆盖）"])
+        self.assertEqual(distance["columns"]["距离"], [5, None])
+
+    def test_backfill_resumes_from_persisted_window_without_moving_incremental_cursor(self):
+        self.sync.run("test", stop=self.stop)
+        cursor = self.store.cursor("recovery")
+        begin = datetime(2026, 10, 1, tzinfo=TZ)
+        finish = begin + timedelta(days=3)
+        self.mcp.fail_recovery_after = (begin + timedelta(days=1)).isoformat()
+        result = self.sync.run("backfill", history=(begin, finish))
+        self.assertEqual(result["status"], "partial")
+        jobs = {row["source"]: row for row in self.store.status()["backfill"]}
+        self.assertEqual(jobs["recovery"]["next_at"], self.mcp.fail_recovery_after)
+        self.assertEqual(jobs["workouts"]["next_at"], finish.isoformat())
+        self.mcp.calls.clear()
+        self.mcp.fail_recovery_after = None
+        self.store.initialize()
+        self.assertEqual(Synchronizer(self.mcp, self.store).run("backfill")["status"], "ok")
+        self.assertEqual(self.store.cursor("recovery"), cursor)
+        self.assertEqual([args["startDate"] for name, args in self.mcp.calls if name == "get_recovery_summary"],
+                         [(begin + timedelta(days=days)).isoformat() for days in (1, 2)])
+
+    def test_failed_detail_can_be_retried_after_leaving_the_overlap(self):
+        self.mcp.fail_detail = True
+        self.sync.run("test", stop=self.stop)
+        self.assertNotIn("summary", self.store.record("workouts", "workout-a"))
+        self.mcp.fail_detail = False
+        self.sync.run("details", detail_key="workout-a")
+        self.assertEqual(self.store.record("workouts", "workout-a")["summary"]["pte"], 3)
+        self.mcp.calls.clear()
+        self.mcp.duration = 1800
+        self.sync.run("test", stop=self.stop + timedelta(minutes=30))
+        self.assertTrue(any(name == "get_workout_detail" for name, _ in self.mcp.calls))
+
+    def test_route_reconciliation_only_after_clean_full_scan(self):
+        self.sync.run("test", stop=self.stop)
+        def paged(args):
+            if args["page"] == 0:
+                return [{"routeId": f"page-{i}"} for i in range(100)]
+            raise MCPError("分页中断")
+        self.mcp.route_data = paged
+        self.sync.run("test", stop=self.stop + timedelta(days=1))
+        self.assertFalse(self.store.query("SELECT * FROM removed_routes"))
+        self.mcp.route_data = lambda _: [{"routeId": "route-a"}]
+        self.sync.run("test", stop=self.stop + timedelta(days=1, minutes=1))
+        removed = {row["record_key"] for row in self.store.query("SELECT * FROM removed_routes")}
+        self.assertIn("route-b", removed)
+        self.assertNotIn("route-a", removed)
+
+    def test_existing_sqlite_database_adds_state_without_discarding_records(self):
+        with TemporaryDirectory() as directory:
+            store = Store(directory)
+            with store.connect() as db:
+                db.executescript(SCHEMA.split("CREATE TABLE IF NOT EXISTS coverage")[0])
+                db.execute("INSERT INTO records VALUES ('workouts', 'old', ?, '{}')", (self.stop.isoformat(),))
+            store.initialize()
+            self.assertEqual(store.record("workouts", "old"), {})
+            self.assertEqual(store.coverage("workouts"), [])
+            self.assertEqual(store.status()["backfill"], [])
+
+    def test_history_is_background_and_can_pause_between_windows(self):
+        entered, finish_request = Event(), Event()
+        fake = SampleMCP()
+        fake.http = Mock()
+        fake.mcp_sample = fake.sample
+
+        def wait_for_release(name, args, discovered):
+            entered.set()
+            if not finish_request.wait(5):
+                raise MCPError("模拟网络超时")
+            return fake.mcp_sample(name, args, discovered)
+
+        fake.sample = wait_for_release
+        with TestClient(create_app(self.store.path.parent, client=fake)) as browser:
+            try:
+                result = browser.post("/backfill", data={"mode": "custom", "start": "2020-01-01", "end": "2020-02-01"},
+                                      follow_redirects=False)
+                self.assertEqual(result.status_code, 303)
+                self.assertTrue(entered.wait(2))
+                status = browser.get("/api/status").json()
+                self.assertTrue(status["running"])
+                self.assertEqual(status["task"], "backfill")
+                self.assertEqual(browser.post("/api/sync").status_code, 409)
+                browser.post("/backfill", data={"mode": "pause"}, follow_redirects=False)
+            finally:
+                finish_request.set()
+            for _ in range(30):
+                status = browser.get("/api/status").json()
+                if not status["running"]:
+                    break
+                Event().wait(0.03)
+            self.assertEqual(status["runs"][0]["status"], "paused")
+            self.assertTrue(any(row["next_at"] < row["end_at"] for row in status["backfill"]))

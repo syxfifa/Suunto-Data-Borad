@@ -1,25 +1,49 @@
 """Build tables and chart series using fields observed in the official MCP payloads."""
 
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 import csv
 from io import StringIO
 import json
 import math
 
 
-def records(store, source, start=None, end=None):
+def record_filter(source, start=None, end=None):
     filters, parameters = ["source=?"], [source]
+    if source == "routes":
+        filters.append("record_key NOT IN (SELECT record_key FROM removed_routes)")
     if start is not None:
         filters.append("occurred_at>=?")
         parameters.append(start.isoformat())
     if end is not None:
         filters.append("occurred_at<?")
         parameters.append(end.isoformat())
-    where = " AND ".join(filters)
+    return " AND ".join(filters), parameters
+
+
+def records(store, source, start=None, end=None):
+    where, parameters = record_filter(source, start, end)
     rows = store.query(f"SELECT occurred_at, payload FROM records WHERE {where} ORDER BY occurred_at, record_key",
                        parameters)
     return [(row["occurred_at"], json.loads(row["payload"])) for row in rows]
+
+
+def workout_page(store, start, end, page, size=50):
+    where, parameters = record_filter("workouts", start, end)
+    count = store.query(f"SELECT count(*) AS n FROM records WHERE {where}", parameters)[0]["n"]
+    pages = max(1, (count + size - 1) // size)
+    page = min(page, pages)
+    rows = store.query(f"""
+        SELECT record_key, occurred_at, payload FROM records WHERE {where}
+        ORDER BY occurred_at DESC, record_key DESC LIMIT ? OFFSET ?
+        """, [*parameters, size, (page - 1) * size])
+    displayed = table_rows([(row["occurred_at"], json.loads(row["payload"])) for row in reversed(rows)], "workouts")
+    return count, page, pages, displayed, [row["record_key"] for row in rows]
+
+
+def covers(intervals, begin, end):
+    start, finish = begin.isoformat(), end.isoformat()
+    return any(row["start_at"] <= start and row["end_at"] >= finish for row in intervals)
 
 
 def numeric(value):
@@ -57,7 +81,7 @@ def route_map_points(entries):
     return points_by_route
 
 
-def workout_chart(entries, weekly, first_day, last_day):
+def workout_chart(entries, weekly, first_day, last_day, intervals, tz):
     grouped = defaultdict(lambda: [[], []])
     for at, row in entries:
         day = date.fromisoformat(at[:10])
@@ -66,16 +90,27 @@ def workout_chart(entries, weekly, first_day, last_day):
         metrics = grouped[day.isoformat()]
         for target, field, divisor in zip(metrics, ("totalDistance", "totalTimeSeconds"), (1000, 60)):
             value = numeric(row.get(field))
-            if value is not None:
-                target.append(value / divisor)
+            target.append(value / divisor if value is not None else None)
     step = 7 if weekly else 1
+    first_label = first_day
     if weekly:
-        first_day -= timedelta(days=first_day.weekday())
-    labels = [(first_day + timedelta(days=offset)).isoformat()
-              for offset in range(0, (last_day - first_day).days + 1, step)]
-    totals = [[0 if day not in grouped else
-               round(sum(grouped[day][index]), 2) if grouped[day][index] else None for day in labels]
-              for index in range(2)]
+        first_label -= timedelta(days=first_day.weekday())
+    labels = []
+    totals = [[], []]
+    for offset in range(0, (last_day - first_label).days + 1, step):
+        bucket = first_label + timedelta(days=offset)
+        start = max(first_day, bucket)
+        end = min(last_day + timedelta(days=1), bucket + timedelta(days=step))
+        covered = covers(intervals, datetime.combine(start, time.min, tz), datetime.combine(end, time.min, tz))
+        label = bucket.isoformat()
+        labels.append(f"{label}（部分覆盖）" if weekly and not covered else label)
+        metrics = grouped.get(label)
+        for index, column in enumerate(totals):
+            if not metrics:
+                column.append(0 if covered else None)
+            else:
+                values = metrics[index]
+                column.append(None if any(value is None for value in values) else round(sum(values), 2))
     return [chart("距离（公里）", labels, {"距离": totals[0]}, "bar"),
             chart("时长（分钟）", labels, {"时长": totals[1]}, "bar")]
 

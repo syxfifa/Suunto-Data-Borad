@@ -2,8 +2,9 @@
 
 from datetime import datetime, time, timedelta
 import json
+from hashlib import sha256
 import logging
-from threading import Lock
+from threading import Event, Lock
 from zoneinfo import ZoneInfo
 
 from .mcp import MCPError, NeedsAuthorization
@@ -44,6 +45,8 @@ def nonempty(value):
 
 def unpack(result, expected):
     """The live MCP returns JSON inside a text block. Accept structured JSON as well."""
+    if result.get("isError") is True:
+        raise MCPError("MCP 工具返回错误。")
     candidates = [result.get("structuredContent")]
     for block in result.get("content", []):
         if isinstance(block, dict) and block.get("type") == "text":
@@ -86,8 +89,11 @@ class Synchronizer:
         self.mcp = mcp
         self.store = store
         self.lock = Lock()
+        self.stopping = Event()
+        self.pause_history = Event()
+        self.current_source = None
 
-    def run(self, trigger, *, stop=None):
+    def run(self, trigger, *, stop=None, history=None, detail_key=None):
         if not self.lock.acquire(blocking=False):
             return None
         run_id = None
@@ -95,27 +101,53 @@ class Synchronizer:
         try:
             stop = stop or now()
             run_id = self.store.start(trigger, stop.isoformat())
+            if history is not None:
+                self.store.prepare_backfill(
+                    (source for source, (_, chunk) in SOURCES.items() if chunk is not None),
+                    *(bound.isoformat() for bound in history),
+                )
             names = {tool["name"] for tool in self.mcp.tools()}
+            if trigger == "backfill":
+                status = self.backfill(run_id, names)
+                return {"run_id": run_id, "status": status}
+            if trigger == "details":
+                failures = self.fill_details(run_id, names, detail_key)
+                status = "interrupted" if self.stopping.is_set() else "partial" if failures else "ok"
+                return {"run_id": run_id, "status": status}
             failures = 0
             for source, (tool, chunk) in SOURCES.items():
+                self.current_source = source
+                if self.stopping.is_set():
+                    status = "interrupted"
+                    return {"run_id": run_id, "status": status}
                 if tool not in names:
+                    self.store.failure(source, None, None, "MCP 未公开此工具。")
                     self.log_error(run_id, source, f"未探测到 {tool}，已跳过。")
                     failures += 1
                     continue
                 try:
                     if source == "routes":
-                        self.routes(run_id, tool, stop, names)
+                        if self.routes(run_id, tool, stop, names):
+                            self.store.clear_failure(source)
                     else:
                         self.windows(run_id, source, tool, chunk, stop, names)
                 except NeedsAuthorization:
                     raise
                 except (MCPError, ValueError) as exc:
+                    if source == "routes":
+                        self.store.failure(source, None, None, str(exc))
                     self.log_error(run_id, source, str(exc))
                     failures += 1
-            if self.store.query("SELECT 1 FROM sync_errors WHERE run_id=? LIMIT 1", (run_id,)):
+            if "get_workout_detail" in names and not self.stopping.is_set():
+                self.fill_details(run_id, names)
+            if self.stopping.is_set():
+                status = "interrupted"
+            elif self.store.query("SELECT 1 FROM sync_errors WHERE run_id=? LIMIT 1", (run_id,)):
                 status = "failed" if failures == len(SOURCES) else "partial"
             else:
                 status = "ok"
+        except InterruptedError:
+            status = "paused" if trigger == "backfill" and not self.stopping.is_set() else "interrupted"
         except MCPError as exc:
             self.log_error(run_id, "mcp", str(exc))
             status = "authorization_required" if isinstance(exc, NeedsAuthorization) else "failed"
@@ -124,6 +156,7 @@ class Synchronizer:
                 if run_id is not None:
                     self.store.finish(run_id, now().isoformat(), status)
             finally:
+                self.current_source = None
                 self.lock.release()
         return {"run_id": run_id, "status": status}
 
@@ -137,12 +170,52 @@ class Synchronizer:
                  else stop - timedelta(days=28))
         if source == "daily_activity":
             start = datetime.combine(start.date(), time.min, TZ)
-        while start < stop:
+        while start < stop and not self.stopping.is_set():
             end = min(start + chunk, stop)
-            self.window(run_id, source, tool, start, end, names)
+            try:
+                clean = self.window(run_id, source, tool, start, end, names)
+            except (MCPError, ValueError) as exc:
+                self.store.failure(source, start.isoformat(), end.isoformat(), str(exc))
+                raise
+            interval = (start.isoformat(), end.isoformat())
+            if clean:
+                self.store.clear_failure(source, interval)
+            else:
+                self.store.failure(source, *interval, "部分记录无法解析，此窗口未确认覆盖。")
             start = end
 
-    def window(self, run_id, source, tool, start, stop, names):
+    def backfill(self, run_id, names):
+        failures = 0
+        jobs = self.store.query("SELECT * FROM backfill WHERE next_at<end_at ORDER BY rowid")
+        for job in jobs:
+            source = job["source"]
+            self.current_source = source
+            tool, chunk = SOURCES[source]
+            start = datetime.fromisoformat(job["next_at"])
+            stop = datetime.fromisoformat(job["end_at"])
+            try:
+                if tool not in names:
+                    raise MCPError(f"MCP 未公开 {tool}。")
+                while start < stop:
+                    end = min(start + chunk, stop)
+                    if not self.window(run_id, source, tool, start, end, names, historical=True):
+                        raise MCPError("部分记录无法解析，补采保留在待重试窗口。")
+                    start = end
+            except (MCPError, ValueError) as exc:
+                self.store.backfill_error(source, str(exc))
+                self.log_error(run_id, source, str(exc))
+                failures += 1
+                if isinstance(exc, NeedsAuthorization):
+                    raise
+            if self.stopping.is_set():
+                return "interrupted"
+        return "partial" if failures or self.store.query(
+            "SELECT 1 FROM sync_errors WHERE run_id=? LIMIT 1", (run_id,)
+        ) else "ok"
+
+    def window(self, run_id, source, tool, start, stop, names, *, historical=False):
+        if self.stopping.is_set() or (historical and self.pause_history.is_set()):
+            raise InterruptedError
         args = {"startDate": start.isoformat(), "endDate": stop.isoformat()}
         if source == "workouts":
             args["limit"] = 100
@@ -154,16 +227,29 @@ class Synchronizer:
             if span <= 1:
                 raise MCPError("运动查询在一秒窗口仍达到 100 条上限。")
             middle = start + timedelta(seconds=span // 2)
-            self.window(run_id, source, tool, start, middle, names)
-            self.window(run_id, source, tool, middle, stop, names)
-            return
+            left = self.window(run_id, source, tool, start, middle, names, historical=historical)
+            if historical and not left:
+                return False
+            right = self.window(run_id, source, tool, middle, stop, names, historical=historical)
+            return left and right
+        errors = self.store.query("SELECT max(id) AS id FROM sync_errors WHERE run_id=?", (run_id,))[0]["id"]
         if source == "daily_activity":
             rows = list(self.daily_rows(run_id, records))
         else:
-            rows = list(self.rows(run_id, source, records, names))
-        self.store.commit(run_id, source, rows, until=stop.isoformat())
+            rows = list(self.rows(run_id, source, records))
+        clean = not self.store.query(
+            "SELECT 1 FROM sync_errors WHERE id>? AND run_id=? LIMIT 1", (errors or 0, run_id)
+        )
+        details = []
+        if listed:
+            rows, details = self.merge_workout_list(rows)
+        self.store.commit(run_id, source, rows, until=None if historical else args["endDate"],
+                          history_until=args["endDate"] if historical and clean else None,
+                          interval=(args["startDate"], args["endDate"]) if clean else None,
+                          details=details, checked_at=now().isoformat() if clean else None)
+        return clean
 
-    def rows(self, run_id, source, records, names):
+    def rows(self, run_id, source, records):
         for position, item in enumerate(records, 1):
             try:
                 key, date, data = entry_row(source, item)
@@ -171,27 +257,55 @@ class Synchronizer:
             except (ValueError, TypeError, OverflowError):
                 self.log_error(run_id, source, f"第 {position} 条记录无效，已跳过。")
                 continue
-            if source == "workouts":
-                data = self.workout_detail(run_id, names, key, data)
             yield key, date, data
 
-    def workout_detail(self, run_id, names, key, data):
+    def merge_workout_list(self, rows):
+        details = []
+        merged = []
+        states = self.store.detail_states(key for key, _, _ in rows)
+        for key, at, data in rows:
+            stored = self.store.record("workouts", key) or {}
+            fingerprint = sha256(encode(data).encode()).hexdigest()
+            state = states.get(key)
+            if not state or state["fingerprint"] != fingerprint:
+                unchanged_legacy = (not state and isinstance(stored.get("summary"), dict)
+                                    and all(stored.get(field) == value for field, value in data.items()))
+                details.append((key, fingerprint, "ready" if unchanged_legacy else "pending", None))
+            merged.append((key, at, {**stored, **data}))
+        return merged, details
+
+    def fill_details(self, run_id, names, key=None):
+        self.current_source = "workout_details"
         if "get_workout_detail" not in names:
-            return data
-        stored = self.store.record("workouts", key) or {}
-        if isinstance(stored.get("summary"), dict):
-            return {**stored, **data}
-        try:
-            detail = unpack(self.mcp.sample("get_workout_detail", {"workoutId": key}, names), dict)
-            if detail.get("workoutId") != key:
-                raise MCPError("详情返回的 workoutId 不匹配。")
-            encode(detail)
-            return {**data, **detail}
-        except NeedsAuthorization:
-            raise
-        except (MCPError, ValueError, TypeError):
-            self.log_error(run_id, "workouts", "单条运动详情未能读取，已保留列表字段。")
-            return data
+            self.log_error(run_id, "workout_details", "MCP 未公开运动详情工具。")
+            return True
+        if key is None:
+            rows = self.store.details_due(now().isoformat(), 25)
+        else:
+            rows = self.store.query("""
+                SELECT r.record_key, r.occurred_at, r.payload, d.fingerprint
+                FROM records r LEFT JOIN workout_details d USING(record_key)
+                WHERE r.source='workouts' AND r.record_key=?
+                """, (key,))
+        failed = False
+        for row in rows:
+            if self.stopping.is_set():
+                raise InterruptedError
+            key, fingerprint = row["record_key"], row["fingerprint"]
+            try:
+                detail = unpack(self.mcp.sample("get_workout_detail", {"workoutId": key}, names), dict)
+                if detail.get("workoutId") != key:
+                    raise MCPError("详情返回的 workoutId 不匹配。")
+                at = timestamp(detail["startTime"]) if detail.get("startTime") else row["occurred_at"]
+                data = {**json.loads(row["payload"]), **detail}
+                self.store.commit(run_id, "workouts", [(key, at, data)], details=[(key, fingerprint, "ready", None)])
+            except NeedsAuthorization:
+                raise
+            except (MCPError, ValueError, TypeError, OverflowError) as exc:
+                failed = True
+                self.store.detail_state(key, fingerprint, "pending", (now() + timedelta(minutes=30)).isoformat())
+                self.log_error(run_id, "workout_details", f"详情未能读取，已保留列表字段。{exc}")
+        return failed
 
     def daily_rows(self, run_id, series):
         for stream in series:
@@ -220,7 +334,8 @@ class Synchronizer:
                         self.log_error(run_id, "daily_activity", "日常活动采样无效，已跳过。")
 
     def routes(self, run_id, tool, stop, names):
-        seen = set()
+        active = set()
+        complete = True
         cursor = self.store.cursor("routes")
         full_at = cursor["full_scan_at"] if cursor else None
         full = not full_at or stop - datetime.fromisoformat(full_at) >= timedelta(days=1)
@@ -228,16 +343,22 @@ class Synchronizer:
         if not full:
             args["sinceDate"] = (datetime.fromisoformat(cursor["scanned_until"]) - OVERLAP).isoformat()
         page = 0
-        while True:
+        while not self.stopping.is_set():
             items = unpack(self.mcp.sample(tool, {**args, "page": page}, names), list)
-            rows = list(self.rows(run_id, "routes", items, names))
+            rows = list(self.rows(run_id, "routes", items))
             identifiers = tuple(key for key, _, _ in rows)
-            if identifiers and identifiers in seen:
+            if active.intersection(identifiers) or len(set(identifiers)) != len(identifiers):
                 raise MCPError("路线分页返回重复数据，游标未推进。")
-            seen.add(identifiers)
+            active.update(identifiers)
+            complete = complete and len(rows) == len(items)
             last_page = len(items) < args["size"]
-            self.store.commit(run_id, "routes", rows, until=stop.isoformat() if last_page else None,
-                              full_scan_at=stop.isoformat() if last_page and full else None)
+            reconciled = last_page and full and complete
+            self.store.commit(run_id, "routes", rows, until=stop.isoformat() if last_page and complete else None,
+                              full_scan_at=stop.isoformat() if reconciled else None,
+                              active_routes=active if reconciled else None,
+                              checked_at=now().isoformat() if last_page and complete else None)
             if last_page:
-                return
+                if not complete:
+                    self.store.failure("routes", None, None, "部分路线无法解析，已保留以前的路线。")
+                return complete
             page += 1

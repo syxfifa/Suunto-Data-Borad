@@ -6,12 +6,14 @@ from datetime import date, datetime, time as clock_time, timedelta
 from ipaddress import ip_address
 import json
 import logging
+from math import ceil
 from pathlib import Path
 import re
+from time import monotonic
 from typing import Annotated
 from urllib.parse import urlsplit
 
-from fastapi import Cookie, FastAPI, Form, HTTPException, Request
+from fastapi import Cookie, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -21,8 +23,8 @@ from starlette.background import BackgroundTask
 from .mcp import AUTHORIZATION_TIMEOUT, Client, MCPError, NeedsAuthorization, READ_TOOLS
 from .config import Config
 from .store import Store
-from .sync import Synchronizer, TZ
-from .views import csv_cells, daily_charts, records, route_map_points, summary_chart, table_rows, workout_chart
+from .sync import SOURCES, Synchronizer, TZ
+from .views import covers, csv_cells, daily_charts, records, route_map_points, summary_chart, table_rows, workout_chart, workout_page
 
 
 TEMPLATES = Jinja2Templates(directory=Path(__file__).with_name("templates"))
@@ -31,6 +33,8 @@ NO_CACHE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 # Browsers can send Origin: null on a form POST from a no-referrer page.
 HOME_HEADERS = {**NO_CACHE, "Referrer-Policy": "same-origin"}
 DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+SOURCE_LABELS = dict(workouts="运动活动", sleep="睡眠", recovery="恢复", daily_activity="日常活动",
+                     routes="保存路线", workout_details="运动详情")
 
 
 def dashboard_callback(request):
@@ -96,6 +100,26 @@ def create_app(data_dir=None, *, client=None):
     sync = Synchronizer(mcp, store)
     config = Config(data_dir)
     discovery = {"status": "probing", "tools": [], "checked_at": None, "message": None}
+    task = None
+    task_name = None
+
+    def submit(trigger, **options):
+        nonlocal task, task_name
+        if sync.stopping.is_set() or sync.lock.locked() or (task and not task.done()):
+            return None
+        if trigger == "backfill":
+            sync.pause_history.clear()
+
+        async def work():
+            try:
+                return await asyncio.to_thread(sync.run, trigger, **options)
+            except Exception:
+                LOG.exception("Synchronization task failed")
+                return {"status": "failed"}
+
+        task_name = trigger
+        task = asyncio.create_task(work())
+        return task
 
     def probe():
         try:
@@ -113,6 +137,7 @@ def create_app(data_dir=None, *, client=None):
     async def lifespan(_):
         # Serve the authorization page even while the first network probe waits.
         logging.getLogger("httpx").setLevel(logging.WARNING)
+        sync.stopping.clear()
         store.initialize()
         startup = asyncio.create_task(asyncio.to_thread(probe))
         schedule_changed = asyncio.Event()
@@ -126,18 +151,18 @@ def create_app(data_dir=None, *, client=None):
                     await asyncio.wait_for(schedule_changed.wait(), timeout=config.load() * 60)
                     schedule_changed.clear()
                 except asyncio.TimeoutError:
-                    try:
-                        await asyncio.to_thread(sync.run, "scheduled")
-                    except Exception:
-                        LOG.exception("Scheduled synchronization failed")
+                    submit("scheduled")
 
         scheduler = asyncio.create_task(schedule())
         try:
             yield
         finally:
             stopping = True
+            sync.stopping.set()
             schedule_changed.set()
             await scheduler
+            if task is not None:
+                await task
             mcp.http.close()
 
     app = FastAPI(title="Suunto 内网看板", lifespan=lifespan)
@@ -145,12 +170,13 @@ def create_app(data_dir=None, *, client=None):
 
     @app.get("/")
     def index(request: Request):
-        status = store.status()
         today = datetime.now(TZ)
         overview = []
-        if "workouts" in status["counts"]:
+        intervals = store.coverage("workouts")
+        if store.query("SELECT 1 FROM records WHERE source='workouts' LIMIT 1") or intervals:
             for days in (7, 28):
-                start = (today - timedelta(days=days)).isoformat(timespec="seconds")
+                start = datetime.combine(today.date() - timedelta(days=days-1), clock_time.min, TZ)
+                covered = covers(intervals, start, datetime.combine(today.date(), clock_time.min, TZ))
                 row = store.query("""
                     SELECT count(*) AS n,
                            sum(CASE WHEN json_type(payload,'$.totalDistance') IN ('real','integer')
@@ -158,8 +184,8 @@ def create_app(data_dir=None, *, client=None):
                            sum(CASE WHEN json_type(payload,'$.totalTimeSeconds') IN ('real','integer')
                                     THEN json_extract(payload,'$.totalTimeSeconds') END) / 3600.0 AS hours
                     FROM records WHERE source='workouts' AND occurred_at>=?
-                    """, (start,))[0]
-                overview.append({"days": days, **row})
+                    """, (start.isoformat(),))[0]
+                overview.append({"days": days, "covered": covered, **row})
         return TEMPLATES.TemplateResponse(
             request=request, name="discovery.html",
             context={"overview": overview},
@@ -248,21 +274,64 @@ def create_app(data_dir=None, *, client=None):
 
     @app.get("/api/status")
     def sync_status():
-        return {"running": sync.lock.locked(), **store.status()}
+        active = bool(task and not task.done())
+        return {"running": active or sync.lock.locked(), "task": task_name if active else None,
+                "current_source": sync.current_source,
+                "retry_after": max(0, ceil(getattr(mcp, "cooldown", 0) - monotonic())), **store.status()}
 
     @app.post("/api/sync")
-    def api_sync():
-        result = sync.run("cli")
-        if result is None:
+    async def api_sync():
+        job = submit("cli")
+        if job is None:
             raise HTTPException(409, "已有同步任务在运行。")
-        return result
+        return await asyncio.shield(job)
 
     @app.post("/sync")
-    def browser_sync(request: Request):
-        result = sync.run("web")
-        if result is None:
-            return settings_page(request, message="已有同步任务在运行。")
-        return RedirectResponse("/settings", status_code=303, headers=NO_CACHE)
+    async def browser_sync():
+        return sync_redirect(submit("web"))
+
+    def sync_redirect(job):
+        target = "/settings?job=started#sync" if job else "/settings?job=busy#sync"
+        return RedirectResponse(target, status_code=303, headers=NO_CACHE)
+
+    @app.post("/backfill")
+    async def backfill(request: Request, mode: Annotated[str, Form()] = "",
+                       start: Annotated[str, Form()] = "", end: Annotated[str, Form()] = ""):
+        if mode == "pause":
+            if task_name == "backfill" and task and not task.done():
+                sync.pause_history.set()
+            return RedirectResponse("/settings?job=pause#sync", status_code=303, headers=NO_CACHE)
+        pending = bool(store.query("SELECT 1 FROM backfill WHERE next_at<end_at LIMIT 1"))
+        if mode == "resume":
+            if not pending:
+                return settings_page(request, message="当前没有待继续的历史补采。")
+            return sync_redirect(submit("backfill"))
+        if pending and mode != "replace":
+            return settings_page(request, message="已有未完成的历史补采，请继续或明确替换。")
+        today = datetime.now(TZ).date()
+        try:
+            if mode in ("90", "365"):
+                first, last = today - timedelta(days=int(mode) - 1), today
+            elif mode in ("custom", "replace"):
+                first, last = date.fromisoformat(start.strip()), date.fromisoformat(end.strip())
+            else:
+                raise ValueError
+            if not first <= last <= today:
+                raise ValueError
+        except ValueError:
+            return settings_page(request, message="请输入有效的补采范围，结束日期不能晚于今天。")
+        begin = datetime.combine(first, clock_time.min, TZ)
+        finish = min(datetime.now(TZ).replace(microsecond=0),
+                     datetime.combine(last + timedelta(days=1), clock_time.min, TZ))
+        if begin >= finish:
+            return settings_page(request, message="所选时间范围尚无可查询时段。")
+        return sync_redirect(submit("backfill", history=(begin, finish)))
+
+    @app.post("/workout-details")
+    async def refresh_details(key: Annotated[str, Form()] = ""):
+        if key and store.record("workouts", key) is None:
+            raise HTTPException(404, "该活动不在本地数据库中。")
+        return sync_redirect(submit("details", detail_key=key or None))
 
     def dashboard(request, title, **context):
         return TEMPLATES.TemplateResponse(request=request, name="dashboard.html",
@@ -278,10 +347,13 @@ def create_app(data_dir=None, *, client=None):
         today = datetime.now(TZ).date()
         first_day = today - timedelta(days=89)
         return dashboard(request, "训练趋势", show_period=True, weekly=weekly,
-                         charts=workout_chart(recent("workouts", 90), weekly, first_day, today))
+                         charts=workout_chart(recent("workouts", 90), weekly, first_day, today,
+                                              store.coverage("workouts"), TZ))
 
     @app.get("/activities")
-    def workouts(request: Request, start: str = "", end: str = ""):
+    def workouts(request: Request, start: str = "", end: str = "",
+                 page: Annotated[int, Query(ge=1)] = 1):
+        today = datetime.now(TZ).date()
         activity_span = store.query(
             "SELECT min(occurred_at) AS first, max(occurred_at) AS last FROM records WHERE source='workouts'"
         )[0]
@@ -289,7 +361,10 @@ def create_app(data_dir=None, *, client=None):
             SELECT DISTINCT substr(occurred_at, 1, 10) AS day FROM records
             WHERE source='workouts' AND occurred_at IS NOT NULL ORDER BY day DESC LIMIT 90
         """)
-        filters = {"filters": True, "activity_span": activity_span, "available_days": available_days}
+        presets = [(f"近 {days} 天", (today - timedelta(days=days-1)).isoformat()) for days in (7, 28, 90)]
+        presets.append(("本月", today.replace(day=1).isoformat()))
+        filters = {"filters": True, "activity_span": activity_span, "available_days": available_days,
+                   "presets": presets, "today": today}
         start, end = start.strip(), end.strip()
         try:
             first = date.fromisoformat(start.replace("/", "-")) if start else None
@@ -300,12 +375,26 @@ def create_app(data_dir=None, *, client=None):
             return dashboard(request, "运动活动", **filters, start=start, end=end,
                              message="请选择有效的日期（YYYY-MM-DD），结束日期应等于或晚于开始日期。")
         if first is None and last is None and not {"start", "end"}.intersection(request.query_params):
-            first = datetime.now(TZ).date() - timedelta(days=27)
+            first = today - timedelta(days=27)
         begin = datetime.combine(first, clock_time.min, TZ) if first else None
         finish = datetime.combine(last + timedelta(days=1), clock_time.min, TZ) if last else None
+        count, page, pages, rows, keys = workout_page(store, begin, finish, page)
+        summary = None
+        if count == 0:
+            failure = store.query("SELECT * FROM sync_failures WHERE source='workouts'")
+            match = failure and (not failure[0]["start_at"] or (
+                (not finish or failure[0]["start_at"] < finish.isoformat())
+                and (not begin or failure[0]["end_at"] > begin.isoformat())))
+            if match:
+                summary = "这段日期的运动同步遇到问题，请查看设置中的同步状态。"
+            elif begin and covers(store.coverage("workouts"), begin, finish or datetime.now(TZ)):
+                summary = "Suunto 在这段已查询范围内没有返回活动。"
+            else:
+                summary = "本地没有匹配记录，所选范围尚未确认完整。可到设置发起历史补采。"
         return dashboard(request, "运动活动", **filters, start=first, end=last,
                          headings=("北京时间", "运动类型", "距离（km）", "时长（分钟）", "平均心率", "训练效果 PTE"),
-                         rows=table_rows(records(store, "workouts", begin, finish), "workouts"))
+                         rows=rows, activity_keys=keys, result_count=count, page=page, pages=pages,
+                         empty_message=summary)
 
     @app.get("/sleep-recovery")
     def sleep_recovery(request: Request):
@@ -330,16 +419,28 @@ def create_app(data_dir=None, *, client=None):
         return RedirectResponse("/settings#sync", status_code=303, headers=NO_CACHE)
 
     def settings_page(request, *, saved=False, message=None, oauth_error=None):
+        status = sync_status()
+        status["backfill_pending"] = any(row["next_at"] < row["end_at"] for row in status["backfill"])
+        spans = {row["source"]: row for row in status["sources"]}
+        sources = [{"name": name, "label": SOURCE_LABELS[name], "span": spans.get(name),
+                    "coverage": store.coverage(name), "cursor": store.cursor(name),
+                    "checked_at": status["source_success"].get(name),
+                    "failure": status["failures"].get(name),
+                    "available": any(tool["name"] == meta[0] for tool in discovery["tools"])}
+                   for name, meta in SOURCES.items()]
         return TEMPLATES.TemplateResponse(
             request=request, name="dashboard.html",
             context={"title": "设置", "saved": saved, "message": message, "oauth_error": oauth_error,
-                     "settings_minutes": config.load(), "discovery": discovery, "sync_status": sync_status()},
+                     "settings_minutes": config.load(), "discovery": discovery, "sync_status": status,
+                     "sources": sources, "source_labels": SOURCE_LABELS},
             headers=NO_CACHE if request.url.path == "/oauth/callback" else HOME_HEADERS,
         )
 
     @app.get("/settings")
-    def settings(request: Request, saved: bool = False, authorized: bool = False, refresh_required: bool = False):
-        message = None
+    def settings(request: Request, saved: bool = False, authorized: bool = False, refresh_required: bool = False,
+                 job: str = ""):
+        message = {"started": "任务已提交。", "busy": "已有同步任务运行中，请稍后重试。",
+                   "pause": "已请求暂停，当前请求结束后会保留补采进度。"}.get(job)
         if authorized and mcp.credential().get("access_token"):
             message = "Suunto 授权成功，已安排同步。"
             if refresh_required:

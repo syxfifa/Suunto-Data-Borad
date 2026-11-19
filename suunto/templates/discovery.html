@@ -8,6 +8,7 @@
         {% for item in overview %}
         <article>
           <h3>近 {{ item.days }} 天</h3>
+          {% if not item.covered %}<p>部分日期尚未确认覆盖，以下为本地记录统计。</p>{% endif %}
           <dl>
             <div><dt>活动次数</dt><dd>{{ item.n }}</dd></div>
             <div><dt>总距离</dt><dd>{{ '%.1f km'|format(item.km) if item.km is not none else '—' }}</dd></div>

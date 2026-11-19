@@ -11,8 +11,30 @@
   </form>
   <p>时区 Asia/Shanghai</p>
 </section>
+    <section>
+      <h2>MCP 连接状态</h2>
+      {% if discovery.status == 'ready' %}<p>已读取 {{ discovery.tools|length }} 个工具。</p>
+      {% elif discovery.status == 'probing' %}<p>正在探测。稍后刷新页面。</p>
+      {% else %}<p>{{ discovery.message or '等待授权。' }}</p>{% endif %}
+      {% if discovery.checked_at %}<p>探测时间 {{ discovery.checked_at }}</p>{% endif %}
+      <form method="post" action="/probe"><button>重新探测</button></form>
+      {% if discovery.tools %}
+      <ul>{% for tool in discovery.tools %}<li><code>{{ tool.name }}</code></li>{% endfor %}</ul>
+      {% endif %}
+    </section>
+    <section>
+      <h2>Suunto 授权</h2>
+      {% if oauth_error %}<p role="alert">{{ oauth_error }}</p>{% endif %}
+      {% if request.url.path == '/oauth/callback' %}
+      <a href="/settings">返回设置重新连接 Suunto</a>
+      {% else %}
+      <form method="post" action="/oauth/start"><button>连接 Suunto</button></form>
+      {% endif %}
+      <p>完成 Suunto 授权后，浏览器会返回当前看板并开始同步。</p>
+    </section>
 {% endif %}
 {% if show_period %}
+<p>最近 90 天。没有本地活动记录的日期或周显示为 0。</p>
 <div class="controls">
   <a class="button {% if weekly %}secondary{% endif %}" href="/training?period=day">按日</a>
   <a class="button {% if not weekly %}secondary{% endif %}" href="/training?period=week">按周</a>
@@ -22,7 +44,8 @@
 <form method="get" action="/activities" class="controls">
   <label>开始日期<input name="start" type="date" value="{{ start or '' }}"></label>
   <label>结束日期<input name="end" type="date" value="{{ end or '' }}"></label>
-  <button>筛选</button>
+  <button type="submit">筛选</button>
+  <a class="button secondary" href="/activities?start=&amp;end=">全部日期</a>
 </form>
 {% endif %}
 {% if charts is defined %}
@@ -42,6 +65,14 @@
   {% endfor %}
 </div>
 {% endif %}
+{% if route_maps is defined and route_maps|select|list %}
+<p>路线地图展示 Suunto 提供的位置点。点击地点才会连接 OpenStreetMap，向其发送该点坐标。</p>
+<script src="/static/route-map.js" defer></script>
+<section id="route-map" hidden>
+  <h2>路线位置</h2>
+  <iframe title="OpenStreetMap 路线位置" referrerpolicy="no-referrer"></iframe>
+</section>
+{% endif %}
 {% if headings %}
 <section class="table-wrap">
   {% if rows %}
@@ -49,6 +80,13 @@
     <thead><tr>{% for heading in headings %}<th scope="col">{{ heading }}</th>{% endfor %}</tr></thead>
     <tbody>{% for row in rows %}<tr>
       {% for cell in row %}<td>{{ cell if cell is not none and cell != '' else '—' }}</td>{% endfor %}
+      {% if route_maps is defined %}
+      <td>
+        {% for point in route_maps[loop.index0] %}
+        <button type="button" class="map-point" data-lat="{{ point.lat }}" data-lon="{{ point.lon }}">{{ point.label }}</button>
+        {% else %}暂无位置点{% endfor %}
+      </td>
+      {% endif %}
     </tr>{% endfor %}</tbody>
   </table>
   {% else %}
@@ -57,7 +95,8 @@
 </section>
 {% endif %}
 {% if sync_status %}
-<section>
+<section id="sync">
+  <h2>同步</h2>
   <p>上次完整同步 {{ sync_status.last_success_at or '—' }}</p>
   <div class="controls">
     <form method="post" action="/sync"><button>立即同步</button></form>

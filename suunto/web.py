@@ -22,7 +22,7 @@ from .mcp import AUTHORIZATION_TIMEOUT, Client, MCPError, NeedsAuthorization, RE
 from .config import Config
 from .store import Store
 from .sync import Synchronizer, TZ
-from .views import csv_cells, daily_charts, records, summary_chart, table_rows, workout_chart
+from .views import csv_cells, daily_charts, records, route_map_points, summary_chart, table_rows, workout_chart
 
 
 TEMPLATES = Jinja2Templates(directory=Path(__file__).with_name("templates"))
@@ -143,7 +143,8 @@ def create_app(data_dir=None, *, client=None):
     app = FastAPI(title="Suunto 内网看板", lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
 
-    def page(request, *, message=None, oauth_error=None):
+    @app.get("/")
+    def index(request: Request):
         status = store.status()
         today = datetime.now(TZ)
         overview = []
@@ -161,19 +162,9 @@ def create_app(data_dir=None, *, client=None):
                 overview.append({"days": days, **row})
         return TEMPLATES.TemplateResponse(
             request=request, name="discovery.html",
-            context={"discovery": discovery, "message": message, "oauth_error": oauth_error,
-                     "sync_status": status, "overview": overview},
-            headers=HOME_HEADERS if request.url.path != "/oauth/callback" else NO_CACHE,
+            context={"overview": overview},
+            headers=NO_CACHE,
         )
-
-    @app.get("/")
-    def index(request: Request, authorized: bool = False, refresh_required: bool = False):
-        message = None
-        if authorized and mcp.credential().get("access_token"):
-            message = "Suunto 授权成功，已安排同步。请在「同步状态」查看进度。"
-            if refresh_required:
-                message += " 本次授权未返回刷新令牌，到期后需重新授权。"
-        return page(request, message=message)
 
     @app.get("/healthz")
     def health():
@@ -190,7 +181,7 @@ def create_app(data_dir=None, *, client=None):
             url, state = mcp.begin(redirect_uri)
         except MCPError as exc:
             LOG.warning("OAuth registration or discovery failed: %s", exc)
-            return page(request, oauth_error=str(exc))
+            return settings_page(request, oauth_error=str(exc))
         result = RedirectResponse(url, status_code=303, headers=NO_CACHE)
         result.set_cookie("suunto_oauth_state", state, max_age=AUTHORIZATION_TIMEOUT, httponly=True,
                           samesite="lax", secure=request.url.scheme == "https")
@@ -208,9 +199,9 @@ def create_app(data_dir=None, *, client=None):
             credentials = mcp.complete(code, browser_state, returned_state, issuer, callback_uri=callback_uri)
         except MCPError as exc:
             LOG.warning("OAuth completion failed: %s", exc)
-            return page(request, message=str(exc))
+            return settings_page(request, message=str(exc))
         discovery.update(status="probing", tools=[], message=None)
-        target = "/?authorized=true"
+        target = "/settings?authorized=true"
         if not credentials.get("refresh_token"):
             target += "&refresh_required=true"
         response = RedirectResponse(target, status_code=303, headers=NO_CACHE,
@@ -222,21 +213,21 @@ def create_app(data_dir=None, *, client=None):
     def callback(request: Request, code: str = "", state: str = "", iss: str | None = None, error: str = "",
                  suunto_oauth_state: Annotated[str, Cookie()] = ""):
         if not suunto_oauth_state:
-            return page(request, message="授权会话已失效，请在当前浏览器重新连接 Suunto。")
+            return settings_page(request, message="授权会话已失效，请在当前浏览器重新连接 Suunto。")
         if error:
-            return page(request, message="Suunto 未完成授权，请返回首页重新发起。")
+            return settings_page(request, message="Suunto 未完成授权，请返回设置重新发起。")
         if not code or not state:
-            return page(request, message="回调未收到授权码和 state，请重新授权。")
+            return settings_page(request, message="回调未收到授权码和 state，请重新授权。")
         try:
             redirect_uri = dashboard_callback(request)
         except MCPError as exc:
-            return page(request, message=str(exc))
+            return settings_page(request, message=str(exc))
         return complete(request, code, suunto_oauth_state, state, iss, redirect_uri)
 
     @app.post("/probe")
     def browser_probe():
         probe()
-        return RedirectResponse("/", status_code=303, headers=NO_CACHE)
+        return RedirectResponse("/settings", status_code=303, headers=NO_CACHE)
 
     @app.post("/api/probe")
     def api_probe():
@@ -270,8 +261,8 @@ def create_app(data_dir=None, *, client=None):
     def browser_sync(request: Request):
         result = sync.run("web")
         if result is None:
-            return page(request, message="已有同步任务在运行。")
-        return RedirectResponse("/", status_code=303, headers=NO_CACHE)
+            return settings_page(request, message="已有同步任务在运行。")
+        return RedirectResponse("/settings", status_code=303, headers=NO_CACHE)
 
     def dashboard(request, title, **context):
         return TEMPLATES.TemplateResponse(request=request, name="dashboard.html",
@@ -284,20 +275,26 @@ def create_app(data_dir=None, *, client=None):
     @app.get("/training")
     def training(request: Request, period: str = "day"):
         weekly = period == "week"
+        today = datetime.now(TZ).date()
+        first_day = today - timedelta(days=89)
         return dashboard(request, "训练趋势", show_period=True, weekly=weekly,
-                         charts=workout_chart(recent("workouts", 90), weekly))
+                         charts=workout_chart(recent("workouts", 90), weekly, first_day, today))
 
     @app.get("/activities")
-    def workouts(request: Request, start: date | None = None, end: date | None = None):
-        if start and end and end < start:
-            return dashboard(request, "运动活动", filters=True, start=start, end=end, message="结束日期早于开始日期。")
-        if end == date.max:
-            raise HTTPException(422, "结束日期不在支持的范围内。")
-        if start is None and end is None:
-            start = datetime.now(TZ).date() - timedelta(days=27)
-        begin = datetime.combine(start, clock_time.min, TZ) if start else None
-        finish = datetime.combine(end + timedelta(days=1), clock_time.min, TZ) if end else None
-        return dashboard(request, "运动活动", filters=True, start=start, end=end,
+    def workouts(request: Request, start: str = "", end: str = ""):
+        try:
+            first = date.fromisoformat(start) if start else None
+            last = date.fromisoformat(end) if end else None
+            if last == date.max or (first and last and last < first):
+                raise ValueError
+        except ValueError:
+            return dashboard(request, "运动活动", filters=True, start=start, end=end,
+                             message="请选择有效的日期，结束日期应等于或晚于开始日期。")
+        if first is None and last is None and not request.query_params:
+            first = datetime.now(TZ).date() - timedelta(days=27)
+        begin = datetime.combine(first, clock_time.min, TZ) if first else None
+        finish = datetime.combine(last + timedelta(days=1), clock_time.min, TZ) if last else None
+        return dashboard(request, "运动活动", filters=True, start=first, end=last,
                          headings=("北京时间", "运动类型", "距离（km）", "时长（分钟）", "平均心率", "训练效果 PTE"),
                          rows=table_rows(records(store, "workouts", begin, finish), "workouts"))
 
@@ -315,16 +312,30 @@ def create_app(data_dir=None, *, client=None):
 
     @app.get("/routes")
     def routes(request: Request):
-        return dashboard(request, "保存路线", headings=("路线名称或描述", "距离（km）", "运动类型"),
-                         rows=table_rows(records(store, "routes"), "routes"))
+        entries = records(store, "routes")
+        return dashboard(request, "保存路线", headings=("路线名称或描述", "距离（km）", "运动类型", "地图"),
+                         rows=table_rows(entries, "routes"), route_maps=route_map_points(entries))
 
     @app.get("/sync-status")
-    def sync_page(request: Request):
-        return dashboard(request, "同步状态", sync_status=sync_status())
+    def sync_page():
+        return RedirectResponse("/settings#sync", status_code=303, headers=NO_CACHE)
+
+    def settings_page(request, *, saved=False, message=None, oauth_error=None):
+        return TEMPLATES.TemplateResponse(
+            request=request, name="dashboard.html",
+            context={"title": "设置", "saved": saved, "message": message, "oauth_error": oauth_error,
+                     "settings_minutes": config.load(), "discovery": discovery, "sync_status": sync_status()},
+            headers=NO_CACHE if request.url.path == "/oauth/callback" else HOME_HEADERS,
+        )
 
     @app.get("/settings")
-    def settings(request: Request, saved: bool = False):
-        return dashboard(request, "设置", settings_minutes=config.load(), saved=saved)
+    def settings(request: Request, saved: bool = False, authorized: bool = False, refresh_required: bool = False):
+        message = None
+        if authorized and mcp.credential().get("access_token"):
+            message = "Suunto 授权成功，已安排同步。"
+            if refresh_required:
+                message += " 本次授权未返回刷新令牌，到期后需重新授权。"
+        return settings_page(request, saved=saved, message=message)
 
     @app.post("/settings")
     async def save_settings(minutes: Annotated[int, Form(ge=1, le=1440)]):

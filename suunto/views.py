@@ -42,7 +42,22 @@ def table_rows(entries, source):
             for _, item in reversed(entries)]
 
 
-def workout_chart(entries, weekly):
+def route_map_points(entries):
+    points_by_route = []
+    for _, route in reversed(entries):
+        points = []
+        for field, label in (("startPoint", "起点"), ("centerPoint", "参考中心"), ("endPoint", "终点")):
+            point = route.get(field)
+            if not isinstance(point, dict):
+                continue
+            lat, lon = numeric(point.get("latitude")), numeric(point.get("longitude"))
+            if lat is not None and lon is not None and -90 <= lat <= 90 and -180 <= lon <= 180:
+                points.append({"label": label, "lat": lat, "lon": lon})
+        points_by_route.append(points)
+    return points_by_route
+
+
+def workout_chart(entries, weekly, first_day, last_day):
     grouped = defaultdict(lambda: [[], []])
     for at, row in entries:
         day = date.fromisoformat(at[:10])
@@ -53,8 +68,13 @@ def workout_chart(entries, weekly):
             value = numeric(row.get(field))
             if value is not None:
                 target.append(value / divisor)
-    labels = sorted(grouped)
-    totals = [[round(sum(grouped[day][index]), 2) if grouped[day][index] else None for day in labels]
+    step = 7 if weekly else 1
+    if weekly:
+        first_day -= timedelta(days=first_day.weekday())
+    labels = [(first_day + timedelta(days=offset)).isoformat()
+              for offset in range(0, (last_day - first_day).days + 1, step)]
+    totals = [[0 if day not in grouped else
+               round(sum(grouped[day][index]), 2) if grouped[day][index] else None for day in labels]
               for index in range(2)]
     return [chart("距离（公里）", labels, {"距离": totals[0]}, "bar"),
             chart("时长（分钟）", labels, {"时长": totals[1]}, "bar")]

@@ -68,7 +68,7 @@ class ProbeTest(unittest.TestCase):
     def test_callback_pagination_and_only_read_tools(self):
         with TestClient(create_app(client=self.mcp), base_url=self.lan_origin) as browser:
             self.assertEqual(browser.post("/api/probe").json()["status"], "authorization_required")
-            self.assertNotIn("/oauth/manual", browser.get("/").text)
+            self.assertNotIn("/oauth/manual", browser.get("/settings").text)
             start = browser.post("/oauth/start", follow_redirects=False)
             self.assertEqual(start.status_code, 303)
             location = urlsplit(start.headers["location"])
@@ -111,7 +111,7 @@ class ProbeTest(unittest.TestCase):
     def assert_oauth_at(self, origin):
         self.redirect = origin + "/oauth/callback"
         with TestClient(create_app(client=self.mcp), base_url=origin) as browser:
-            self.assertEqual(browser.get("/").headers["referrer-policy"], "same-origin")
+            self.assertEqual(browser.get("/settings").headers["referrer-policy"], "same-origin")
             for invalid_origin in ("null", "https://other.example.com"):
                 response = browser.post("/oauth/start", headers={"Origin": invalid_origin}, follow_redirects=False)
                 self.assertIn('<p role="alert">请从看板页面发起授权。</p>', response.text)
@@ -122,7 +122,7 @@ class ProbeTest(unittest.TestCase):
             self.assertEqual(params["redirect_uri"], [self.redirect])
             callback = browser.get("/oauth/callback", params={"code": "one-time-code", "state": params["state"][0]},
                                    follow_redirects=False)
-            self.assertEqual(callback.headers["location"], "/?authorized=true")
+            self.assertEqual(callback.headers["location"], "/settings?authorized=true")
             self.assertEqual(self.grants, ["authorization_code"])
             self.assertEqual(browser.get("/api/status").json()["runs"][0]["trigger"], "oauth")
 

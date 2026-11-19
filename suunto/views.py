@@ -28,14 +28,34 @@ def records(store, source, start=None, end=None):
     return [(row["occurred_at"], json.loads(row["payload"])) for row in rows]
 
 
-def workout_page(store, start, end, page, size=50):
+SORTS = {"date": "occurred_at", "distance": "distance", "duration": "duration", "tss": "tss"}
+
+
+def workout_page(store, start, end, page, size=50, *, sport="", search="", minimums=None,
+                 sort="date", order="desc"):
     where, parameters = record_filter("workouts", start, end)
+    if sport:
+        where += " AND json_extract(payload, '$.activityName')=?"
+        parameters.append(sport)
+    if search:
+        where += " AND instr(lower(coalesce(json_extract(payload, '$.workoutName'), '') || ' ' || " \
+                 "coalesce(json_extract(payload, '$.description'), '')), lower(?))>0"
+        parameters.append(search)
+    paths = {"distance": "$.totalDistance", "duration": "$.totalTimeSeconds", "tss": "$.tss"}
+    for metric, value in (minimums or {}).items():
+        if metric in paths and value is not None:
+            where += f" AND json_type(payload, '{paths[metric]}') IN ('real','integer') AND json_extract(payload, '{paths[metric]}')>=?"
+            parameters.append(value)
     count = store.query(f"SELECT count(*) AS n FROM records WHERE {where}", parameters)[0]["n"]
     pages = max(1, (count + size - 1) // size)
     page = min(page, pages)
+    primary = SORTS.get(sort, "occurred_at")
+    direction = "ASC" if order == "asc" else "DESC"
     rows = store.query(f"""
-        SELECT record_key, occurred_at, payload FROM records WHERE {where}
-        ORDER BY occurred_at DESC, record_key DESC LIMIT ? OFFSET ?
+        SELECT record_key, occurred_at, payload,
+               {", ".join(f"CASE WHEN json_type(payload, '{path}') IN ('real','integer') THEN json_extract(payload, '{path}') END AS {alias}" for alias, path in paths.items())}
+        FROM records WHERE {where}
+        ORDER BY {primary} IS NULL, {primary} {direction}, occurred_at DESC, record_key DESC LIMIT ? OFFSET ?
         """, [*parameters, size, (page - 1) * size])
     displayed = table_rows([(row["occurred_at"], json.loads(row["payload"])) for row in reversed(rows)], "workouts")
     return count, page, pages, displayed, [row["record_key"] for row in rows]
@@ -52,6 +72,39 @@ def numeric(value):
 
 def scaled(value, divisor=1, digits=1):
     return round(value / divisor, digits) if value is not None else None
+
+
+def summary(row):
+    value = row.get("summary")
+    return value if isinstance(value, dict) else {}
+
+
+def average_speed(row):
+    distance, seconds = numeric(row.get("totalDistance")), numeric(row.get("totalTimeSeconds"))
+    return distance / seconds if distance is not None and distance >= 0 and seconds is not None and seconds > 0 else None
+
+
+def workout_metrics(row):
+    speed = average_speed(row)
+    sport = str(row.get("activityName") or "").lower()
+    pace = round(1000 / speed) if speed and ("run" in sport or "跑" in sport) else None
+    heart = row.get("hrAvgValue")
+    details = summary(row)
+    metrics = {
+        "距离（km）": scaled(numeric(row.get("totalDistance")), 1000, 2),
+        "用时（分钟）": scaled(numeric(row.get("totalTimeSeconds")), 60),
+        ("平均配速（min/km）" if pace else "平均速度（km/h）"):
+            f"{pace//60}:{pace%60:02d}" if pace else round(speed * 3.6, 2) if speed is not None else None,
+        "爬升（m）": numeric(details.get("ascent")), "下降（m）": numeric(details.get("descent")),
+        "平均心率（bpm）": numeric(heart), "最高心率（bpm）": numeric(row.get("hrMaxValue")),
+        "最低心率（bpm）": numeric(row.get("hrMinValue")), "平均步频": numeric(details.get("avgCadence")),
+        "最高步频": numeric(details.get("maxCadence")), "平均功率（W）": numeric(details.get("avgPower")),
+        "TSS": numeric(row.get("tss")), "PTE": numeric(details.get("pte")),
+        "峰值 EPOC": numeric(details.get("peakEpoc")),
+        "恢复时间（Suunto 原值）": numeric(details.get("recoveryTime")),
+        "能量（kcal）": numeric(row.get("energy")), "步数": numeric(row.get("stepCount")),
+    }
+    return {label: value for label, value in metrics.items() if value is not None}
 
 
 def table_rows(entries, source):
@@ -76,27 +129,37 @@ def route_map_points(entries):
                 continue
             lat, lon = numeric(point.get("latitude")), numeric(point.get("longitude"))
             if lat is not None and lon is not None and -90 <= lat <= 90 and -180 <= lon <= 180:
-                points.append({"label": label, "lat": lat, "lon": lon})
+                points.append({"label": label, "lat": lat, "lon": lon, "alt": numeric(point.get("altitude"))})
         points_by_route.append(points)
     return points_by_route
 
 
-def workout_chart(entries, weekly, first_day, last_day, intervals, tz):
-    grouped = defaultdict(lambda: [[], []])
+def workout_chart(entries, weekly, first_day, last_day, intervals, tz, *, extended=False):
+    grouped = defaultdict(list)
     for at, row in entries:
         day = date.fromisoformat(at[:10])
         if weekly:
             day -= timedelta(days=day.weekday())
-        metrics = grouped[day.isoformat()]
-        for target, field, divisor in zip(metrics, ("totalDistance", "totalTimeSeconds"), (1000, 60)):
-            value = numeric(row.get(field))
-            target.append(value / divisor if value is not None else None)
+        grouped[day.isoformat()].append(row)
     step = 7 if weekly else 1
     first_label = first_day
     if weekly:
         first_label -= timedelta(days=first_day.weekday())
     labels = []
-    totals = [[], []]
+    definitions = [
+        ("距离（公里）", "距离", lambda r: scaled(numeric(r.get("totalDistance")), 1000, 6), "sum"),
+        ("时长（分钟）", "时长", lambda r: scaled(numeric(r.get("totalTimeSeconds")), 60, 6), "sum"),
+    ]
+    if extended:
+        definitions += [
+            ("活动次数", "活动次数", lambda r: 1, "sum"),
+            ("累计爬升（m）", "爬升", lambda r: numeric(summary(r).get("ascent")), "sum"),
+            ("训练负荷（TSS）", "TSS", lambda r: numeric(r.get("tss")), "sum"),
+            ("TSS 记录覆盖（%）", "有 TSS 的活动", lambda r: numeric(r.get("tss")), "coverage"),
+            ("平均训练效果（PTE）", "PTE", lambda r: numeric(summary(r).get("pte")), "mean"),
+        ]
+    totals = [[] for _ in definitions]
+    ranges = []
     for offset in range(0, (last_day - first_label).days + 1, step):
         bucket = first_label + timedelta(days=offset)
         start = max(first_day, bucket)
@@ -104,50 +167,27 @@ def workout_chart(entries, weekly, first_day, last_day, intervals, tz):
         covered = covers(intervals, datetime.combine(start, time.min, tz), datetime.combine(end, time.min, tz))
         label = bucket.isoformat()
         labels.append(f"{label}（部分覆盖）" if weekly and not covered else label)
-        metrics = grouped.get(label)
-        for index, column in enumerate(totals):
-            if not metrics:
-                column.append(0 if covered else None)
+        ranges.append((start.isoformat(), (end-timedelta(days=1)).isoformat()))
+        rows = grouped.get(label, [])
+        for column, (_, _, metric, method) in zip(totals, definitions):
+            values = [v for row in rows if (v := metric(row)) is not None]
+            if method == "coverage":
+                value = 100 * len(values) / len(rows) if rows else None
+            elif method == "mean":
+                value = sum(values) / len(values) if values else None
             else:
-                values = metrics[index]
-                column.append(None if any(value is None for value in values) else round(sum(values), 2))
-    return [chart("距离（公里）", labels, {"距离": totals[0]}, "bar"),
-            chart("时长（分钟）", labels, {"时长": totals[1]}, "bar")]
+                value = sum(values) if (rows or covered) and len(values) == len(rows) else None
+            column.append(round(value, 2) if value is not None else None)
+    result = [chart(title, labels, {label: values}, "bar")
+              for (title, label, _, _), values in zip(definitions, totals)]
+    if extended:
+        for series in result:
+            series["ranges"] = ranges
+    return result
 
 
 def chart(title, labels, columns, kind="line"):
     return {"title": title, "labels": labels, "columns": columns, "kind": kind}
-
-
-def summary_chart(title, entries, field, combine):
-    values = defaultdict(list)
-    for at, row in entries:
-        value = numeric(row["entryData"].get(field))
-        if value is not None:
-            values[at[:10]].append(value)
-    labels = sorted(values)
-    return chart(title, labels, {title: [round(combine(values[day]), 2) for day in labels]})
-
-
-def daily_charts(entries):
-    kinds = {
-        "stepcount": ("步数", 1),
-        "energyconsumption": ("日常能量消耗（千卡）", 4184),
-    }
-    values = defaultdict(lambda: defaultdict(dict))
-    for stamp, row in entries:
-        name = row["Name"]
-        value = numeric(row["Sample"].get("Value"))
-        if name in kinds and row["Aggregation"] == "sum" and value is not None:
-            values[name][row["Source"]][stamp[:10]] = value / kinds[name][1]
-    charts = []
-    for name, (title, _) in kinds.items():
-        providers = values[name]
-        labels = sorted({day for samples in providers.values() for day in samples})
-        columns = {f"来源 {index}": [scaled(samples.get(day)) for day in labels]
-                   for index, (_, samples) in enumerate(sorted(providers.items()), start=1)}
-        charts.append(chart(title, labels, columns))
-    return charts
 
 
 def csv_cells(store):

@@ -214,7 +214,7 @@ class Store:
     def status(self):
         success = self.query("""
             SELECT max(finished_at) AS at FROM sync_runs
-            WHERE status='ok' AND trigger NOT IN ('backfill', 'details')
+            WHERE status='ok' AND trigger NOT IN ('backfill', 'details', 'route_details')
             """)[0]["at"]
         return {
             "last_success_at": success,

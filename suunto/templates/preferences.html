@@ -1,0 +1,33 @@
+<section id="preferences">
+  <h2>目标、地图与可选指标</h2>
+  <form action="/preferences" method="post">
+    <div class="controls">
+      <label>每周距离目标（km）<input name="weekly_km" type="number" min="0.1" step="0.1" value="{{ prefs.weekly_km or '' }}"></label>
+      <label>每日步数目标<input name="step_goal" type="number" min="1" value="{{ prefs.step_goal or '' }}"></label>
+      <label>日常活动主来源<select name="primary_source"><option value="">自动选择</option>
+        {% for item in daily_sources %}<option {% if item == prefs.primary_source %}selected{% endif %}>{{ item }}</option>{% endfor %}
+      </select></label>
+      <label><input name="route_basemap" type="checkbox" value="true" {% if prefs.route_basemap %}checked{% endif %}>允许打开 OpenStreetMap 底图</label>
+    </div>
+    <details>
+      <summary>睡眠与恢复字段</summary>
+      <p>下拉项来自本地真实记录。请先确认字段含义和单位；无可用字段时保持未配置。</p>
+      <div class="controls">
+        {% for field, label, observed in bindings %}
+        {% set selected = prefs.get('wellness_fields', {}).get(field) %}
+        <label>{{ label }}<select name="{{ field }}">
+          <option value="">未配置</option>
+          {% if selected and selected not in observed %}<option selected>{{ selected }}</option>{% endif %}
+          {% for item in observed %}<option {% if item == selected %}selected{% endif %}>{{ item }}</option>{% endfor %}
+        </select></label>
+        {% endfor %}
+        <label>睡眠阶段时长单位<select name="sleep_stage_unit">
+          {% for key, label in [('seconds', '秒'), ('minutes', '分钟'), ('ms', '毫秒')] %}
+          <option value="{{ key }}" {% if prefs.get('sleep_stage_unit', 'seconds') == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select></label>
+      </div>
+    </details>
+    <button>保存偏好</button>
+  </form>
+</section>

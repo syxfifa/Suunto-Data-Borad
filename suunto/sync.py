@@ -21,6 +21,7 @@ SOURCES = {
     "daily_activity": ("get_daily_activity_summary", timedelta(days=27)),
     "routes": ("list_user_routes", None),
 }
+ROUTE_POINT_FIELDS = ("startPoint", "centerPoint", "endPoint")
 
 
 def now():
@@ -113,6 +114,10 @@ class Synchronizer:
             if trigger == "details":
                 failures = self.fill_details(run_id, names, detail_key)
                 status = "interrupted" if self.stopping.is_set() else "partial" if failures else "ok"
+                return {"run_id": run_id, "status": status}
+            if trigger == "route_details":
+                self.fill_route_detail(run_id, names, detail_key)
+                status = "ok"
                 return {"run_id": run_id, "status": status}
             failures = 0
             for source, (tool, chunk) in SOURCES.items():
@@ -351,6 +356,7 @@ class Synchronizer:
                 raise MCPError("路线分页返回重复数据，游标未推进。")
             active.update(identifiers)
             complete = complete and len(rows) == len(items)
+            rows = [(key, at, {**data, **self.preserved_route_points(key, data)}) for key, at, data in rows]
             last_page = len(items) < args["size"]
             reconciled = last_page and full and complete
             self.store.commit(run_id, "routes", rows, until=stop.isoformat() if last_page and complete else None,
@@ -362,3 +368,24 @@ class Synchronizer:
                     self.store.failure("routes", None, None, "部分路线无法解析，已保留以前的路线。")
                 return complete
             page += 1
+
+    def preserved_route_points(self, key, data):
+        if all(isinstance(data.get(field), dict) for field in ROUTE_POINT_FIELDS):
+            return {}
+        stored = self.store.record("routes", key) or {}
+        if stored.get("modified") != data.get("modified"):
+            return {}
+        return {field: stored[field] for field in ROUTE_POINT_FIELDS
+                if isinstance(stored.get(field), dict) and not isinstance(data.get(field), dict)}
+
+    def fill_route_detail(self, run_id, names, key):
+        if "get_route_summary" not in names:
+            raise MCPError("MCP 未公开线路详情工具。")
+        stored = self.store.record("routes", key)
+        if not stored:
+            raise MCPError("路线不在本地记录中。")
+        detail = unpack(self.mcp.sample("get_route_summary", {"routeId": key}, names), dict)
+        if detail.get("routeId") != key:
+            raise MCPError("详情返回的 routeId 不匹配。")
+        merged = {**stored, **detail, **self.preserved_route_points(key, {**stored, **detail})}
+        self.store.commit(run_id, "routes", [entry_row("routes", merged)])

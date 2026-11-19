@@ -2,6 +2,7 @@
 {% block content %}
 <h1>{{ title }}</h1>
 {% if message %}<p role="status">{{ message }}</p>{% endif %}
+{% include "reports_panels.html" %}
 {% if settings_minutes is defined %}
 <section>
   {% if saved %}<p role="status">已保存同步间隔。</p>{% endif %}
@@ -32,13 +33,20 @@
       {% endif %}
       <p>完成 Suunto 授权后，浏览器会返回当前看板并开始同步。</p>
     </section>
+{% include "preferences.html" %}
 {% endif %}
 {% if show_period %}
-<p>最近 90 天。查完且没有活动记为 0。尚未确认覆盖或指标缺失时留空。按周查看时，部分覆盖的周仅统计已入库记录。</p>
-<div class="controls">
-  <a class="button {% if weekly %}secondary{% endif %}" href="/training?period=day">按日</a>
-  <a class="button {% if not weekly %}secondary{% endif %}" href="/training?period=week">按周</a>
-</div>
+<form action="/training" class="controls">
+  <label>统计方式<select name="period"><option value="day">按日</option><option value="week" {% if weekly %}selected{% endif %}>按周</option></select></label>
+  <label>范围<select name="days">{% for n in (28, 90, 365) %}<option value="{{ n }}" {% if n == days %}selected{% endif %}>近 {{ n }} 天</option>{% endfor %}</select></label>
+  <label>运动类型<select name="sport"><option value="">全部类型</option>{% for name in sports %}<option {% if name == sport %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
+  <button>查看</button>
+</form>
+<p>查完且没有活动记为 0。覆盖未确认或所需指标缺失时留空。点击柱形可查看对应活动。</p>
+<p>所选时段最长连续活动 {{ streak }} 天。ACWR = 近 7 天 TSS ÷ 近 28 天 TSS 的周均值，仅在 28 天完整覆盖、每条活动有 TSS 且分母大于零时计算。</p>
+{% if training_mix %}<p>运动类型 · {% for name, count in training_mix %}
+  <a href="/training?period={{ 'week' if weekly else 'day' }}&amp;days={{ days }}&amp;sport={{ name|urlencode }}">{{ name }} {{ count }} 次</a>{{ '、' if not loop.last else '' }}
+{% endfor %}</p>{% endif %}
 {% endif %}
 {% if filters %}
 {% if activity_span.first %}
@@ -50,17 +58,24 @@
 <form method="get" action="/activities" class="controls">
   <label>开始日期<input name="start" type="text" list="activity-days" placeholder="YYYY-MM-DD" maxlength="10" autocomplete="off" value="{{ start or '' }}"></label>
   <label>结束日期<input name="end" type="text" list="activity-days" placeholder="YYYY-MM-DD" maxlength="10" autocomplete="off" value="{{ end or '' }}"></label>
+  <label>运动类型<select name="sport"><option value="">全部</option>{% for item in activity_types %}<option {% if item.sport == search.sport %}selected{% endif %}>{{ item.sport }}</option>{% endfor %}</select></label>
+  <label>名称或描述<input name="q" value="{{ search.q }}"></label>
+  {% for key, label in [('km', '最短距离（km）'), ('minutes', '最短时长（分钟）'), ('tss', '最低 TSS')] %}
+  <label>{{ label }}<input type="number" min="0" step="any" name="{{ key }}" value="{{ search[key] if search[key] is not none else '' }}"></label>
+  {% endfor %}
+  <label>排序<select name="sort">{% for key, label in [('date', '时间'), ('distance', '距离'), ('duration', '时长'), ('tss', 'TSS')] %}<option value="{{ key }}" {% if search.sort == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <label>方向<select name="order"><option value="desc">从大到小 / 从新到旧</option><option value="asc" {% if search.order == 'asc' %}selected{% endif %}>从小到大 / 从旧到新</option></select></label>
   <button type="submit">筛选</button>
   <a class="button secondary" href="/activities?start=&amp;end=">全部日期</a>
 </form>
 <div class="controls">
-  {% for label, first in presets %}<a class="button secondary" href="/activities?start={{ first }}&amp;end={{ today }}">{{ label }}</a>{% endfor %}
+  {% for label, first in presets %}<a class="button secondary" href="/activities?start={{ first }}&amp;end={{ today }}&amp;{{ search_query }}">{{ label }}</a>{% endfor %}
 </div>
 {% if result_count is defined %}<p>共 {{ result_count }} 条活动</p>{% endif %}
 {% endif %}
 {% if charts is defined %}
 <script src="/static/chart.umd.min.js" defer></script>
-<script src="/static/charts.js" defer></script>
+<script src="/static/charts.js?v=0.3.0" defer></script>
 <div class="cards">
   {% for chart in charts %}
   <section>
@@ -75,15 +90,40 @@
   {% endfor %}
 </div>
 {% endif %}
+{% if show_period %}
+{% for title, totals in [('周报', weeks), ('月报', monthly_totals)] %}
+<section class="table-wrap">
+  <h2>{{ title }}</h2>
+  <p>仅汇总所选范围内的本地记录。TSS 栏括号为有 TSS 的活动数 / 活动总数。</p>
+  {% if totals %}
+  <table><thead><tr>{% for h in ('时间', '次数', '距离（km）', '时长（分钟）', '爬升（m）', 'TSS') %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+  <tbody>{% for item in totals %}<tr><th>{{ item.period }}</th><td>{{ item.n }}</td>{% for v in (item.km, item.minutes, item.climb) %}<td>{{ v if v is not none else '—' }}</td>{% endfor %}<td>{{ item.tss if item.tss is not none else '—' }}（{{ item.tss_count }}/{{ item.n }}）</td></tr>{% endfor %}</tbody></table>
+  {% else %}<p>所选范围暂无本地活动。</p>{% endif %}
+</section>
+{% endfor %}
+{% endif %}
+{% if sleep_rows %}
+<section class="table-wrap">
+  <h2>睡眠记录</h2>
+  <p>醒来日期可用时按醒来日归档；缺少明确起止时间时，同日相同 SleepId 取最长记录。</p>
+  <table><thead><tr>{% for h in ('归档日期', '入睡', '醒来', '类别（原值）', '小时') %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+  <tbody>{% for row in sleep_rows %}<tr>{% for value in row %}<td>{{ value if value is not none else '—' }}</td>{% endfor %}</tr>{% endfor %}</tbody></table>
+</section>
+{% endif %}
 {% if route_maps is defined and route_maps|select|list %}
-<p>点击起点、参考中心或终点，在看板内预览位置。</p>
-<script src="/static/route-map.js?v=0.1.6" defer></script>
+<div class="controls"><button type="button" id="route-overview">预览匹配路线的位置</button></div>
+<script src="/static/route-map.js?v=0.3.0" defer></script>
 <section id="route-map" hidden>
   <h2>路线位置预览</h2>
   <p id="route-point" role="status"></p>
   <canvas width="680" height="280" role="img" aria-label="Suunto 路线位置点相对示意图"></canvas>
-  <p>预览展示位置点的相对方位。打开底图会向 OpenStreetMap 发送所选点的坐标。</p>
-  <a id="route-map-link" class="button" target="_blank" rel="noopener noreferrer">在 OpenStreetMap 打开底图</a>
+  <div class="controls">
+    <button type="button" data-map-zoom="in" aria-label="放大地图">＋</button><button type="button" data-map-zoom="out" aria-label="缩小地图">－</button>
+    <button type="button" data-map-zoom="reset">复位</button>
+    <label>坐标<input id="route-coordinates" readonly></label><button type="button" id="copy-coordinates">复制坐标</button>
+  </div>
+  <p>可拖动查看位置点。{% if route_basemap %}打开底图会向 OpenStreetMap 发送所选点的坐标。{% endif %}</p>
+  {% if route_basemap %}<a id="route-map-link" class="button" target="_blank" rel="noopener noreferrer" hidden>在 OpenStreetMap 打开底图</a>{% endif %}
 </section>
 {% endif %}
 {% if headings %}
@@ -92,29 +132,37 @@
   <table>
     <thead><tr>{% for heading in headings %}<th scope="col">{{ heading }}</th>{% endfor %}
       {% if activity_keys is defined %}<th scope="col">运动详情</th>{% endif %}
+      {% if route_meta is defined %}<th scope="col">路线详情</th>{% endif %}
     </tr></thead>
     <tbody>{% for row in rows %}<tr>
       {% for cell in row %}<td>{{ cell if cell is not none and cell != '' else '—' }}</td>{% endfor %}
       {% if activity_keys is defined %}
-      <td><form method="post" action="/workout-details">
-        <input type="hidden" name="key" value="{{ activity_keys[loop.index0] }}">
-        <button>重新读取</button>
-      </form></td>
+      <td><a href="/workout?id={{ activity_keys[loop.index0]|urlencode }}">查看详情</a></td>
       {% endif %}
       {% if route_maps is defined %}
       <td class="route-points" data-route="{{ row[0] or '' }}">
         {% for point in route_maps[loop.index0] %}
-        <button type="button" class="map-point" data-lat="{{ point.lat }}" data-lon="{{ point.lon }}">{{ point.label }}</button>
+        <button type="button" class="map-point" data-lat="{{ point.lat }}" data-lon="{{ point.lon }}"
+                data-alt="{{ point.alt if point.alt is not none else '' }}">{{ point.label }}</button>
         {% else %}暂无位置点{% endfor %}
       </td>
+      {% set meta = route_meta[loop.index0] %}
+      <td><details><summary>详情</summary>
+        <p>可见性 {{ meta.visibility or '—' }} · 手表 {{ '已启用' if meta.watch is sameas true else '未启用' if meta.watch is sameas false else '—' }}</p>
+        <p>更新 {{ meta.modified or '—' }}</p>
+        <ul>{% for p in route_maps[loop.index0] %}<li>{{ p.label }} {{ p.lat }}, {{ p.lon }}{% if p.alt is not none %} · {{ p.alt }} m{% endif %}</li>{% endfor %}</ul>
+        {% if route_detail_available and route_maps[loop.index0]|length < 3 %}
+        <form method="post" action="/route-details"><input type="hidden" name="key" value="{{ meta.id }}"><button>补齐位置点</button></form>
+        {% endif %}
+      </details></td>
       {% endif %}
     </tr>{% endfor %}</tbody>
   </table>
   {% if pages is defined and pages > 1 %}
   <nav aria-label="活动分页">
-    {% if page > 1 %}<a href="/activities?start={{ start or '' }}&amp;end={{ end or '' }}&amp;page={{ page-1 }}">上一页</a>{% endif %}
+    {% if page > 1 %}<a href="/activities?start={{ start or '' }}&amp;end={{ end or '' }}&amp;page={{ page-1 }}&amp;{{ search_query }}">上一页</a>{% endif %}
     <span>第 {{ page }} / {{ pages }} 页</span>
-    {% if page < pages %}<a href="/activities?start={{ start or '' }}&amp;end={{ end or '' }}&amp;page={{ page+1 }}">下一页</a>{% endif %}
+    {% if page < pages %}<a href="/activities?start={{ start or '' }}&amp;end={{ end or '' }}&amp;page={{ page+1 }}&amp;{{ search_query }}">下一页</a>{% endif %}
   </nav>
   {% endif %}
   {% else %}
@@ -191,7 +239,7 @@
     <thead><tr><th scope="col">开始</th><th scope="col">类型</th><th scope="col">状态</th><th scope="col">处理</th><th scope="col">新增或更新</th></tr></thead>
     <tbody>{% for run in sync_status.runs %}
       <tr><td>{{ run.started_at }}</td>
-        <td>{{ {'backfill': '历史补采', 'details': '运动详情', 'web': '手动同步', 'scheduled': '定时同步',
+        <td>{{ {'backfill': '历史补采', 'details': '运动详情', 'route_details': '路线详情', 'web': '手动同步', 'scheduled': '定时同步',
                 'oauth': '授权后同步', 'cli': '命令行同步'}.get(run.trigger, run.trigger) }}</td>
         <td>{{ {'paused': '已暂停', 'interrupted': '已中断', 'running': '进行中', 'partial': '部分完成',
                 'ok': '完成', 'failed': '失败', 'authorization_required': '等待授权'}.get(run.status, run.status) }}</td>

@@ -32,4 +32,8 @@ table { width: 100%; border-collapse: collapse; text-align: left; }
 td, th { padding: .6rem .5rem; border-bottom: 1px solid #dae3e4; }
 code { overflow-wrap: anywhere; }
 #route-map canvas { display: block; width: 100%; max-width: 680px; height: auto; border-radius: .35rem; }
+#route-map canvas { cursor: grab; touch-action: none; }
+#route-map-link[hidden] { display: none; }
 .map-point { margin: .15rem; }
+select { font: inherit; display: block; padding: .45rem; margin-top: .3rem; max-width: 16rem; }
+input[type=checkbox] { display: inline; margin-right: .35rem; }

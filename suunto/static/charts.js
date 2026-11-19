@@ -17,8 +17,15 @@ for (const element of document.querySelectorAll(".chart-data")) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      onClick: (_, bars) => {
+        const range = series.ranges?.[bars[0]?.index];
+        if (range) {
+          const params = new URLSearchParams({start: range[0], end: range[1], sport: series.sport || ""});
+          location.assign("/activities?" + params);
+        }
+      },
       plugins: { legend: { display: datasets.length > 1 } },
-      scales: { y: { beginAtZero: true } },
+      scales: { x: {stacked: Boolean(series.stacked)}, y: { beginAtZero: true, stacked: Boolean(series.stacked) } },
     },
   });
 }

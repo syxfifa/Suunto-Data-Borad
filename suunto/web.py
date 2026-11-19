@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from collections import Counter
 from datetime import date, datetime, time as clock_time, timedelta
 from ipaddress import ip_address
 import json
@@ -11,7 +12,7 @@ from pathlib import Path
 import re
 from time import monotonic
 from typing import Annotated
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import Cookie, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse, StreamingResponse
@@ -22,9 +23,12 @@ from starlette.background import BackgroundTask
 
 from .mcp import AUTHORIZATION_TIMEOUT, Client, MCPError, NeedsAuthorization, READ_TOOLS
 from .config import Config
+from .reports import (WELLNESS_FIELDS, acwr_series, compare_metrics, daily_report, dates, grouped_totals,
+                      intensity_charts, longest_streak, mapping_fields, midnight, period_totals,
+                      sport_counts, sport_name, wellness)
 from .store import Store
 from .sync import SOURCES, Synchronizer, TZ
-from .views import covers, csv_cells, daily_charts, records, route_map_points, summary_chart, table_rows, workout_chart, workout_page
+from .views import covers, csv_cells, numeric, records, route_map_points, summary, table_rows, workout_chart, workout_metrics, workout_page
 
 
 TEMPLATES = Jinja2Templates(directory=Path(__file__).with_name("templates"))
@@ -35,6 +39,15 @@ HOME_HEADERS = {**NO_CACHE, "Referrer-Policy": "same-origin"}
 DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 SOURCE_LABELS = dict(workouts="运动活动", sleep="睡眠", recovery="恢复", daily_activity="日常活动",
                      routes="保存路线", workout_details="运动详情")
+
+
+def lower_bound(value, maximum):
+    if not value.strip():
+        return None
+    result = float(value)
+    if not 0 <= result <= maximum:
+        raise ValueError
+    return result
 
 
 def dashboard_callback(request):
@@ -186,9 +199,21 @@ def create_app(data_dir=None, *, client=None):
                     FROM records WHERE source='workouts' AND occurred_at>=?
                     """, (start.isoformat(),))[0]
                 overview.append({"days": days, "covered": covered, **row})
+        day = today.date()
+        week_start = day - timedelta(days=day.weekday())
+        month_start = day.replace(day=1)
+        data = records(store, "workouts", midnight(min(month_start, week_start - timedelta(days=7))), today)
+        week_rows = [(at, row) for at, row in data if at[:10] >= week_start.isoformat()]
+        previous_end = today - timedelta(days=7)
+        previous = [(at, row) for at, row in data
+                    if (week_start-timedelta(days=7)).isoformat() <= at[:10] and at < previous_end.isoformat()]
+        stats = store.status()
         return TEMPLATES.TemplateResponse(
             request=request, name="discovery.html",
-            context={"overview": overview},
+            context={"overview": overview, "week": period_totals(week_rows), "prior": period_totals(previous),
+                     "month": period_totals([(at, row) for at, row in data if at[:10] >= month_start.isoformat()]),
+                     "sports": sport_counts(week_rows), "last_sync": stats["last_success_at"],
+                     "weekly_goal": config.read().get("weekly_km")},
             headers=NO_CACHE,
         )
 
@@ -333,6 +358,15 @@ def create_app(data_dir=None, *, client=None):
             raise HTTPException(404, "该活动不在本地数据库中。")
         return sync_redirect(submit("details", detail_key=key or None))
 
+    @app.post("/route-details")
+    async def refresh_route(key: Annotated[str, Form()]):
+        if not store.query("""
+            SELECT 1 FROM records WHERE source='routes' AND record_key=?
+            AND record_key NOT IN (SELECT record_key FROM removed_routes)
+        """, (key,)):
+            raise HTTPException(404, "路线不在本地路线库中。")
+        return sync_redirect(submit("route_details", detail_key=key))
+
     def dashboard(request, title, **context):
         return TEMPLATES.TemplateResponse(request=request, name="dashboard.html",
                                          context={"title": title, **context}, headers=NO_CACHE)
@@ -342,17 +376,32 @@ def create_app(data_dir=None, *, client=None):
         return records(store, source, datetime.combine(today - timedelta(days=days - 1), clock_time.min, TZ))
 
     @app.get("/training")
-    def training(request: Request, period: str = "day"):
+    def training(request: Request, period: str = "day", sport: str = "",
+                 days: Annotated[int, Query(ge=7, le=366)] = 90):
         weekly = period == "week"
         today = datetime.now(TZ).date()
-        first_day = today - timedelta(days=89)
+        first_day = today - timedelta(days=days-1)
+        coverage = store.coverage("workouts")
+        context_rows = records(store, "workouts", midnight(first_day - timedelta(days=27)),
+                               midnight(today+timedelta(days=1)))
+        sports = sorted({sport_name(row) for _, row in context_rows})
+        selected = sport if sport in sports else ""
+        history = [(at, row) for at, row in context_rows if not selected or sport_name(row) == selected]
+        current = [(at, row) for at, row in history if at[:10] >= first_day.isoformat()]
+        series = workout_chart(current, weekly, first_day, today, coverage, TZ, extended=True)
+        for item in series:
+            item["sport"] = selected if selected != "未标注运动类型" else ""
+        series.append(acwr_series(history, first_day, today, coverage))
         return dashboard(request, "训练趋势", show_period=True, weekly=weekly,
-                         charts=workout_chart(recent("workouts", 90), weekly, first_day, today,
-                                              store.coverage("workouts"), TZ))
+                         charts=series, sport=selected, sports=sports, days=days,
+                         monthly_totals=grouped_totals(current, monthly=True), weeks=grouped_totals(current),
+                         streak=longest_streak(current), training_mix=sport_counts(current))
 
     @app.get("/activities")
     def workouts(request: Request, start: str = "", end: str = "",
-                 page: Annotated[int, Query(ge=1)] = 1):
+                 page: Annotated[int, Query(ge=1)] = 1, sport: str = "", q: str = "",
+                 km: str = "", minutes: str = "", tss: str = "",
+                 sort: str = "date", order: str = "desc"):
         today = datetime.now(TZ).date()
         activity_span = store.query(
             "SELECT min(occurred_at) AS first, max(occurred_at) AS last FROM records WHERE source='workouts'"
@@ -363,8 +412,14 @@ def create_app(data_dir=None, *, client=None):
         """)
         presets = [(f"近 {days} 天", (today - timedelta(days=days-1)).isoformat()) for days in (7, 28, 90)]
         presets.append(("本月", today.replace(day=1).isoformat()))
+        activity_types = store.query("""
+            SELECT DISTINCT json_extract(payload, '$.activityName') AS sport FROM records
+            WHERE source='workouts' AND json_type(payload, '$.activityName')='text' ORDER BY sport
+        """)
+        search_state = {"sport": sport, "q": q, "km": km, "minutes": minutes, "tss": tss, "sort": sort, "order": order}
         filters = {"filters": True, "activity_span": activity_span, "available_days": available_days,
-                   "presets": presets, "today": today}
+                   "presets": presets, "today": today, "activity_types": activity_types, "search": search_state,
+                   "search_query": urlencode({key: value for key, value in search_state.items() if value not in ("", None)})}
         start, end = start.strip(), end.strip()
         try:
             first = date.fromisoformat(start.replace("/", "-")) if start else None
@@ -374,11 +429,18 @@ def create_app(data_dir=None, *, client=None):
         except ValueError:
             return dashboard(request, "运动活动", **filters, start=start, end=end,
                              message="请选择有效的日期（YYYY-MM-DD），结束日期应等于或晚于开始日期。")
+        try:
+            km, minutes, tss = lower_bound(km, 100000), lower_bound(minutes, 600000), lower_bound(tss, 100000)
+        except ValueError:
+            return dashboard(request, "运动活动", **filters, start=start, end=end, message="请输入有效的筛选数值。")
         if first is None and last is None and not {"start", "end"}.intersection(request.query_params):
             first = today - timedelta(days=27)
         begin = datetime.combine(first, clock_time.min, TZ) if first else None
         finish = datetime.combine(last + timedelta(days=1), clock_time.min, TZ) if last else None
-        count, page, pages, rows, keys = workout_page(store, begin, finish, page)
+        count, page, pages, rows, keys = workout_page(
+            store, begin, finish, page, sport=sport, search=q.strip(), sort=sort, order=order,
+            minimums={"distance": km * 1000 if km is not None else None,
+                      "duration": minutes * 60 if minutes is not None else None, "tss": tss})
         summary = None
         if count == 0:
             failure = store.query("SELECT * FROM sync_failures WHERE source='workouts'")
@@ -388,7 +450,7 @@ def create_app(data_dir=None, *, client=None):
             if match:
                 summary = "这段日期的运动同步遇到问题，请查看设置中的同步状态。"
             elif begin and covers(store.coverage("workouts"), begin, finish or datetime.now(TZ)):
-                summary = "Suunto 在这段已查询范围内没有返回活动。"
+                summary = "这段已查询范围内没有符合筛选条件的活动。"
             else:
                 summary = "本地没有匹配记录，所选范围尚未确认完整。可到设置发起历史补采。"
         return dashboard(request, "运动活动", **filters, start=first, end=last,
@@ -396,23 +458,97 @@ def create_app(data_dir=None, *, client=None):
                          rows=rows, activity_keys=keys, result_count=count, page=page, pages=pages,
                          empty_message=summary)
 
+    @app.get("/workout")
+    def workout(request: Request, id: str):
+        found = store.query("SELECT occurred_at, payload FROM records WHERE source='workouts' AND record_key=?", (id,))
+        if not found:
+            raise HTTPException(404, "找不到该活动。")
+        row = json.loads(found[0]["payload"])
+        detail = summary(row)
+        labels = {"avgTemperature": "平均温度", "humidity": "湿度", "windSpeed": "风速",
+                  "windDirection": "风向", "feeling": "主观感受"}
+        featured = {"avgSpeed", "ascent", "descent", "avgCadence", "maxCadence",
+                    "avgPower", "pte", "peakEpoc", "recoveryTime", "zones"}
+        optional = {labels.get(key, key): value for key, value in detail.items()
+                    if key not in featured and value is not None}
+        return dashboard(request, row.get("workoutName") or sport_name(row), workout=row, workout_id=id,
+                         workout_at=found[0]["occurred_at"], metrics=workout_metrics(row),
+                         charts=intensity_charts(row), optional_metrics=optional)
+
+    @app.get("/compare")
+    def compare(request: Request, sport: str = "", first: str = "", second: str = ""):
+        entries = records(store, "workouts")
+        sports = sorted({sport_name(row) for _, row in entries})
+        chosen = sport if sport in sports else sports[0] if sports else ""
+        options = [(at, row) for at, row in reversed(entries) if sport_name(row) == chosen]
+        allowed = {row["workoutId"]: row for _, row in options if row.get("workoutId")}
+        picked = [allowed[key] for key in (first, second) if key in allowed]
+        distance = max((v for _, row in options if (v := numeric(row.get("totalDistance"))) is not None), default=None)
+        climb = max((v for _, row in options if (v := numeric(summary(row).get("ascent"))) is not None), default=None)
+        return dashboard(request, "运动对比", comparison=True, sports=sports, sport=chosen, options=options,
+                         first=first, second=second, best_km=distance / 1000 if distance is not None else None,
+                         best_climb=climb, comparison_rows=[compare_metrics(row) for row in picked] if len(picked) == 2 and first != second else [])
+
     @app.get("/sleep-recovery")
-    def sleep_recovery(request: Request):
-        return dashboard(request, "睡眠与恢复", charts=[
-            summary_chart("睡眠时长（小时）", recent("sleep"), "Duration", lambda values: sum(values) / 3600),
-            summary_chart("日均身体资源（%）", recent("recovery"), "Balance",
-                          lambda values: 100 * sum(values) / len(values)),
-        ])
+    def sleep_recovery(request: Request, days: Annotated[int, Query(ge=7, le=90)] = 28):
+        today = datetime.now(TZ).date()
+        span = dates(today - timedelta(days=days-1), today)
+        preferences = config.read()
+        fields = preferences.get("wellness_fields", {})
+        unit = preferences.get("sleep_stage_unit", "seconds")
+        charts, sleep_rows, count, latest_metrics = wellness(recent("sleep", days+1), recent("recovery", days),
+                                              recent("workouts", days), span, fields, unit)
+        return dashboard(request, "睡眠与恢复", charts=charts, wellness_days=days, sleep_rows=sleep_rows,
+                         sleep_count=count, latest_metrics=latest_metrics)
 
     @app.get("/daily-activity")
-    def daily_activity(request: Request):
-        return dashboard(request, "日常活动", charts=daily_charts(recent("daily_activity")))
+    def daily_activity(request: Request, source: str = "", period: str = "day",
+                       days: Annotated[int, Query(ge=7, le=366)] = 28):
+        today = datetime.now(TZ).date()
+        preferences = config.read()
+        goal = preferences.get("step_goal")
+        period = period if period in ("day", "week", "month") else "day"
+        charts, providers, selected, metrics = daily_report(recent("daily_activity", days),
+            dates(today - timedelta(days=days-1), today), source or preferences.get("primary_source"), goal, period)
+        return dashboard(request, "日常活动", charts=charts, daily_stats=metrics, providers=providers,
+                         provider=selected, daily_period=period, daily_days=days, step_goal=goal)
 
     @app.get("/routes")
-    def routes(request: Request):
-        entries = records(store, "routes")
+    def routes(request: Request, q: str = "", sport: str = "", watch: str = "", visibility: str = "",
+               km: str = "",
+               updated: str = ""):
+        all_routes = records(store, "routes")
+        sports = sorted({name for _, row in all_routes if isinstance(row.get("activityNames"), list)
+                         for name in row["activityNames"] if isinstance(name, str)})
+        if updated:
+            try:
+                updated = date.fromisoformat(updated).isoformat()
+            except ValueError:
+                return dashboard(request, "保存路线", message="请选择有效的更新日期。")
+        try:
+            km = lower_bound(km, 100000)
+        except ValueError:
+            return dashboard(request, "保存路线", message="请输入有效的距离。")
+        entries = [(at, row) for at, row in all_routes
+                   if (not q or q.strip().casefold() in str(row.get("description") or "").casefold())
+                   and (not sport or isinstance(row.get("activityNames"), list) and sport in row["activityNames"])
+                   and (not watch or watch == "on" and row.get("watchEnabled") is True
+                        or watch == "off" and row.get("watchEnabled") is False)
+                   and (not visibility or row.get("visibility") == visibility)
+                   and (km is None or numeric(row.get("totalDistance")) is not None and row["totalDistance"] >= km*1000)
+                   and (not updated or row.get("modified") and at and at[:10] >= updated)]
+        route_meta = [{"id": row["routeId"], "modified": at if row.get("modified") else None,
+                       "watch": row.get("watchEnabled"), "visibility": row.get("visibility")}
+                      for at, row in reversed(entries)]
+        distribution = Counter(name for _, row in entries if isinstance(row.get("activityNames"), list)
+                               for name in set(x for x in row["activityNames"] if isinstance(x, str)))
         return dashboard(request, "保存路线", headings=("路线名称或描述", "距离（km）", "运动类型", "地图"),
-                         rows=table_rows(entries, "routes"), route_maps=route_map_points(entries))
+                         rows=table_rows(entries, "routes"), route_maps=route_map_points(entries),
+                         route_meta=route_meta, route_sports=sports, route_summary=distribution.most_common(),
+                         route_filter={"q": q, "sport": sport, "watch": watch,
+                         "visibility": visibility, "km": km, "updated": updated},
+                         route_basemap=config.read().get("route_basemap", False),
+                         route_detail_available=any(t["name"] == "get_route_summary" for t in discovery["tools"]))
 
     @app.get("/sync-status")
     def sync_page():
@@ -428,11 +564,16 @@ def create_app(data_dir=None, *, client=None):
                     "failure": status["failures"].get(name),
                     "available": any(tool["name"] == meta[0] for tool in discovery["tools"])}
                    for name, meta in SOURCES.items()]
+        prefs = config.read()
+        field_sets = {source: recent(source, 90) for source in ("sleep", "recovery")}
+        bindings = [(key, label, mapping_fields(field_sets[source], kind))
+                    for key, (source, label, kind) in WELLNESS_FIELDS.items()]
         return TEMPLATES.TemplateResponse(
             request=request, name="dashboard.html",
             context={"title": "设置", "saved": saved, "message": message, "oauth_error": oauth_error,
                      "settings_minutes": config.load(), "discovery": discovery, "sync_status": status,
-                     "sources": sources, "source_labels": SOURCE_LABELS},
+                     "sources": sources, "source_labels": SOURCE_LABELS, "prefs": prefs, "bindings": bindings,
+                     "daily_sources": daily_sources()},
             headers=NO_CACHE if request.url.path == "/oauth/callback" else HOME_HEADERS,
         )
 
@@ -452,6 +593,49 @@ def create_app(data_dir=None, *, client=None):
         await asyncio.to_thread(config.save, minutes)
         app.state.schedule_changed.set()
         return RedirectResponse("/settings?saved=true", status_code=303, headers=NO_CACHE)
+
+    @app.post("/preferences")
+    async def save_preferences(request: Request,
+                               weekly_km: Annotated[str, Form()] = "",
+                               step_goal: Annotated[str, Form()] = "",
+                               primary_source: Annotated[str, Form()] = "",
+                               route_basemap: Annotated[bool, Form()] = False,
+                               sleep_stage_unit: Annotated[str, Form()] = "seconds"):
+        if sleep_stage_unit not in ("seconds", "minutes", "ms"):
+            raise HTTPException(422, "睡眠阶段单位无效。")
+        if primary_source and primary_source not in daily_sources():
+            raise HTTPException(422, "请选择已有的日常活动来源。")
+        try:
+            distance_goal = lower_bound(weekly_km, 10000)
+            steps = int(step_goal) if step_goal.strip() else None
+            if distance_goal == 0 or steps is not None and not 0 < steps <= 1000000:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(422, "训练目标或步数目标无效。")
+        form = await request.form()
+        stored = config.read().get("wellness_fields", {})
+        data = {source: recent(source, 90) for source in ("sleep", "recovery")}
+        fields = {}
+        for key, (source, _, kind) in WELLNESS_FIELDS.items():
+            picked = form.get(key)
+            if picked and picked != stored.get(key) and picked not in mapping_fields(data[source], kind):
+                raise HTTPException(422, "只能选择本地记录里实际出现的字段。")
+            if picked:
+                fields[key] = picked
+        stages = [fields[key] for key in ("deep", "light", "rem") if key in fields]
+        if len(stages) != len(set(stages)) or fields.get("bedtime") and fields.get("bedtime") == fields.get("wake"):
+            raise HTTPException(422, "睡眠阶段及入睡、醒来时间必须使用各自不同的字段。")
+        await asyncio.to_thread(config.update, {"weekly_km": distance_goal, "step_goal": steps,
+                                "primary_source": primary_source,
+                                "route_basemap": route_basemap, "sleep_stage_unit": sleep_stage_unit,
+                                "wellness_fields": fields})
+        return RedirectResponse("/settings?saved=true#preferences", status_code=303, headers=NO_CACHE)
+
+    def daily_sources():
+        return [row["provider"] for row in store.query("""
+            SELECT DISTINCT json_extract(payload, '$.Source') AS provider FROM records
+            WHERE source='daily_activity' AND json_type(payload, '$.Source')='text' ORDER BY provider
+        """)]
 
     @app.get("/export.csv")
     def export_csv():

@@ -2,6 +2,14 @@
 {% block content %}
     <h1>首页概览</h1>
     <section>
+      <h2>本周与本月</h2>
+      <p>最近成功同步 {{ last_sync or '—' }} · 本周 {{ week.n }} 次 / {{ week.km if week.km is not none else '—' }} km · 上周同期 {{ prior.n }} 次 / {{ prior.km if prior.km is not none else '—' }} km · 本月 {{ month.n }} 次 / {{ month.km if month.km is not none else '—' }} km。</p>
+      <p>本周用时 {{ week.minutes if week.minutes is not none else '—' }} 分钟 · 上周同期 {{ prior.minutes if prior.minutes is not none else '—' }} 分钟 · 本月 {{ month.minutes if month.minutes is not none else '—' }} 分钟。</p>
+      {% if weekly_goal %}<p>每周距离目标 {{ weekly_goal }} km，当前 {{ week.km if week.km is not none else '—' }} km。</p>{% endif %}
+      {% if sports %}<p>本周运动类型 {% for name, count in sports %}{{ name }} {{ count }}/{{ week.n }}{{ '、' if not loop.last else '' }}{% endfor %}</p>{% endif %}
+      <p>以上为本地数据。<a href="/training?period=week">查看训练周报</a></p>
+    </section>
+    <section>
       <h2>活动概览</h2>
       {% if overview %}
       <div class="cards">

@@ -84,8 +84,6 @@ jobs:
           export COMPOSE_FILE="docker-compose.yml:$override"
           export COMPOSE_PROJECT_NAME="suunto-fresh-ci"
           printf 'services:\n  app:\n    image: "%s"\n' "$SUUNTO_IMAGE" > "$override"
-          mkdir -m 700 ./suunto-data
-          sudo chown 10001:10001 ./suunto-data
           docker compose config --quiet
           docker compose up -d --no-build --wait --wait-timeout 90
           curl --fail --silent --show-error --data "minutes=15" http://127.0.0.1:7383/settings
@@ -98,9 +96,9 @@ jobs:
           store.commit(run, "workouts", [("fixture-activity", at, {"workoutId": "fixture-activity", "totalDistance": 1000})])
           PY
           docker inspect "$(docker compose ps -q app)" \
-            --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}:{{.Source}}{{end}}{{end}}' \
-            | grep -Fx "bind:$(pwd -P)/suunto-data"
-          docker compose restart app
+            --format '{{.Name}}:{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}:{{.Name}}{{end}}{{end}}' \
+            | grep -Fx "/suunto-data-borad:volume:suunto-fresh-ci_suunto-storage"
+          docker compose down
           docker compose up -d --no-build --wait --wait-timeout 90
           curl --fail --silent --show-error http://127.0.0.1:7383/healthz
           probe="$(docker compose exec -T app python -m suunto probe)" || test "$?" -eq 1
@@ -110,11 +108,7 @@ jobs:
           snapshot="$RUNNER_TEMP/suunto-backup-ci.zip"
           docker compose exec -T app python -m suunto backup > "$snapshot"
           docker compose exec -T app python -m suunto verify < "$snapshot"
-          docker compose stop app
-          restored="$RUNNER_TEMP/suunto-restore-data"
-          mkdir -m 700 "$restored"
-          sudo chown 10001:10001 "$restored"
-          printf 'services:\n  app:\n    image: "%s"\n    volumes:\n      - "%s:/data"\n' "$SUUNTO_IMAGE" "$restored" > "$override"
+          docker compose down
           docker compose -p suunto-restore-ci run --rm --no-deps -T app python -m suunto restore < "$snapshot"
           docker compose -p suunto-restore-ci run --rm --no-deps -T app python -m suunto restore --component settings < "$snapshot"
           docker compose -p suunto-restore-ci up -d --no-build --wait --wait-timeout 90

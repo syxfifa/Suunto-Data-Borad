@@ -1,5 +1,10 @@
 # Suunto Data Borad 变更记录
 
+## V1.0.1
+
+- Compose 默认拉取 `latest`，容器名固定为 `suunto-data-borad`，使用 Docker 命名卷 `suunto-storage`，部署时无需调整 NAS 文件夹权限。
+- CI 使用新命名卷验证启动、容器重建后保留数据和独立卷恢复。
+
 ## V1.0.0
 
 - 单容器部署，NAS 和容器端口统一使用 7383，数据写入项目目录的 `suunto-data`。

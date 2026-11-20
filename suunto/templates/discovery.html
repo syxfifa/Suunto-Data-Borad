@@ -1,30 +1,68 @@
 {% extends "base.html" %}
+{% macro amount(value) -%}
+{{ value if value is not none else '—' }}
+{%- endmacro %}
 {% block content %}
-    <h1>首页概览</h1>
-    <section>
-      <h2>本周与本月</h2>
-      <p>最近成功同步 {{ last_sync or '—' }} · 本周 {{ week.n }} 次 / {{ week.km if week.km is not none else '—' }} km · 上周同期 {{ prior.n }} 次 / {{ prior.km if prior.km is not none else '—' }} km · 本月 {{ month.n }} 次 / {{ month.km if month.km is not none else '—' }} km。</p>
-      <p>本周用时 {{ week.minutes if week.minutes is not none else '—' }} 分钟 · 上周同期 {{ prior.minutes if prior.minutes is not none else '—' }} 分钟 · 本月 {{ month.minutes if month.minutes is not none else '—' }} 分钟。</p>
-      {% if weekly_goal %}<p>每周距离目标 {{ weekly_goal }} km，当前 {{ week.km if week.km is not none else '—' }} km。</p>{% endif %}
-      {% if sports %}<p>本周运动类型 {% for name, count in sports %}{{ name }} {{ count }}/{{ week.n }}{{ '、' if not loop.last else '' }}{% endfor %}</p>{% endif %}
-      <p>以上为本地数据。<a href="/training?period=week">查看训练周报</a></p>
-    </section>
-    <section>
-      <h2>活动概览</h2>
-      {% if overview %}
-      <div class="cards">
-        {% for item in overview %}
-        <article>
-          <h3>近 {{ item.days }} 天</h3>
-          {% if not item.covered %}<p>部分日期尚未确认覆盖，以下为本地记录统计。</p>{% endif %}
-          <dl>
-            <div><dt>活动次数</dt><dd>{{ item.n }}</dd></div>
-            <div><dt>总距离</dt><dd>{{ '%.1f km'|format(item.km) if item.km is not none else '—' }}</dd></div>
-            <div><dt>总时长</dt><dd>{{ '%.1f 小时'|format(item.hours) if item.hours is not none else '—' }}</dd></div>
-          </dl>
-        </article>
-        {% endfor %}
+<div class="page-heading">
+  <h1>首页概览</h1>
+  <p class="meta">最近成功同步 {% if last_sync %}<time datetime="{{ last_sync }}">{{ last_sync[:16]|replace('T', ' ') }}</time> · 北京时间{% else %}—{% endif %}</p>
+</div>
+<section class="panel overview-summary">
+  <div class="section-heading">
+    <h2>本周与本月</h2>
+    <a href="/training?period=week">查看训练周报</a>
+  </div>
+  <div class="overview-layout">
+    <div class="table-scroll" role="region" aria-label="本周与本月运动统计" tabindex="0">
+      <table class="overview-table">
+        <thead><tr><th scope="col">时段</th><th scope="col">次数</th><th scope="col">距离（km）</th><th scope="col">用时（分钟）</th></tr></thead>
+        <tbody>
+          {% for name, item in [('本周', week), ('上周同期', prior), ('本月', month)] %}
+          <tr {% if loop.first %}class="current-period"{% endif %}>
+            <th scope="row">{{ name }}</th><td>{{ item.n }}</td><td>{{ amount(item.km) }}</td><td>{{ amount(item.minutes) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if weekly_goal or sports %}
+    <div class="overview-context">
+      {% if weekly_goal %}
+      <div class="goal">
+        <h3>每周距离目标</h3>
+        <p><strong>{{ amount(week.km) }}</strong> / {{ weekly_goal }} km</p>
+        {% if week.km is not none %}
+        <meter min="0" max="{{ weekly_goal }}" value="{{ [week.km, weekly_goal]|min }}" aria-label="每周距离目标进度"></meter>
+        {% endif %}
       </div>
-      {% else %}<p>暂无已入库活动。可在<a href="/settings">设置</a>中连接 Suunto 或运行同步。</p>{% endif %}
-    </section>
+      {% endif %}
+      {% if sports %}
+      <div>
+        <h3>本周运动类型</h3>
+        <ul class="sport-list">{% for name, count in sports %}<li><span>{{ name }}</span><span>{{ count }} / {{ week.n }} 次</span></li>{% endfor %}</ul>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+  <p class="meta">以上为本地数据。</p>
+</section>
+<section class="overview-history">
+  <h2>活动概览</h2>
+  {% if overview %}
+  <div class="period-grid">
+    {% for item in overview %}
+    <article class="panel period-summary">
+      <h3>近 {{ item.days }} 天</h3>
+      <dl class="metrics">
+        <div><dt>活动次数</dt><dd>{{ item.n }}</dd></div>
+        <div><dt>总距离（km）</dt><dd>{{ '%.1f'|format(item.km) if item.km is not none else '—' }}</dd></div>
+        <div><dt>总时长（小时）</dt><dd>{{ '%.1f'|format(item.hours) if item.hours is not none else '—' }}</dd></div>
+      </dl>
+      {% if not item.covered %}<p class="meta">部分日期尚未确认覆盖。</p>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}<p class="empty-state">暂无已入库活动。可在<a href="/settings">设置</a>中连接 Suunto 或运行同步。</p>{% endif %}
+</section>
 {% endblock %}

@@ -30,9 +30,11 @@
     <button>对比活动</button>
   </form>
   {% if comparison_rows %}
-  <table><thead><tr>{% for label in ('活动', '距离（km）', '时长（分钟）', '平均配速或速度', '爬升（m）', '平均心率', 'TSS') %}<th>{{ label }}</th>{% endfor %}</tr></thead>
+  <div class="table-scroll" role="region" tabindex="0" aria-label="运动对比结果">
+<table><thead><tr>{% for label in ('活动', '距离（km）', '时长（分钟）', '平均配速或速度', '爬升（m）', '平均心率', 'TSS') %}<th scope="col">{{ label }}</th>{% endfor %}</tr></thead>
     <tbody>{% for row in comparison_rows %}<tr><th>{{ 'A' if loop.first else 'B' }}</th>
       {% for cell in row %}<td>{{ cell if cell is not none else '—' }}</td>{% endfor %}</tr>{% endfor %}</tbody></table>
+</div>
   {% elif first and second %}<p>请选择两条不同的同类型活动。</p>{% endif %}
 </section>
 {% endif %}

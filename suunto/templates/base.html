@@ -4,21 +4,23 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title or '首页' }} · Suunto 内网看板</title>
-  <link rel="stylesheet" href="/static/dashboard.css?v=0.3.0">
+  <link rel="stylesheet" href="/static/dashboard.css?v=0.3.1">
 </head>
 <body>
-  <header>
-    <a class="brand" href="/">Suunto 内网看板</a>
+  <a class="skip-link" href="#main-content">跳到主内容</a>
+  <header class="site-header">
+    <a class="brand" href="/"><strong>Suunto</strong><span>Data Borad</span></a>
     <nav aria-label="主导航">
-      <a href="/training">训练趋势</a>
-      <a href="/activities">运动活动</a>
-      <a href="/compare">运动对比</a>
-      <a href="/sleep-recovery">睡眠与恢复</a>
-      <a href="/daily-activity">日常活动</a>
-      <a href="/routes">保存路线</a>
-      <a href="/settings">设置</a>
+      {% set current = request.url.path %}
+      {% set aliases = {'/workout': '/activities', '/sync-status': '/settings', '/sync': '/settings',
+                       '/oauth/start': '/settings', '/oauth/callback': '/settings', '/backfill': '/settings'} %}
+      {% for href, label in [('/', '概览'), ('/training', '训练趋势'), ('/activities', '运动活动'),
+        ('/compare', '运动对比'), ('/sleep-recovery', '睡眠与恢复'), ('/daily-activity', '日常活动'),
+        ('/routes', '保存路线'), ('/settings', '设置')] %}
+      <a href="{{ href }}" {% if aliases.get(current, current) == href %}aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
     </nav>
   </header>
-  <main>{% block content %}{% endblock %}</main>
+  <main id="main-content" tabindex="-1">{% block content %}{% endblock %}</main>
 </body>
 </html>

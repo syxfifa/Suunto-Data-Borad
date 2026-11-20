@@ -1,5 +1,6 @@
 <section id="preferences">
   <h2>目标、地图与可选指标</h2>
+  {% if preferences_saved %}<p class="notice" role="status">显示偏好已保存。</p>{% endif %}
   <form action="/preferences" method="post">
     <div class="controls">
       <label>每周距离目标（km）<input name="weekly_km" type="number" min="0.1" step="0.1" value="{{ prefs.weekly_km or '' }}"></label>

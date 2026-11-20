@@ -391,9 +391,9 @@ def create_app(data_dir=None, *, client=None):
         series = workout_chart(current, weekly, first_day, today, coverage, TZ, extended=True)
         for item in series:
             item["sport"] = selected if selected != "未标注运动类型" else ""
-        series.append(acwr_series(history, first_day, today, coverage))
         return dashboard(request, "训练趋势", show_period=True, weekly=weekly,
-                         charts=series, sport=selected, sports=sports, days=days,
+                         charts=series[:2] + [series[4]], sport=selected, sports=sports, days=days,
+                         advanced_charts=series[2:4] + series[5:] + [acwr_series(history, first_day, today, coverage)],
                          monthly_totals=grouped_totals(current, monthly=True), weeks=grouped_totals(current),
                          streak=longest_streak(current), training_mix=sport_counts(current))
 
@@ -554,7 +554,7 @@ def create_app(data_dir=None, *, client=None):
     def sync_page():
         return RedirectResponse("/settings#sync", status_code=303, headers=NO_CACHE)
 
-    def settings_page(request, *, saved=False, message=None, oauth_error=None):
+    def settings_page(request, *, saved=False, preferences_saved=False, message=None, oauth_error=None):
         status = sync_status()
         status["backfill_pending"] = any(row["next_at"] < row["end_at"] for row in status["backfill"])
         spans = {row["source"]: row for row in status["sources"]}
@@ -570,7 +570,8 @@ def create_app(data_dir=None, *, client=None):
                     for key, (source, label, kind) in WELLNESS_FIELDS.items()]
         return TEMPLATES.TemplateResponse(
             request=request, name="dashboard.html",
-            context={"title": "设置", "saved": saved, "message": message, "oauth_error": oauth_error,
+            context={"title": "设置", "saved": saved, "preferences_saved": preferences_saved,
+                     "message": message, "oauth_error": oauth_error,
                      "settings_minutes": config.load(), "discovery": discovery, "sync_status": status,
                      "sources": sources, "source_labels": SOURCE_LABELS, "prefs": prefs, "bindings": bindings,
                      "daily_sources": daily_sources()},
@@ -579,14 +580,14 @@ def create_app(data_dir=None, *, client=None):
 
     @app.get("/settings")
     def settings(request: Request, saved: bool = False, authorized: bool = False, refresh_required: bool = False,
-                 job: str = ""):
+                 job: str = "", preferences_saved: bool = False):
         message = {"started": "任务已提交。", "busy": "已有同步任务运行中，请稍后重试。",
                    "pause": "已请求暂停，当前请求结束后会保留补采进度。"}.get(job)
         if authorized and mcp.credential().get("access_token"):
             message = "Suunto 授权成功，已安排同步。"
             if refresh_required:
                 message += " 本次授权未返回刷新令牌，到期后需重新授权。"
-        return settings_page(request, saved=saved, message=message)
+        return settings_page(request, saved=saved, preferences_saved=preferences_saved, message=message)
 
     @app.post("/settings")
     async def save_settings(minutes: Annotated[int, Form(ge=1, le=1440)]):
@@ -629,7 +630,7 @@ def create_app(data_dir=None, *, client=None):
                                 "primary_source": primary_source,
                                 "route_basemap": route_basemap, "sleep_stage_unit": sleep_stage_unit,
                                 "wellness_fields": fields})
-        return RedirectResponse("/settings?saved=true#preferences", status_code=303, headers=NO_CACHE)
+        return RedirectResponse("/settings?preferences_saved=true#preferences", status_code=303, headers=NO_CACHE)
 
     def daily_sources():
         return [row["provider"] for row in store.query("""

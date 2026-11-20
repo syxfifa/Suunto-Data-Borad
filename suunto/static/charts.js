@@ -1,7 +1,8 @@
-const colors = ["#14707c", "#b24c27", "#5e46a0", "#37722c"];
+const colors = ["#15646a", "#a24928", "#654b8b", "#49713b"];
+const axis = "#4a6265";
+const grid = "#d5e0de";
 
-for (const element of document.querySelectorAll(".chart-data")) {
-  const series = JSON.parse(element.textContent);
+function renderChart(canvas, series) {
   const datasets = Object.entries(series.columns).map(([label, data], index) => ({
     label,
     data,
@@ -9,14 +10,16 @@ for (const element of document.querySelectorAll(".chart-data")) {
     backgroundColor: colors[index % colors.length],
     borderWidth: 2,
     borderRadius: 3,
+    pointRadius: 2,
   }));
-  const canvas = element.parentElement.querySelector("canvas");
   new Chart(canvas, {
     type: series.kind,
     data: { labels: series.labels, datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: matchMedia("(prefers-reduced-motion: reduce)").matches ? false : undefined,
+      color: axis,
       onClick: (_, bars) => {
         const range = series.ranges?.[bars[0]?.index];
         if (range) {
@@ -24,8 +27,32 @@ for (const element of document.querySelectorAll(".chart-data")) {
           location.assign("/activities?" + params);
         }
       },
-      plugins: { legend: { display: datasets.length > 1 } },
-      scales: { x: {stacked: Boolean(series.stacked)}, y: { beginAtZero: true, stacked: Boolean(series.stacked) } },
+      plugins: {legend: {display: datasets.length > 1, labels: {boxWidth: 12}}},
+      scales: {
+        x: {stacked: Boolean(series.stacked), grid: {display: false}, ticks: {maxTicksLimit: 8, maxRotation: 0}},
+        y: {beginAtZero: true, stacked: Boolean(series.stacked), grid: {color: grid}, ticks: {maxTicksLimit: 5}},
+      },
     },
   });
+}
+
+for (const element of document.querySelectorAll(".chart-data")) {
+  const series = JSON.parse(element.textContent);
+  const panel = element.parentElement;
+  const canvas = panel.querySelector("canvas");
+  if (!Object.values(series.columns).some((values) => values.some(Number.isFinite))) {
+    canvas.parentElement.hidden = true;
+    panel.querySelector(".chart-empty").hidden = false;
+    continue;
+  }
+  const disclosure = element.closest("details");
+  if (disclosure && !disclosure.open) {
+    disclosure.addEventListener("toggle", function onOpen() {
+      if (!disclosure.open) return;
+      renderChart(canvas, series);
+      disclosure.removeEventListener("toggle", onOpen);
+    });
+  } else {
+    renderChart(canvas, series);
+  }
 }

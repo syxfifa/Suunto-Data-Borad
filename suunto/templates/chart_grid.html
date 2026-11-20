@@ -1,0 +1,14 @@
+<div class="chart-grid {% if chart_layout is defined %}{{ chart_layout }}{% endif %}">
+  {% for chart in chart_items %}
+  <section class="chart-panel">
+    <h2>{{ chart.title }}</h2>
+    {% if chart.labels %}
+    <div class="plot"><canvas role="img" aria-label="{{ chart.title }}"></canvas></div>
+    <p class="empty-state chart-empty" hidden>这段时间暂无数据。</p>
+    <script type="application/json" class="chart-data">{{ chart|tojson }}</script>
+    {% else %}
+    <p class="empty-state">这段时间暂无数据。</p>
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>

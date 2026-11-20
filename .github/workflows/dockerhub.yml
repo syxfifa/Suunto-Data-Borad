@@ -83,7 +83,8 @@ jobs:
           override="$RUNNER_TEMP/suunto-ci-compose.yml"
           export COMPOSE_FILE="docker-compose.yml:$override"
           export COMPOSE_PROJECT_NAME="suunto-upgrade-ci"
-          printf 'services:\n  app:\n    image: "%s"\n' "jjsyx123/suunto-data-borad:0.7.0" > "$override"
+          printf 'services:\n  app:\n    image: "%s"\n    volumes:\n      - legacy-data:/data\nvolumes:\n  legacy-data:\n' \
+            "jjsyx123/suunto-data-borad:0.7.0" > "$override"
           docker compose config --quiet
           docker compose up -d --no-build --wait --wait-timeout 90
           curl --fail --silent --show-error http://127.0.0.1:8000/healthz
@@ -96,9 +97,20 @@ jobs:
           run = store.start("upgrade_fixture", at)
           store.commit(run, "workouts", [("fixture-old", at, {"workoutId": "fixture-old", "totalDistance": 1000})])
           PY
+          old_container="$(docker compose ps -q app)"
+          test -n "$old_container"
+          test "$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}{{end}}{{end}}' "$old_container")" = volume
+          old_image="$(docker inspect --format '{{.Image}}' "$old_container")"
           docker compose stop app
+          mkdir -m 700 ./suunto-data
+          docker run --rm --user 0:0 --volumes-from "$old_container:ro" \
+            --mount "type=bind,source=$(pwd -P)/suunto-data,target=/destination" \
+            "$old_image" sh -ec 'test -f /data/suunto.sqlite; cp -a /data/. /destination/; chown -R 10001:10001 /destination; chmod 700 /destination'
           printf 'services:\n  app:\n    image: "%s"\n' "$SUUNTO_IMAGE" > "$override"
           docker compose up -d --no-build --wait --wait-timeout 90
+          docker inspect "$(docker compose ps -q app)" \
+            --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}:{{.Source}}{{end}}{{end}}' \
+            | grep -Fx "bind:$(pwd -P)/suunto-data"
           docker compose exec -T app python - <<'PY'
           from suunto.store import SCHEMA_VERSION, Store
           store = Store("/data")
@@ -114,6 +126,10 @@ jobs:
           docker compose exec -T app python -m suunto backup > "$snapshot"
           docker compose exec -T app python -m suunto verify < "$snapshot"
           docker compose stop app
+          restored="$RUNNER_TEMP/suunto-restore-data"
+          mkdir -m 700 "$restored"
+          sudo chown 10001:10001 "$restored"
+          printf 'services:\n  app:\n    image: "%s"\n    volumes:\n      - "%s:/data"\n' "$SUUNTO_IMAGE" "$restored" > "$override"
           docker compose -p suunto-restore-ci run --rm --no-deps -T app python -m suunto restore < "$snapshot"
           docker compose -p suunto-restore-ci run --rm --no-deps -T app python -m suunto restore --component settings < "$snapshot"
           docker compose -p suunto-restore-ci up -d --no-build --wait --wait-timeout 90

@@ -1,5 +1,10 @@
 # Suunto Data Borad 变更记录
 
+## 0.8.2
+
+- Compose 将项目目录内的 `./suunto-data` 挂载到容器 `/data`。README 提供首次部署、旧命名卷迁移和日常操作说明。
+- Git 和 Docker 构建忽略整个 `suunto-data` 目录。CI 检查命名卷迁移和独立目录恢复。
+
 ## 0.8.1
 
 - 运动对比按页读取候选并保留跨页选择。保存路线在 SQLite 内完成筛选和计数，只读取当前页记录。

@@ -29,11 +29,10 @@ def records(store, source, start=None, end=None):
 
 
 SORTS = {"date": "occurred_at", "distance": "distance", "duration": "duration", "tss": "tss"}
+WORKOUT_PATHS = {"distance": "$.totalDistance", "duration": "$.totalTimeSeconds", "tss": "$.tss"}
 
 
-def workout_page(store, start, end, page, size=50, *, sport="", search="", minimums=None,
-                 sort="date", order="desc"):
-    where, parameters = record_filter("workouts", start, end)
+def workout_filter(where, parameters, sport="", search="", minimums=None):
     if sport:
         where += " AND json_extract(payload, '$.activityName')=?"
         parameters.append(sport)
@@ -41,11 +40,17 @@ def workout_page(store, start, end, page, size=50, *, sport="", search="", minim
         where += " AND instr(lower(coalesce(json_extract(payload, '$.workoutName'), '') || ' ' || " \
                  "coalesce(json_extract(payload, '$.description'), '')), lower(?))>0"
         parameters.append(search)
-    paths = {"distance": "$.totalDistance", "duration": "$.totalTimeSeconds", "tss": "$.tss"}
     for metric, value in (minimums or {}).items():
-        if metric in paths and value is not None:
-            where += f" AND json_type(payload, '{paths[metric]}') IN ('real','integer') AND json_extract(payload, '{paths[metric]}')>=?"
+        if metric in WORKOUT_PATHS and value is not None:
+            path = WORKOUT_PATHS[metric]
+            where += f" AND json_type(payload, '{path}') IN ('real','integer') AND json_extract(payload, '{path}')>=?"
             parameters.append(value)
+    return where, parameters
+
+
+def workout_page(store, start, end, page, size=50, *, sport="", search="", minimums=None,
+                 sort="date", order="desc"):
+    where, parameters = workout_filter(*record_filter("workouts", start, end), sport, search, minimums)
     count = store.query(f"SELECT count(*) AS n FROM records WHERE {where}", parameters)[0]["n"]
     pages = max(1, (count + size - 1) // size)
     page = min(page, pages)
@@ -53,7 +58,7 @@ def workout_page(store, start, end, page, size=50, *, sport="", search="", minim
     direction = "ASC" if order == "asc" else "DESC"
     rows = store.query(f"""
         SELECT record_key, occurred_at, payload,
-               {", ".join(f"CASE WHEN json_type(payload, '{path}') IN ('real','integer') THEN json_extract(payload, '{path}') END AS {alias}" for alias, path in paths.items())}
+               {", ".join(f"CASE WHEN json_type(payload, '{path}') IN ('real','integer') THEN json_extract(payload, '{path}') END AS {alias}" for alias, path in WORKOUT_PATHS.items())}
         FROM records WHERE {where}
         ORDER BY {primary} IS NULL, {primary} {direction}, occurred_at DESC, record_key DESC LIMIT ? OFFSET ?
         """, [*parameters, size, (page - 1) * size])
@@ -190,7 +195,8 @@ def chart(title, labels, columns, kind="line"):
     return {"title": title, "labels": labels, "columns": columns, "kind": kind}
 
 
-def csv_cells(store):
+def csv_cells(store, source=None, start=None, end=None, *, format="raw", share=False,
+              sport="", search="", minimums=None):
     buffer = StringIO()
     writer = csv.writer(buffer)
 
@@ -202,12 +208,56 @@ def csv_cells(store):
             ("=", "+", "-", "@")) else item for item in values])
         return buffer.getvalue()
 
-    yield "\ufeff" + line(("source", "record_key", "occurred_at", "payload"))
+    if source:
+        # The archive includes historical route entries removed remotely.
+        where = ["source=?"]
+        parameters = [source]
+    else:
+        where, parameters = ["1=1"], []
+    for value, condition in ((start, "occurred_at>=?"), (end, "occurred_at<?")):
+        if value is not None:
+            where.append(condition)
+            parameters.append(value.isoformat())
+    clause = " AND ".join(where)
+    if source == "workouts":
+        clause, parameters = workout_filter(clause, parameters, sport, search, minimums)
+    raw = format == "raw" and not share
+    fields = ("source", "date") if share else ("source", "record_key", "occurred_at")
+    columns = ("activity_type", "distance_km", "duration_min", "avg_hr_bpm", "tss", "elevation_gain_m",
+               "sleep_hours", "body_resources_percent", "stress_state", "steps", "energy_kcal")
+    yield "\ufeff" + line(fields + (("payload",) if raw else columns + (() if share else ("name", "provider"))))
     # StreamingResponse may advance this iterator on different worker threads.
     with store.connect(check_same_thread=False) as db:
-        cursor = db.execute("""
-            SELECT source, record_key, occurred_at, payload FROM records
+        cursor = db.execute(f"""
+            SELECT source, record_key, occurred_at, payload FROM records WHERE {clause}
             ORDER BY source, occurred_at, record_key
-            """)
+            """, parameters)
         for row in cursor:
-            yield line(row)
+            if raw:
+                yield line(row)
+                continue
+            name, key, at, raw_data = row
+            prefix = (name, at[:10] if at else None) if share else (name, key, at)
+            payload = json.loads(raw_data)
+            detail = payload.get("entryData")
+            data = detail if isinstance(detail, dict) else {}
+            route_sports = payload.get("activityNames")
+            sport_name = payload.get("activityName") if name == "workouts" else (
+                " / ".join(s for s in route_sports if isinstance(s, str)) if isinstance(route_sports, list) else None)
+            step = None
+            energy = numeric(payload.get("energy"))
+            if name == "daily_activity" and payload.get("Aggregation") == "sum":
+                sample = numeric(payload.get("Sample", {}).get("Value"))
+                if payload.get("Name") == "stepcount":
+                    step = sample
+                if payload.get("Name") == "energyconsumption":
+                    energy = scaled(sample, 4184, 2)
+            balance = numeric(data.get("Balance"))
+            metric_values = (sport_name, scaled(numeric(payload.get("totalDistance")), 1000, 3),
+                             scaled(numeric(payload.get("totalTimeSeconds")), 60, 2),
+                             numeric(payload.get("hrAvgValue")), numeric(payload.get("tss")),
+                             numeric(summary(payload).get("ascent")), scaled(numeric(data.get("Duration")), 3600, 3),
+                             round(balance * 100, 2) if balance is not None and 0 <= balance <= 1 else None,
+                             numeric(data.get("StressState")), step, energy)
+            private = () if share else (payload.get("workoutName") or payload.get("description"), payload.get("Source"))
+            yield line(prefix + metric_values + private)

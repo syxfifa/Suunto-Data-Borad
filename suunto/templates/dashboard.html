@@ -8,7 +8,7 @@
 {% include "reports_panels.html" %}
 {% if settings_minutes is defined %}
 <nav class="section-nav" aria-label="设置页分区">
-  <a href="#suunto">连接与授权</a><a href="#sync">同步</a><a href="#backfill">历史补采</a><a href="#preferences">显示偏好</a>
+  <a href="#suunto">连接与授权</a><a href="#sync">同步</a><a href="#backfill">历史补采</a><a href="#preferences">显示偏好</a><a href="/maintenance">维护</a>
 </nav>
 {% if saved %}<p class="notice" role="status">已保存同步间隔。</p>{% endif %}
 <div class="settings-grid" id="suunto">
@@ -19,7 +19,10 @@
       {% if request.url.path == '/oauth/callback' %}
       <a class="button secondary" href="/settings">返回设置重新连接 Suunto</a>
       {% else %}
-      <form method="post" action="/oauth/start"><button>连接 Suunto</button></form>
+      <form method="post" action="/oauth/start">
+        {% if account_has_data %}<p><label><input type="checkbox" name="same_account" value="true" required>继续使用此数据卷原来的 Suunto 账号</label></p>{% endif %}
+        <button>连接 Suunto</button>
+      </form>
       {% endif %}
     </section>
     <section>
@@ -92,7 +95,12 @@
   <a class="button secondary" href="/activities?start=&amp;end=">全部日期</a>
 </div>
 </section>
-{% if result_count is defined %}<p class="results-count">共 {{ result_count }} 条活动</p>{% endif %}
+{% if result_count is defined %}
+<div class="section-heading">
+  <p class="results-count">共 {{ result_count }} 条活动</p>
+  {% if result_count %}<a href="/export.csv?{{ export_query }}&amp;format=columns">导出当前筛选</a>{% endif %}
+</div>
+{% endif %}
 {% endif %}
 {% if charts is defined %}
 <script src="/static/chart.umd.min.js" defer></script>
@@ -215,6 +223,7 @@
     <form method="post" action="/sync"><button>立即同步</button></form>
     <form method="post" action="/workout-details"><button class="secondary">补齐缺失的运动详情</button></form>
     <a href="/export.csv" class="button secondary">下载全部 CSV</a>
+    <a href="/export" class="button secondary">自定义导出</a>
   </div>
 </section>
 <section class="table-wrap">

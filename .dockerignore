@@ -6,3 +6,8 @@ data
 **/config.json
 **/suunto.sqlite
 **/suunto.sqlite-*
+**/access.json
+**/.maintenance.lock
+**/suunto-backup*.zip
+**/suunto*.csv
+**/suunto-diagnostics*.json

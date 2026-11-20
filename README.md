@@ -67,6 +67,64 @@ SQLite 中的时间索引用北京时间。原始返回字段保存在 JSON 记�
 - 保存路线支持按名称、运动类型、距离、更新日期、手表状态和可见性筛选。可在本地预览位置、缩放、拖动和复制坐标；官方详情工具可用时能按需补齐缺失的点。在设置中启用 OpenStreetMap 后可打开独立底图，点击链接才会把所选点坐标发送给 OpenStreetMap。CSV 包含数据源、去重键、北京时间索引及记录 JSON。
 - 设置页可将同步间隔调整为 1–1440 分钟。浏览器所需的 Chart.js 已随镜像提供。
 
+## 导出和日常维护
+
+- **设置 → 同步 → 自定义导出**支持来源、起止日期、原始 JSON CSV 或带单位的指标列。运动活动页也可导出当前筛选下所有页的结果。日期按北京时间，包含结束当天。
+- **分享模式**只导出指标和日期，省略坐标、名称、设备来源、记录编号及原始 JSON。运动和健康指标仍属于个人数据，分享前请检查内容。
+- **设置 → 维护**显示版本、SQLite 占用、记录数、授权状态、最近同步时间，可下载脱敏诊断。诊断仅含运行汇总，不含日志正文、令牌、个人域名或原始记录。日志默认保留 90 天，可设为 7–365 天，最近一次成功同步仍可查看。
+- `/healthz` 用于 Compose 的存活检查。`/readyz` 返回最近已知的 MCP 探测和授权状态，未授权或无法确认可用时返回 `503`。访问控制启用时，`/readyz` 和数据接口均需要看板密码。
+- SQLite 保留原始 JSON。活动查询使用时间及运动类型索引，列表保持分页；设置页在 SQLite 内汇总已见字段名和类型。可在维护页观察数据库大小，再根据实际查询耗时决定是否添加周/月汇总表。
+
+## NAS 备份、恢复和回滚
+
+在 NAS 的 Compose 目录运行以下命令。在线备份通过 SQLite Backup API 包含已提交的 WAL 数据，可以在服务运行中执行。归档应保存到私有备份目录。
+
+```sh
+umask 077
+archive="$HOME/suunto-backup-$(date +%F-%H%M%S).zip"
+docker compose exec -T app python -m suunto backup > "$archive"
+docker compose exec -T app python -m suunto verify < "$archive"
+```
+
+归档默认包含数据库和已存在的 `config.json`。仅使用 `backup --include-token` 才会备份 OAuth 凭据。ZIP 本身没有加密。看板密码哈希保存在独立的 `access.json`，不会打包。归档、个人配置和导出文件应留在私有目录。
+
+从 `0.3.x` 首次升级时，旧容器没有备份命令。定义上面的 `archive` 变量后，先拉新镜像，用同一 Compose 项目下的新镜像读取原卷。验证成功后再重建服务。
+
+```sh
+docker compose pull app
+docker compose run --rm --no-deps -T app python -m suunto backup > "$archive"
+docker compose run --rm --no-deps -T app python -m suunto verify < "$archive"
+docker compose up -d
+```
+
+恢复会替换选中的组件。先备份当前状态，再验证目标归档，确认原 Compose 项目对应正确的数据卷。
+
+```sh
+docker compose stop app
+docker compose run --rm --no-deps -T app python -m suunto restore --component database --replace --same-account < "$archive"
+docker compose run --rm --no-deps -T app python -m suunto restore --component settings --replace < "$archive"
+docker compose up -d
+```
+
+已有组件需要 `--replace`。数据卷已有 OAuth 凭据时，恢复数据库需要确认 `--same-account`。带令牌的归档只有在明确使用 `--component token --same-account` 时才恢复令牌。账号归属不明时使用独立数据卷。恢复检查结构和完整性，并要求 app 停止。
+
+回滚镜像时，在原 Compose 文件把 `image` 固定为上一版标签（例如 `jjsyx123/suunto-data-borad:0.3.1`），再拉取并重建。保留数据卷。需要恢复旧数据时，在固定旧标签之前用新版镜像运行上述维护命令。回滚到没有内置访问控制的版本前，由 HTTPS 代理或 NAS 网络策略保护访问。
+
+## 内网访问控制与账号隔离
+
+使用 NAS 现有的 HTTPS 反向代理。保留原 `Host`（含端口），由代理重写 `X-Forwarded-Proto`，并在 Compose 的 `app.environment` 中为 Uvicorn 设置 `FORWARDED_ALLOW_IPS` 为实际可信代理地址或专用子网。用 NAS 防火墙或独立网络限制后端端口的访问范围。通过 HTTPS 打开 **设置 → 维护 → 访问控制**，为用户名 `suunto` 设置独立看板密码。功能默认关闭，仍可按原方式使用内网 HTTP。启用后，容器内 probe/sync CLI 可加全局选项 `--authenticate` 交互输入密码。
+
+忘记看板密码时，在 NAS 上用 `docker compose stop app` 停止服务，运行 `docker compose run --rm --no-deps -T app python -m suunto access-reset`，再运行 `docker compose up -d` 启动并重新设置。看板密码独立于 Suunto 账号。
+
+在 **设置 → 维护 → Suunto 账号** 可以清除本地令牌。已有记录仍保存在卷中。此操作仅断开当前实例，不调用 Suunto 撤销接口。由于 MCP 未提供可供本应用可靠比对的稳定账号标识，旧卷重连须确认是原账号。新账号应从独立的 Compose 项目启动：
+
+```sh
+docker compose stop app
+docker compose -p suunto-second up -d
+```
+
+要同时运行两套，在第二份 Compose 文件使用不同主机端口。新实例首次进入设置页后自行授权，原项目和卷可以之后重新启动。
+
 ## NAS/PVE 升级验收
 
 在原项目目录运行以下命令。保留原有 Compose 项目和命名卷，可继续使用已有授权、数据库和配置。
@@ -97,7 +155,7 @@ Compose 默认使用 `docker.io/jjsyx123/suunto-data-borad:latest`。需要固�
 
 ## 排查
 
-- **授权失败**。查看「连接 Suunto」按钮旁的提示。使用同一个看板地址和浏览器发起并完成登录。旧链接或会话过期时，从首页重新连接。
+- **授权失败**。查看「连接 Suunto」按钮旁的提示。使用同一个看板地址和浏览器发起并完成登录。旧链接或会话过期时，回到设置页重新连接。
 - **Token 过期**。探测调用会在过期前尝试刷新。刷新凭据失效或官方未签发刷新 token 时重新授权。
 - **MCP 限流**。程序按 `Retry-After` 等待，长等待由状态页提示；查看 `docker compose logs --tail 100 app`。
 - **字段缺失**。重新运行 `probe` 和对应 `sample`。区分工具未开放、样本为空和单条记录缺字段，再决定页面是否显示对应指标。

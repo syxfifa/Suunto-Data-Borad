@@ -127,15 +127,9 @@ def intensity_charts(row):
     return charts
 
 
-def mapping_fields(entries, kind):
-    keys = set()
-    for _, row in entries:
-        for key, value in row["entryData"].items():
-            if ((kind == "number" and numeric(value) is not None)
-                or (kind == "text" and isinstance(value, str))
-                or (kind == "scalar" and (isinstance(value, str) or numeric(value) is not None))):
-                keys.add(key)
-    return sorted(keys)
+def mapping_fields(fields, kind):
+    valid = {"number": {"integer", "real"}, "text": {"text"}, "scalar": {"integer", "real", "text"}}
+    return sorted({field["name"] for field in fields if field["type"] in valid[kind]})
 
 
 def parsed_stamp(value):

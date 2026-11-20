@@ -1,7 +1,7 @@
 """First-stage web authorization and real MCP discovery."""
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from collections import Counter
 from datetime import date, datetime, time as clock_time, timedelta
 from ipaddress import ip_address
@@ -10,18 +10,22 @@ import logging
 from math import ceil
 from pathlib import Path
 import re
-from time import monotonic
+from time import monotonic, time
+from sqlite3 import Error as SQLiteError
 from typing import Annotated
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import Cookie, FastAPI, Form, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from .mcp import AUTHORIZATION_TIMEOUT, Client, MCPError, NeedsAuthorization, READ_TOOLS
+from .access import Access
+from . import VERSION
+from .maintenance import storage_size, volume_lock
 from .config import Config
 from .reports import (WELLNESS_FIELDS, acwr_series, compare_metrics, daily_report, dates, grouped_totals,
                       intensity_charts, longest_streak, mapping_fields, midnight, period_totals,
@@ -48,6 +52,16 @@ def lower_bound(value, maximum):
     if not 0 <= result <= maximum:
         raise ValueError
     return result
+
+
+def local_transport(request):
+    if request.url.scheme == "https":
+        return True
+    try:
+        return (ip_address(request.client.host).is_loopback
+                and (request.url.hostname == "localhost" or ip_address(request.url.hostname).is_loopback))
+    except (ValueError, AttributeError):
+        return False
 
 
 def dashboard_callback(request):
@@ -112,6 +126,7 @@ def create_app(data_dir=None, *, client=None):
     store = Store(data_dir)
     sync = Synchronizer(mcp, store)
     config = Config(data_dir)
+    access = Access(data_dir)
     discovery = {"status": "probing", "tools": [], "checked_at": None, "message": None}
     task = None
     task_name = None
@@ -125,7 +140,10 @@ def create_app(data_dir=None, *, client=None):
 
         async def work():
             try:
-                return await asyncio.to_thread(sync.run, trigger, **options)
+                result = await asyncio.to_thread(sync.run, trigger, **options)
+                if result and result["status"] == "authorization_required":
+                    discovery.update(status="authorization_required", tools=[], message="Suunto 需要重新授权。")
+                return result
             except Exception:
                 LOG.exception("Synchronization task failed")
                 return {"status": "failed"}
@@ -148,10 +166,18 @@ def create_app(data_dir=None, *, client=None):
 
     @asynccontextmanager
     async def lifespan(_):
+        with ExitStack() as maintenance:
+            maintenance.enter_context(volume_lock(data_dir))
+            async with app_runtime():
+                yield
+
+    @asynccontextmanager
+    async def app_runtime():
         # Serve the authorization page even while the first network probe waits.
         logging.getLogger("httpx").setLevel(logging.WARNING)
         sync.stopping.clear()
         store.initialize()
+        prune_logs()
         startup = asyncio.create_task(asyncio.to_thread(probe))
         schedule_changed = asyncio.Event()
         app.state.schedule_changed = schedule_changed
@@ -164,6 +190,10 @@ def create_app(data_dir=None, *, client=None):
                     await asyncio.wait_for(schedule_changed.wait(), timeout=config.load() * 60)
                     schedule_changed.clear()
                 except asyncio.TimeoutError:
+                    try:
+                        await asyncio.to_thread(prune_logs)
+                    except SQLiteError:
+                        LOG.exception("Could not prune old sync logs")
                     submit("scheduled")
 
         scheduler = asyncio.create_task(schedule())
@@ -178,8 +208,34 @@ def create_app(data_dir=None, *, client=None):
                 await task
             mcp.http.close()
 
-    app = FastAPI(title="Suunto 内网看板", lifespan=lifespan)
+    def prune_logs():
+        store.prune_logs((datetime.now(TZ) - timedelta(days=config.retention_days())).isoformat())
+
+    app = FastAPI(title="Suunto 内网看板", version=VERSION, lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
+
+    @app.middleware("http")
+    async def local_access(request, call_next):
+        path = request.url.path
+        if path == "/healthz" or path.startswith("/static/"):
+            return await call_next(request)
+        if access.enabled():
+            if not local_transport(request):
+                return JSONResponse({"detail": "已启用访问控制，请通过 HTTPS 地址访问。"}, 403, headers=NO_CACHE)
+            if not await asyncio.to_thread(access.accepts, request.headers.get("authorization", "")):
+                return JSONResponse({"detail": "请输入本地看板用户名和密码。"}, 401,
+                                    headers={**NO_CACHE, "WWW-Authenticate": 'Basic realm="Suunto dashboard", charset="UTF-8"'})
+        if request.method == "POST" and path != "/oauth/start":
+            origin = request.headers.get("origin")
+            same = True
+            if origin is not None:
+                try:
+                    same = origin == dashboard_callback(request).removesuffix("/oauth/callback")
+                except MCPError:
+                    same = False
+            if request.headers.get("sec-fetch-site") == "cross-site" or not same:
+                return JSONResponse({"detail": "请从看板页面发起操作。"}, 403, headers=NO_CACHE)
+        return await call_next(request)
 
     @app.get("/")
     def index(request: Request):
@@ -214,7 +270,7 @@ def create_app(data_dir=None, *, client=None):
                      "month": period_totals([(at, row) for at, row in data if at[:10] >= month_start.isoformat()]),
                      "sports": sport_counts(week_rows), "last_sync": stats["last_success_at"],
                      "weekly_goal": config.read().get("weekly_km")},
-            headers=NO_CACHE,
+            headers=HOME_HEADERS,
         )
 
     @app.get("/healthz")
@@ -222,14 +278,49 @@ def create_app(data_dir=None, *, client=None):
         store.query("SELECT 1 FROM records LIMIT 1")
         return {"status": "ok"}
 
+    def mcp_state():
+        try:
+            credential = mcp.credential()
+        except MCPError:
+            return "error"
+        if not credential.get("access_token"):
+            return "authorization_required"
+        expires = credential.get("expires_at", credential.get("refresh_at"))
+        if not credential.get("refresh_token") and type(expires) in (int, float) and expires <= time():
+            return "authorization_required"
+        state = discovery["status"]
+        return state if state in ("ready", "authorization_required", "error") else "probing"
+
+    @app.get("/readyz")
+    def readiness():
+        state = mcp_state()
+        return JSONResponse({"status": state, "version": VERSION}, status_code=200 if state == "ready" else 503,
+                            headers=NO_CACHE)
+
+    def account_has_data():
+        return bool(store.query("SELECT 1 FROM records LIMIT 1"))
+
+    @app.post("/disconnect")
+    async def disconnect():
+        if (task and not task.done()) or not sync.lock.acquire(blocking=False):
+            return RedirectResponse("/maintenance?notice=busy", status_code=303, headers=NO_CACHE)
+        try:
+            await asyncio.to_thread(mcp.disconnect)
+            discovery.update(status="authorization_required", tools=[], message="已从此看板断开 Suunto。")
+        finally:
+            sync.lock.release()
+        return RedirectResponse("/maintenance?notice=disconnected", status_code=303, headers=NO_CACHE)
+
     @app.post("/oauth/start")
-    def authorize(request: Request):
+    async def authorize(request: Request, same_account: Annotated[bool, Form()] = False):
         try:
             redirect_uri = dashboard_callback(request)
             origin = request.headers.get("origin")
             if origin and origin != redirect_uri.removesuffix("/oauth/callback"):
                 raise MCPError("请从看板页面发起授权。")
-            url, state = mcp.begin(redirect_uri)
+            if not same_account and account_has_data():
+                raise MCPError("此数据卷已有个人记录，请确认使用原 Suunto 账号；新账号请使用独立数据卷。")
+            url, state = await asyncio.to_thread(mcp.begin, redirect_uri)
         except MCPError as exc:
             LOG.warning("OAuth registration or discovery failed: %s", exc)
             return settings_page(request, oauth_error=str(exc))
@@ -369,7 +460,7 @@ def create_app(data_dir=None, *, client=None):
 
     def dashboard(request, title, **context):
         return TEMPLATES.TemplateResponse(request=request, name="dashboard.html",
-                                         context={"title": title, **context}, headers=NO_CACHE)
+                                         context={"title": title, **context}, headers=HOME_HEADERS)
 
     def recent(source, days=28):
         today = datetime.now(TZ).date()
@@ -453,10 +544,12 @@ def create_app(data_dir=None, *, client=None):
                 summary = "这段已查询范围内没有符合筛选条件的活动。"
             else:
                 summary = "本地没有匹配记录，所选范围尚未确认完整。可到设置发起历史补采。"
+        export_query = urlencode({"source": "workouts", "start": first or "", "end": last or "",
+                                  **{key: search_state[key] for key in ("sport", "q", "km", "minutes", "tss")}})
         return dashboard(request, "运动活动", **filters, start=first, end=last,
                          headings=("北京时间", "运动类型", "距离（km）", "时长（分钟）", "平均心率", "训练效果 PTE"),
                          rows=rows, activity_keys=keys, result_count=count, page=page, pages=pages,
-                         empty_message=summary)
+                         empty_message=summary, export_query=export_query)
 
     @app.get("/workout")
     def workout(request: Request, id: str):
@@ -565,7 +658,7 @@ def create_app(data_dir=None, *, client=None):
                     "available": any(tool["name"] == meta[0] for tool in discovery["tools"])}
                    for name, meta in SOURCES.items()]
         prefs = config.read()
-        field_sets = {source: recent(source, 90) for source in ("sleep", "recovery")}
+        field_sets = wellness_fields()
         bindings = [(key, label, mapping_fields(field_sets[source], kind))
                     for key, (source, label, kind) in WELLNESS_FIELDS.items()]
         return TEMPLATES.TemplateResponse(
@@ -574,7 +667,7 @@ def create_app(data_dir=None, *, client=None):
                      "message": message, "oauth_error": oauth_error,
                      "settings_minutes": config.load(), "discovery": discovery, "sync_status": status,
                      "sources": sources, "source_labels": SOURCE_LABELS, "prefs": prefs, "bindings": bindings,
-                     "daily_sources": daily_sources()},
+                     "daily_sources": daily_sources(), "account_has_data": account_has_data()},
             headers=NO_CACHE if request.url.path == "/oauth/callback" else HOME_HEADERS,
         )
 
@@ -615,7 +708,7 @@ def create_app(data_dir=None, *, client=None):
             raise HTTPException(422, "训练目标或步数目标无效。")
         form = await request.form()
         stored = config.read().get("wellness_fields", {})
-        data = {source: recent(source, 90) for source in ("sleep", "recovery")}
+        data = wellness_fields()
         fields = {}
         for key, (source, _, kind) in WELLNESS_FIELDS.items():
             picked = form.get(key)
@@ -632,6 +725,10 @@ def create_app(data_dir=None, *, client=None):
                                 "wellness_fields": fields})
         return RedirectResponse("/settings?preferences_saved=true#preferences", status_code=303, headers=NO_CACHE)
 
+    def wellness_fields():
+        cutoff = midnight(datetime.now(TZ).date() - timedelta(days=89)).isoformat()
+        return {source: store.observed_entry_fields(source, cutoff) for source in ("sleep", "recovery")}
+
     def daily_sources():
         return [row["provider"] for row in store.query("""
             SELECT DISTINCT json_extract(payload, '$.Source') AS provider FROM records
@@ -639,8 +736,84 @@ def create_app(data_dir=None, *, client=None):
         """)]
 
     @app.get("/export.csv")
-    def export_csv():
-        return StreamingResponse(csv_cells(store), media_type="text/csv",
-                                 headers={**NO_CACHE, "Content-Disposition": 'attachment; filename="suunto.csv"'})
+    def export_csv(source: str = "", start: str = "", end: str = "", format: str = "raw", share: bool = False,
+                   sport: str = "", q: str = "", km: str = "", minutes: str = "", tss: str = ""):
+        if (source and source not in SOURCES) or format not in ("raw", "columns"):
+            raise HTTPException(422, "导出数据源或格式无效。")
+        try:
+            first = date.fromisoformat(start) if start else None
+            last = date.fromisoformat(end) if end else None
+            if last == date.max or (first and last and first > last):
+                raise ValueError
+            distance, duration, stress = lower_bound(km, 100000), lower_bound(minutes, 600000), lower_bound(tss, 100000)
+        except ValueError as exc:
+            raise HTTPException(422, "导出日期或筛选条件无效。") from exc
+        begin = midnight(first) if first else None
+        finish = midnight(last + timedelta(days=1)) if last else None
+        rows = csv_cells(store, source, begin, finish, format=format, share=share, sport=sport, search=q.strip(),
+                         minimums={"distance": distance * 1000 if distance is not None else None,
+                                   "duration": duration * 60 if duration is not None else None, "tss": stress})
+        name = "suunto-share.csv" if share else "suunto.csv"
+        return StreamingResponse(rows, media_type="text/csv",
+                                 headers={**NO_CACHE, "Content-Disposition": f'attachment; filename="{name}"'})
+
+    @app.get("/export")
+    def export_options(request: Request):
+        return TEMPLATES.TemplateResponse(request=request, name="maintenance.html",
+            context={"title": "导出数据", "sources": {name: SOURCE_LABELS[name] for name in SOURCES}},
+            headers=HOME_HEADERS)
+
+    @app.get("/maintenance")
+    def maintenance_page(request: Request, notice: str = ""):
+        message = {"disconnected": "已断开 Suunto 授权，本地历史仍可查看。",
+                   "busy": "同步正在进行，请完成或暂停后重试。",
+                   "retention": "已保存日志保留天数。",
+                   "enabled": "已保存本地看板密码。", "disabled": "已关闭本地看板密码。"}.get(notice)
+        status = store.status()
+        return TEMPLATES.TemplateResponse(request=request, name="maintenance.html",
+            context={"title": "维护", "maintenance": True, "message": message, "version": VERSION,
+                     "counts": {name: status["counts"].get(name, 0) for name in SOURCES}, "source_labels": SOURCE_LABELS,
+                     "size": round(storage_size(data_dir)/1024**2, 2), "mcp_status": mcp_state(),
+                     "last_sync": status["last_success_at"], "log_days": config.retention_days(),
+                     "protected": access.enabled(), "secure": local_transport(request)},
+            headers=HOME_HEADERS)
+
+    @app.get("/diagnostics.json")
+    def diagnostics():
+        status = store.status()
+        # Build the report from explicitly allowed aggregates, never from diagnostic log bodies.
+        states = {"ok", "failed", "partial", "running", "interrupted", "paused", "authorization_required"}
+        report = {
+            "version": VERSION, "database_bytes": storage_size(data_dir),
+            "authorization": mcp_state(), "access_control": access.enabled(),
+            "retention_days": config.retention_days(),
+            "record_counts": {name: status["counts"].get(name, 0) for name in SOURCES},
+            "recent_sync_statuses": [item["status"] for item in status["runs"] if item["status"] in states],
+        }
+        return JSONResponse(report, headers={**NO_CACHE, "Content-Disposition": 'attachment; filename="suunto-diagnostics.json"'})
+
+    @app.post("/maintenance/retention")
+    async def save_retention(days: Annotated[int, Form(ge=7, le=365)]):
+        await asyncio.to_thread(config.update, {"log_retention_days": days})
+        # Honor a shorter window immediately without removing any active run.
+        await asyncio.to_thread(prune_logs)
+        return RedirectResponse("/maintenance?notice=retention", status_code=303, headers=NO_CACHE)
+
+    @app.post("/maintenance/access")
+    async def save_access(request: Request, mode: Annotated[str, Form()], password: Annotated[str, Form()] = ""):
+        if not local_transport(request):
+            raise HTTPException(403, "请先配置可信 HTTPS 反向代理。")
+        try:
+            if mode == "enable":
+                await asyncio.to_thread(access.set_password, password)
+                notice = "enabled"
+            elif mode == "disable":
+                access.clear()
+                notice = "disabled"
+            else:
+                raise ValueError("访问控制操作无效。")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return RedirectResponse(f"/maintenance?notice={notice}#access", status_code=303, headers=NO_CACHE)
 
     return app

@@ -36,6 +36,10 @@ class Config:
     def save(self, minutes):
         self.update({"sync_interval_minutes": minutes})
 
+    def retention_days(self):
+        days = self.read().get("log_retention_days")
+        return days if type(days) is int and 7 <= days <= 365 else 90
+
     def update(self, values):
         with self.lock:
             save_json(self.path, {**self.read(), **values, "timezone": TZ.key})

@@ -13,7 +13,8 @@
     <nav aria-label="主导航">
       {% set current = request.url.path %}
       {% set aliases = {'/workout': '/activities', '/sync-status': '/settings', '/sync': '/settings',
-                       '/oauth/start': '/settings', '/oauth/callback': '/settings', '/backfill': '/settings'} %}
+                       '/oauth/start': '/settings', '/oauth/callback': '/settings', '/backfill': '/settings',
+                       '/maintenance': '/settings', '/export': '/settings'} %}
       {% for href, label in [('/', '概览'), ('/training', '训练趋势'), ('/activities', '运动活动'),
         ('/compare', '运动对比'), ('/sleep-recovery', '睡眠与恢复'), ('/daily-activity', '日常活动'),
         ('/routes', '保存路线'), ('/settings', '设置')] %}

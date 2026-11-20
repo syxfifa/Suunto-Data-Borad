@@ -17,6 +17,7 @@ from urllib.parse import urlencode, urlsplit
 
 import httpx
 
+from . import VERSION
 
 MCP_URL = "https://mcp.suunto.cn/open/mcp"
 ISSUER = "https://mcp.suunto.cn"
@@ -82,6 +83,12 @@ class Client:
         self.pending = None
         self.headers = None
         self.cooldown = 0.0
+
+    def disconnect(self):
+        with self.lock:
+            self.path.unlink(missing_ok=True)
+            self.pending = None
+            self.headers = None
 
     def credential(self):
         try:
@@ -200,7 +207,7 @@ class Client:
         refresh = result.get("refresh_token")
         if not refresh and grant["grant_type"] == "refresh_token":
             refresh = credential.get("refresh_token")
-        new = {**credential, "access_token": access, "refresh_token": refresh,
+        new = {**credential, "access_token": access, "refresh_token": refresh, "expires_at": started + expiry,
                "refresh_at": started + expiry - min(60, expiry / 2)}
         save_json(self.path, new)
         self.headers = None
@@ -258,7 +265,7 @@ class Client:
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json, text/event-stream"}
         result, response_headers = self.rpc(headers, "initialize", {
             "protocolVersion": "2025-06-18", "capabilities": {},
-            "clientInfo": {"name": "suunto-lan-dashboard", "version": "0.1.0"},
+            "clientInfo": {"name": "suunto-lan-dashboard", "version": VERSION},
         })
         version = result.get("protocolVersion")
         if version not in ("2025-03-26", "2025-06-18", "2025-11-25"):

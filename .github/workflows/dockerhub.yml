@@ -83,6 +83,15 @@ jobs:
           docker compose up -d --no-build --wait --wait-timeout 90
           curl --fail --silent --show-error http://127.0.0.1:8000/healthz
           docker compose exec -T app python -c 'import json; from pathlib import Path; assert json.loads(Path("/data/config.json").read_bytes())["sync_interval_minutes"] == 15'
+          umask 077
+          snapshot="$RUNNER_TEMP/suunto-backup-ci.zip"
+          docker compose exec -T app python -m suunto backup > "$snapshot"
+          docker compose exec -T app python -m suunto verify < "$snapshot"
+          docker compose stop app
+          docker compose run --rm --no-deps -T app python -m suunto restore --replace < "$snapshot"
+          docker compose up -d --no-build --wait --wait-timeout 90
+          curl --fail --silent --show-error http://127.0.0.1:8000/healthz
+          curl --fail --silent --show-error http://127.0.0.1:8000/diagnostics.json
       - name: Show Compose logs when a check fails
         if: failure()
         run: docker compose logs --no-color app

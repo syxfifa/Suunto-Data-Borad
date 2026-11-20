@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS records (
     PRIMARY KEY (source, record_key)
 );
 CREATE INDEX IF NOT EXISTS records_time ON records(source, occurred_at);
+CREATE INDEX IF NOT EXISTS workouts_sport_time ON records(json_extract(payload, '$.activityName'), occurred_at)
+    WHERE source='workouts';
 CREATE TABLE IF NOT EXISTS cursors (
     source TEXT PRIMARY KEY,
     scanned_until TEXT NOT NULL,
@@ -36,6 +38,8 @@ CREATE TABLE IF NOT EXISTS sync_errors (
     source TEXT NOT NULL,
     message TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS sync_errors_run ON sync_errors(run_id);
+CREATE INDEX IF NOT EXISTS sync_runs_finished ON sync_runs(coalesce(finished_at, started_at));
 CREATE TABLE IF NOT EXISTS coverage (
     source TEXT NOT NULL,
     start_at TEXT NOT NULL,
@@ -108,6 +112,18 @@ class Store:
         with self.connect() as db:
             return db.execute("INSERT INTO sync_runs(trigger, started_at, status) VALUES (?, ?, 'running')",
                               (trigger, at)).lastrowid
+
+    def prune_logs(self, before):
+        with self.connect() as db:
+            old_runs = """
+                SELECT id FROM sync_runs WHERE coalesce(finished_at, started_at) < ?
+                AND status!='running' AND id IS NOT coalesce((
+                    SELECT id FROM sync_runs WHERE status='ok'
+                    AND trigger NOT IN ('backfill', 'details', 'route_details')
+                    ORDER BY finished_at DESC LIMIT 1), -1)
+            """
+            db.execute(f"DELETE FROM sync_errors WHERE run_id IN ({old_runs})", (before,))
+            db.execute(f"DELETE FROM sync_runs WHERE id IN ({old_runs})", (before,))
 
     def finish(self, run_id, at, status):
         with self.connect() as db:
@@ -210,6 +226,14 @@ class Store:
     def record(self, source, key):
         found = self.query("SELECT payload FROM records WHERE source=? AND record_key=?", (source, key))
         return json.loads(found[0]["payload"]) if found else None
+
+    def observed_entry_fields(self, source, since):
+        return self.query("""
+            SELECT DISTINCT field.key AS name, field.type AS type FROM records
+            JOIN json_each(records.payload, '$.entryData') AS field
+            WHERE records.source=? AND records.occurred_at>=? AND field.type IN ('text', 'integer', 'real')
+            ORDER BY name
+            """, (source, since))
 
     def status(self):
         success = self.query("""

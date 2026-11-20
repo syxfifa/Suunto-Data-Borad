@@ -81,44 +81,25 @@ jobs:
       - name: Verify Compose startup and volume persistence
         run: |
           override="$RUNNER_TEMP/suunto-ci-compose.yml"
-          legacy="$RUNNER_TEMP/suunto-ci-legacy.yml"
-          export COMPOSE_PROJECT_NAME="suunto-upgrade-ci"
-          git show 0d86dcf05a193f475aa5915c8c900ded169ba252:docker-compose.yml \
-            | sed 's/:latest"/:0.7.0"/' > "$legacy"
-          export COMPOSE_FILE="$legacy"
+          export COMPOSE_FILE="docker-compose.yml:$override"
+          export COMPOSE_PROJECT_NAME="suunto-fresh-ci"
+          printf 'services:\n  app:\n    image: "%s"\n' "$SUUNTO_IMAGE" > "$override"
+          mkdir -m 700 ./suunto-data
+          sudo chown 10001:10001 ./suunto-data
           docker compose config --quiet
           docker compose up -d --no-build --wait --wait-timeout 90
-          curl --fail --silent --show-error http://127.0.0.1:8000/healthz
-          curl --fail --silent --show-error --data "minutes=15" http://127.0.0.1:8000/settings
-          docker compose exec -T app python - <<'PY'
-          from suunto.store import Store
-          store = Store("/data")
-          at = "2026-01-01T08:00:00+08:00"
-          assert store.query("PRAGMA user_version")[0]["user_version"] == 0
-          run = store.start("upgrade_fixture", at)
-          store.commit(run, "workouts", [("fixture-old", at, {"workoutId": "fixture-old", "totalDistance": 1000})])
-          PY
-          old_container="$(docker compose ps -q app)"
-          test -n "$old_container"
-          test "$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}{{end}}{{end}}' "$old_container")" = volume
-          old_image="$(docker inspect --format '{{.Image}}' "$old_container")"
-          docker compose stop app
-          mkdir -m 700 ./suunto-data
-          docker run --rm --user 0:0 --volumes-from "$old_container:ro" \
-            --mount "type=bind,source=$(pwd -P)/suunto-data,target=/destination" \
-            "$old_image" sh -ec 'test -f /data/suunto.sqlite; cp -a /data/. /destination/; chown -R 10001:10001 /destination; chmod 700 /destination'
-          export COMPOSE_FILE="docker-compose.yml:$override"
-          printf 'services:\n  app:\n    image: "%s"\n' "$SUUNTO_IMAGE" > "$override"
-          docker compose up -d --no-build --wait --wait-timeout 90
-          docker inspect "$(docker compose ps -q app)" \
-            --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}:{{.Source}}{{end}}{{end}}' \
-            | grep -Fx "bind:$(pwd -P)/suunto-data"
+          curl --fail --silent --show-error --data "minutes=15" http://127.0.0.1:7383/settings
           docker compose exec -T app python - <<'PY'
           from suunto.store import SCHEMA_VERSION, Store
           store = Store("/data")
           assert store.query("PRAGMA user_version")[0]["user_version"] == SCHEMA_VERSION
-          assert store.record("workouts", "fixture-old")["totalDistance"] == 1000
+          at = "2026-01-01T08:00:00+08:00"
+          run = store.start("fresh_fixture", at)
+          store.commit(run, "workouts", [("fixture-activity", at, {"workoutId": "fixture-activity", "totalDistance": 1000})])
           PY
+          docker inspect "$(docker compose ps -q app)" \
+            --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}:{{.Source}}{{end}}{{end}}' \
+            | grep -Fx "bind:$(pwd -P)/suunto-data"
           docker compose restart app
           docker compose up -d --no-build --wait --wait-timeout 90
           curl --fail --silent --show-error http://127.0.0.1:7383/healthz
@@ -143,7 +124,7 @@ jobs:
           import json
           from pathlib import Path
           from suunto.store import Store
-          assert Store("/data").record("workouts", "fixture-old")["totalDistance"] == 1000
+          assert Store("/data").record("workouts", "fixture-activity")["totalDistance"] == 1000
           assert json.loads(Path("/data/config.json").read_bytes())["sync_interval_minutes"] == 15
           PY
       - name: Show Compose logs when a check fails
@@ -151,10 +132,8 @@ jobs:
         run: |
           if [[ -f "$RUNNER_TEMP/suunto-ci-compose.yml" ]]; then
             export COMPOSE_FILE="docker-compose.yml:$RUNNER_TEMP/suunto-ci-compose.yml"
-            docker compose -p suunto-upgrade-ci logs --no-color app
+            docker compose -p suunto-fresh-ci logs --no-color app
             docker compose -p suunto-restore-ci logs --no-color app
-          elif [[ -f "$RUNNER_TEMP/suunto-ci-legacy.yml" ]]; then
-            docker compose -f "$RUNNER_TEMP/suunto-ci-legacy.yml" -p suunto-upgrade-ci logs --no-color app
           fi
       - name: Check whether publishing is enabled
         id: release

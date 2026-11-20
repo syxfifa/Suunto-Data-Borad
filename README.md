@@ -1,6 +1,6 @@
 # Suunto Data Borad 使用手册
 
-当前版本 **0.8.3**。NAS 和容器统一使用 **7383** 端口，数据库、授权和设置保存在 NAS 项目目录下的 **suunto-data** 文件夹。
+当前版本 **V1.0.0**。NAS 和容器统一使用 **7383** 端口，数据库、授权和设置保存在 NAS 项目目录下的 **suunto-data** 文件夹。
 
 ## 第一次部署
 
@@ -25,39 +25,6 @@ Compose 的 `7383:7383` 左侧是 NAS 端口，右侧是容器端口。`./suunto
 | `token.json` | Suunto 授权凭据 |
 | `config.json` | 在网页保存的同步间隔、目标和地图偏好 |
 | `access.json` | 启用看板密码后生成的密码哈希 |
-
-## 已有部署切换到 7383
-
-- **已使用 `./suunto-data:/data`**。在原项目目录保留现有数据文件夹，换上新版 Compose。依次执行 `docker compose pull app` 和 `docker compose up -d`，然后打开 `http://NAS内网IP:7383`。
-- **仍使用 `suunto-data:/data` 命名卷**。先按下面的步骤复制完整数据，再换新版 Compose。
-- **通过 HTTPS 反向代理访问**。把反代的后端端口改为 `7383`，保留浏览器访问时的 Host 和端口，向应用转发 HTTPS 协议。若原访问地址或授权状态有变化，可从新地址的设置页重新发起授权。
-
-### 从旧命名卷迁移
-
-在旧 Compose 文件所在目录操作，保留原配置及运行中的旧容器。若已有同名本地文件夹，先核对并另行保管其中的内容。以下命令在停止旧 app 后，以只读方式挂载旧卷并复制完整目录。 [Docker 数据卷迁移说明](https://docs.docker.com/engine/storage/volumes/#back-up-restore-or-migrate-data-volumes)
-
-```sh
-(
-  set -eu
-  old_container="$(docker compose ps -q app)"
-  test -n "$old_container"
-  old_type="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}{{end}}{{end}}' "$old_container")"
-  test "$old_type" = volume
-  old_image="$(docker inspect --format '{{.Image}}' "$old_container")"
-  mkdir -m 700 ./suunto-data
-  docker compose stop app
-  docker run --rm --user 0:0 --volumes-from "$old_container:ro" \
-    --mount "type=bind,source=$(pwd -P)/suunto-data,target=/destination" \
-    "$old_image" sh -ec '
-      test -f /data/suunto.sqlite
-      cp -a /data/. /destination/
-      chown -R 10001:10001 /destination
-      chmod 700 /destination
-    '
-)
-```
-
-复制成功后，换上新版 Compose，执行 `docker compose pull app`、`docker compose up -d`，再用 `docker compose exec app ls -lah /data` 检查文件。在网页确认历史活动和授权状态后，再考虑清理旧卷。若复制失败，可先用原配置执行 `docker compose start app` 恢复服务。
 
 ## 看板功能
 
@@ -103,5 +70,5 @@ docker compose up -d
 - **打不开看板**。检查 `docker compose ps`、`docker compose logs --tail 100 app` 和 NAS 的 TCP `7383` 是否被其他服务占用。出现 `Permission denied` 时，检查项目数据目录对容器 UID/GID `10001:10001` 的权限。
 - **授权失效**。从当前看板地址进入设置，重新点「连接 Suunto」。反代需通过 `FORWARDED_ALLOW_IPS` 将实际代理地址配置为可信来源。
 - **限流或数据缺失**。在设置页查看连接状态、数据覆盖和重试时间。可选指标以已同步到的字段为准。
-- **锁定版本**。可在 Compose 使用镜像 `jjsyx123/suunto-data-borad:0.8.3`。使用 `latest` 时，拉取镜像会跟随已发布版本。升级后在维护页核对版本。
-- **开发验证**。容器内可执行 `docker compose exec app python -m unittest discover -s tests -v`。GitHub Actions 在 `main` 验证双架构、浏览器授权、两端端口、旧命名卷迁移及备份恢复。镜像发布使用仓库 Secret `DOCKERHUB_TOKEN`。
+- **锁定版本**。可在 Compose 使用镜像 `jjsyx123/suunto-data-borad:1.0.0`。使用 `latest` 时，拉取镜像会跟随已发布版本。升级后在维护页核对版本。
+- **开发验证**。容器内可执行 `docker compose exec app python -m unittest discover -s tests -v`。GitHub Actions 在 `main` 验证双架构、浏览器授权、两端端口、备份恢复。镜像发布使用仓库 Secret `DOCKERHUB_TOKEN`。

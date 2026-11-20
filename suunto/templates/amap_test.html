@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading"><h1>{{ title }}</h1><a href="/settings#amap-settings">返回高德地图设置</a></div>
+<section>
+  <h2>测试结果</h2>
+  <p id="amap-check-status" role="status">正在检查高德配置…</p>
+  <div id="amap-check-map" data-key="{{ amap_key }}" aria-label="高德底图测试"></div>
+</section>
+<script src="/static/amap-preview.js?v=1.0.6" defer></script>
+{% endblock %}

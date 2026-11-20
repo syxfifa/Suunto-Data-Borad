@@ -58,4 +58,10 @@
     <button>保存地图设置</button>
     {% if amap_has_key or amap_has_secret %}<button class="secondary" name="clear" value="true">清除高德凭据</button>{% endif %}
   </form>
+  {% if amap_enabled and amap_has_key and amap_has_secret %}
+  <form action="/settings/amap/test" method="post" class="controls">
+    <button type="submit" class="secondary">测试连接</button>
+    <p class="meta">使用已保存的配置和公开坐标测试。</p>
+  </form>
+  {% endif %}
 </section>

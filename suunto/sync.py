@@ -96,7 +96,7 @@ class Synchronizer:
         self.yield_history = Event()
         self.current_source = None
 
-    def run(self, trigger, *, stop=None, history=None, detail_key=None):
+    def run(self, trigger, *, stop=None, history=None, detail_key=None, discover=None):
         if not self.lock.acquire(blocking=False):
             return None
         run_id = None
@@ -109,7 +109,7 @@ class Synchronizer:
                     (source for source, (_, chunk) in SOURCES.items() if chunk is not None),
                     *(bound.isoformat() for bound in history),
                 )
-            names = {tool["name"] for tool in self.mcp.tools()}
+            names = {tool["name"] for tool in (discover or self.mcp.tools)()}
             if trigger == "backfill":
                 status = self.backfill(run_id, names)
                 return {"run_id": run_id, "status": status}

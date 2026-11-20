@@ -29,6 +29,10 @@ class AmapTest(unittest.TestCase):
                                          follow_redirects=False).status_code, 303)
             self.assertNotIn(secret, client.get("/settings").text)
             self.assertNotIn(secret, client.get("/routes").text)
+            check = client.post("/settings/amap/test")
+            self.assertIn(f'data-key="{key}"', check.text)
+            self.assertNotIn(secret, check.text)
+            self.assertNotIn("30.5", check.text)
             self.assertIn(f'data-amap-key="{key}"', client.get("/routes").text)
             self.assertNotIn("amap-preview.js", client.get("/routes?q=unknown").text)
             self.assertEqual(client.get("/_AMapService/v3/place/text").status_code, 404)
@@ -50,3 +54,22 @@ class AmapTest(unittest.TestCase):
             client.post("/settings/amap", data={"clear": "true"})
             self.assertEqual(client.get(endpoint).status_code, 404)
             self.assertNotIn("amap-preview.js", client.get("/routes").text)
+
+    def test_proxy_limits_upstream_calls_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            client = TestClient(create_app(directory))
+            client.post("/settings/amap", data={"enabled": "true", "coordinates": "gps",
+                                               "key": "a" * 32, "secret": "b" * 32}, follow_redirects=False)
+            endpoint = "/_AMapService/v3/assistant/coordinate/convert"
+            with (patch("suunto.amap.PROXY_REQUESTS_PER_MINUTE", 2),
+                  patch("suunto.amap.monotonic", return_value=10) as clock,
+                  patch("suunto.amap.httpx.get", return_value=httpx.Response(200, json={"status": "1"})) as upstream):
+                self.assertEqual(client.get(endpoint).status_code, 200)
+                self.assertEqual(client.get(endpoint).status_code, 200)
+                rejected = client.get(endpoint)
+                self.assertEqual(rejected.status_code, 429)
+                self.assertEqual(rejected.headers["Retry-After"], "60")
+                self.assertEqual(upstream.call_count, 2)
+                clock.return_value = 70
+                self.assertEqual(client.get(endpoint).status_code, 200)
+                self.assertEqual(upstream.call_count, 3)

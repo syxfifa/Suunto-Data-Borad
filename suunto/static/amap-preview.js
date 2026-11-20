@@ -48,7 +48,9 @@ function createAmapPreview(container, key, coordinateSystem) {
           if (status === "complete" && result?.locations?.length === points.length) {
             resolve(result.locations);
           } else {
-            reject(new Error("Coordinate conversion failed"));
+            const error = new Error("Coordinate conversion failed");
+            error.providerCode = String(result?.infocode || result?.info || "");
+            reject(error);
           }
         });
       }).catch((error) => {
@@ -60,11 +62,14 @@ function createAmapPreview(container, key, coordinateSystem) {
     return converted.get(id);
   }
 
-  async function show(points, current) {
+  async function show(points, current, stage = () => {}) {
+    stage("sdk");
     const api = await loadSdk();
     if (!current()) return;
+    stage("conversion");
     const locations = await positions(api, points);
     if (!current()) return;
+    stage("tiles");
     if (!map) {
       map = new api.Map(container, {viewMode: "2D", zoom: 15, center: locations[0], scrollWheel: false});
       mapReady = new Promise((resolve, reject) => {
@@ -100,4 +105,35 @@ function createAmapPreview(container, key, coordinateSystem) {
   }
 
   return {show, zoom};
+}
+
+const checkMap = document.querySelector("#amap-check-map");
+if (checkMap) {
+  const status = document.querySelector("#amap-check-status");
+  const setStage = (stage) => {
+    checkMap.dataset.stage = stage;
+    status.textContent = {
+      sdk: "正在加载高德 JS API…", conversion: "正在测试公开坐标转换…",
+      tiles: "坐标转换成功，正在加载底图…", ready: "测试通过，坐标转换和底图均已加载。",
+    }[stage];
+  };
+  // Use a public landmark, independently of any route on this device.
+  createAmapPreview(checkMap, checkMap.dataset.key, "gps").show(
+    [{lon: 116.3975, lat: 39.9087, label: "测试点"}], () => true, setStage,
+  ).then(() => setStage("ready")).catch((error) => {
+    const messages = {
+      sdk: "高德 JS API 未加载。请检查 Web 端 Key、域名白名单和浏览器网络。",
+      conversion: "坐标转换失败。请检查安全密钥或稍后重试。",
+      tiles: "坐标转换成功，底图加载失败。请检查浏览器网络或稍后重试。",
+    };
+    const knownErrors = {
+      "10001": "高德拒绝了 Key，请核对已保存的 Web 端 Key。",
+      "10006": "高德拒绝了当前域名，请检查域名白名单。",
+      "10009": "高德报告 Key 类型不匹配，请核对是否使用 Web 端（JS API）Key。",
+    };
+    const namedCodes = {INVALID_USER_KEY: "10001", INVALID_USER_DOMAIN: "10006", USERKEY_PLAT_NOMATCH: "10009"};
+    const code = Object.hasOwn(namedCodes, error.providerCode) ? namedCodes[error.providerCode] : error.providerCode;
+    status.textContent = Object.hasOwn(knownErrors, code) ? knownErrors[code] : messages[checkMap.dataset.stage];
+    checkMap.dataset.stage = "failed";
+  });
 }

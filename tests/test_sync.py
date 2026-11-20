@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from time import monotonic
 import unittest
 from unittest.mock import Mock, patch
 
@@ -105,6 +106,29 @@ class SyncTest(unittest.TestCase):
         self.mcp.no_auth = True
         self.assertEqual(self.sync.run("test", stop=self.stop)["status"], "authorization_required")
         self.assertIsNone(self.store.cursor("workouts"))
+
+    def test_home_status_recovers_after_failed_discovery_and_shows_sync_warnings(self):
+        mcp = self.mcp
+        mcp.http = Mock()
+        mcp.credential = lambda: {"access_token": "fixture"}
+        tools = mcp.tools
+        mcp.tools = Mock(side_effect=MCPError("暂时离线"))
+        with TestClient(create_app(self.store.path.parent, client=mcp)) as browser:
+            browser.post("/api/probe")
+            self.assertEqual(browser.get("/readyz").json()["status"], "error")
+            self.assertIn("Suunto 连接异常", browser.get("/").text)
+            mcp.tools = tools
+            mcp.fail_sleep = True
+            self.assertEqual(browser.post("/api/sync").json()["status"], "partial")
+            self.assertEqual(browser.get("/readyz").json()["status"], "ready")
+            self.assertIn("最近一轮同步只更新了部分数据", browser.get("/").text)
+            self.assertIn("workouts", browser.get("/api/status").json()["source_success"])
+            self.assertNotIn("sleep", browser.get("/api/status").json()["source_success"])
+            mcp.cooldown = monotonic() + 30
+            self.assertIn("Suunto 请求受限", browser.get("/").text)
+            mcp.no_auth = True
+            self.assertEqual(browser.post("/api/sync").json()["status"], "authorization_required")
+            self.assertIn("授权已失效", browser.get("/").text)
 
     def test_dashboard_filters_settings_and_csv(self):
         self.sync.run("test", stop=self.stop)

@@ -8,6 +8,14 @@
   <h1>睡眠与训练</h1>
   <p class="meta">最近成功同步 {% if last_sync %}<time datetime="{{ last_sync }}">{{ last_sync[:16]|replace('T', ' ') }}</time> · 北京时间{% else %}—{% endif %}</p>
 </div>
+{% if sync_warning %}<p class="notice" role="status">{{ sync_warning }} <a href="/settings#sync">查看同步状态</a></p>{% endif %}
+<details class="notice">
+  <summary>各数据源最近成功时间</summary>
+  <dl>{% for key in ('workouts', 'sleep', 'recovery', 'daily_activity', 'routes') %}
+    {% set checked = source_success.get(key) %}
+    <div><dt>{{ source_labels[key] }}</dt><dd>{% if checked %}<time datetime="{{ checked }}">{{ checked[:16]|replace('T', ' ') }}</time>{% else %}—{% endif %}</dd></div>
+  {% endfor %}</dl>
+</details>
 <div class="aurora-review" id="aurora-review">
   <section class="aurora-calendar" aria-labelledby="review-calendar">
     <div class="section-heading">

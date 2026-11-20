@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 from time import monotonic, time
 from sqlite3 import Error as SQLiteError
+from threading import Lock
 from typing import Annotated
 from urllib.parse import urlencode, urlsplit
 
@@ -141,6 +142,7 @@ def create_app(data_dir=None, *, client=None):
     amap_config = Config(data_dir, "amap.json")
     access = Access(data_dir)
     discovery = {"status": "probing", "tools": [], "checked_at": None, "message": None}
+    discovery_lock = Lock()
     task = None
     task_name = None
     wake = asyncio.Event()
@@ -161,9 +163,10 @@ def create_app(data_dir=None, *, client=None):
         async def work():
             result = None
             try:
-                result = await asyncio.to_thread(sync.run, trigger, **options)
+                result = await asyncio.to_thread(sync.run, trigger, discover=discover_tools, **options)
                 if result and result["status"] == "authorization_required":
-                    discovery.update(status="authorization_required", tools=[], message="Suunto 需要重新授权。")
+                    discovery.update(status="authorization_required", tools=[], message="Suunto 需要重新授权。",
+                                     checked_at=datetime.now(TZ).isoformat())
                 return result
             except Exception:
                 LOG.exception("Synchronization task failed")
@@ -180,16 +183,24 @@ def create_app(data_dir=None, *, client=None):
         task = asyncio.create_task(work())
         return task
 
+    def discover_tools():
+        with discovery_lock:
+            try:
+                tools = mcp.tools()
+            except MCPError as exc:
+                status = "authorization_required" if isinstance(exc, NeedsAuthorization) else "error"
+                discovery.update(status=status, tools=[], message=str(exc), checked_at=datetime.now(TZ).isoformat())
+                raise
+            discovery.update(status="ready", tools=tools, message=None, checked_at=datetime.now(TZ).isoformat())
+            return tools
+
     def probe():
         try:
-            tools = mcp.tools()
-            discovery.update(status="ready", tools=tools, message=None)
-        except NeedsAuthorization as exc:
-            discovery.update(status="authorization_required", tools=[], message=str(exc))
+            discover_tools()
+        except NeedsAuthorization:
+            pass
         except MCPError as exc:
             LOG.warning("MCP discovery failed: %s", exc)
-            discovery.update(status="error", tools=[], message=str(exc))
-        discovery["checked_at"] = datetime.now(TZ).isoformat()
         return dict(discovery)
 
     @asynccontextmanager
@@ -315,7 +326,17 @@ def create_app(data_dir=None, *, client=None):
         week_rows = [(at, row) for at, row in data if at[:10] >= week_start.isoformat()]
         overview = [{"days": days, **period_summary(data, midnight(day - timedelta(days=days-1)), today, intervals)}
                     for days in (7, 28)]
-        stats = store.status()
+        stats = store.home_sync_status()
+        connection = mcp_state()
+        retry = retry_after()
+        if connection == "authorization_required":
+            warning = "尚未连接 Suunto 或授权已失效。请在设置中连接。"
+        elif retry:
+            warning = f"Suunto 请求受限，请等待 {retry} 秒后再试。"
+        elif connection == "error":
+            warning = "Suunto 连接异常。看板仍可查看本地记录。"
+        else:
+            warning = {"partial": "最近一轮同步只更新了部分数据。", "failed": "最近一轮同步失败。"}.get(stats["latest_status"])
         return TEMPLATES.TemplateResponse(
             request=request, name="discovery.html",
             context={"overview": overview, "week": period_summary(data, midnight(week_start), today, intervals),
@@ -323,6 +344,7 @@ def create_app(data_dir=None, *, client=None):
                      "month": period_summary(data, midnight(month_start), today, intervals),
                      "selected_link": activity_link(chosen, chosen, return_to=back), "today": day,
                      "sports": sport_counts(week_rows), "last_sync": stats["last_success_at"],
+                     "sync_warning": warning, "source_success": stats["source_success"], "source_labels": SOURCE_LABELS,
                      "weekly_goal": preferences.get("weekly_km"), "review_days": snapshots,
                      "selected": selected, "week_from": review_start,
                      "week_to": review_end, "review_charts": review_charts,
@@ -459,7 +481,10 @@ def create_app(data_dir=None, *, client=None):
         return {"running": active or sync.lock.locked(), "task": task_name if active else None,
                 "incremental_pending": "incremental" in queued, "backfill_active": "backfill" in queued,
                 "current_source": sync.current_source,
-                "retry_after": max(0, ceil(getattr(mcp, "cooldown", 0) - monotonic())), **store.status()}
+                "retry_after": retry_after(), **store.status()}
+
+    def retry_after():
+        return max(0, ceil(getattr(mcp, "cooldown", 0) - monotonic()))
 
     @app.post("/api/sync")
     async def api_sync():
@@ -688,7 +713,7 @@ def create_app(data_dir=None, *, client=None):
         return dashboard(request, "日常活动", charts=charts, daily_stats=metrics, providers=providers,
                          provider=selected, daily_period=period, daily_days=days, step_goal=goal)
 
-    app.include_router(amap_router(amap_config))
+    app.include_router(amap_router(amap_config, TEMPLATES))
     app.include_router(library_router(store, config, amap_config, discovery, dashboard))
 
     @app.get("/sync-status")

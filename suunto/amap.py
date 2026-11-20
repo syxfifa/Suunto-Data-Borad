@@ -2,6 +2,10 @@
 
 import json
 import re
+from collections import deque
+from math import ceil
+from threading import Lock
+from time import monotonic
 from typing import Annotated
 from urllib.parse import urlsplit
 
@@ -17,6 +21,7 @@ SERVICES = {
 CREDENTIAL = re.compile(r"[a-fA-F0-9]{32}")
 CALLBACK = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*")
 PRIVATE = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+PROXY_REQUESTS_PER_MINUTE = 30
 
 
 def amap_ready(settings):
@@ -24,8 +29,10 @@ def amap_ready(settings):
                 and settings.get("coordinates") in ("gps", "gaode"))
 
 
-def amap_router(config):
+def amap_router(config, templates):
     router = APIRouter()
+    requests = deque()
+    lock = Lock()
 
     @router.post("/settings/amap")
     def save_amap(enabled: Annotated[bool, Form()] = False,
@@ -49,6 +56,14 @@ def amap_router(config):
             config.update(values)
         return RedirectResponse("/settings?amap_saved=true#amap-settings", status_code=303, headers=PRIVATE)
 
+    @router.post("/settings/amap/test")
+    def test_amap(request: Request):
+        settings = config.read()
+        if not amap_ready(settings):
+            return RedirectResponse("/settings#amap-settings", status_code=303, headers=PRIVATE)
+        return templates.TemplateResponse(request=request, name="amap_test.html",
+                                          context={"title": "测试高德连接", "amap_key": settings["key"]}, headers=PRIVATE)
+
     @router.get("/_AMapService/{service:path}")
     def proxy(request: Request, service: str):
         endpoint = SERVICES.get(service)
@@ -63,6 +78,15 @@ def amap_router(config):
         callback = request.query_params.get("callback", "")
         if callback and (len(callback) > 128 or not CALLBACK.fullmatch(callback)):
             raise HTTPException(400)
+        with lock:
+            instant = monotonic()
+            while requests and instant - requests[0] >= 60:
+                requests.popleft()
+            if len(requests) >= PROXY_REQUESTS_PER_MINUTE:
+                wait = ceil(60 - (instant - requests[0]))
+                raise HTTPException(429, "高德代理请求过于频繁，请稍后重试。",
+                                    headers={**PRIVATE, "Retry-After": str(wait)})
+            requests.append(instant)
         params = [(name, value) for name, value in request.query_params.multi_items()
                   if name.lower() not in {"key", "jscode", "sig", "callback"}]
         if callback:

@@ -8,6 +8,7 @@
   <h2>运行状态</h2>
   <dl>
     <div><dt>应用版本</dt><dd>{{ version }}</dd></div>
+    <div><dt>访问保护</dt><dd>{% if protected %}密码已启用{% else %}<a href="#access">未启用密码</a>{% endif %}</dd></div>
     <div><dt>SQLite 占用（MiB）</dt><dd>{{ size }}</dd></div>
     <div><dt>Suunto 数据连接</dt><dd>{{ {'ready': '可用', 'authorization_required': '待授权', 'probing': '待探测', 'error': '连接异常'}[mcp_status] }}</dd></div>
     <div><dt>上次完整同步</dt><dd>{% if last_sync %}<time datetime="{{ last_sync }}">{{ last_sync[:16]|replace('T', ' ') }}</time>{% else %}—{% endif %}</dd></div>
@@ -40,7 +41,7 @@
 <section id="access">
   <h2>访问控制</h2>
   <p>本地看板密码{{ '已启用' if protected else '未启用' }}。用户名为 <code>suunto</code>。</p>
-  {% if not protected %}<p>能访问看板端口的设备均可查看本地数据。请限制为可信内网来源。</p>{% endif %}
+  {% if not protected %}<p class="notice">能访问看板的设备可以查看健康数据、导出 CSV 和修改设置。共享网络或通过域名开放时，请通过可信 HTTPS 启用密码访问。</p>{% endif %}
   {% if secure %}
   <form action="/maintenance/access" method="post" class="controls">
     <label>{{ '更换密码' if protected else '设置密码' }}<input type="password" name="password" minlength="12" maxlength="128" autocomplete="new-password" required></label>

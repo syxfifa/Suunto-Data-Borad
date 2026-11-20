@@ -319,16 +319,24 @@ class Store:
             GROUP BY field.key, field.type ORDER BY name
             """, (source, since))
 
+    def home_sync_status(self):
+        with self.connect() as db:
+            stats = dict(db.execute("""
+                SELECT
+                    (SELECT max(finished_at) FROM sync_runs
+                     WHERE status='ok' AND trigger NOT IN ('backfill', 'details', 'route_details')) AS last_success_at,
+                    (SELECT status FROM sync_runs WHERE finished_at IS NOT NULL
+                     AND trigger NOT IN ('backfill', 'details', 'route_details') ORDER BY id DESC LIMIT 1) AS latest_status
+                """).fetchone())
+            stats["source_success"] = dict(db.execute("SELECT source, checked_at FROM source_success").fetchall())
+        return stats
+
     def status(self):
-        success = self.query("""
-            SELECT max(finished_at) AS at FROM sync_runs
-            WHERE status='ok' AND trigger NOT IN ('backfill', 'details', 'route_details')
-            """)[0]["at"]
         windows = self.query("SELECT * FROM sync_windows ORDER BY source, start_at, end_at")
         source_failures = {row["source"]: row for row in windows}
         source_failures.update((row["source"], row) for row in self.query("SELECT * FROM sync_failures"))
         return {
-            "last_success_at": success,
+            **self.home_sync_status(),
             "counts": {row["source"]: row["n"] for row in self.query(
                 "SELECT source, count(*) AS n FROM records GROUP BY source")},
             "runs": self.query("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 20"),
@@ -336,7 +344,6 @@ class Store:
             "backfill": self.query("SELECT * FROM backfill ORDER BY rowid"),
             "window_failures": windows,
             "failures": source_failures,
-            "source_success": {r["source"]: r["checked_at"] for r in self.query("SELECT * FROM source_success")},
             "sources": self.query("""
                 SELECT source, count(*) AS n, min(occurred_at) AS first, max(occurred_at) AS last
                 FROM records WHERE source!='routes' OR record_key NOT IN (SELECT record_key FROM removed_routes)

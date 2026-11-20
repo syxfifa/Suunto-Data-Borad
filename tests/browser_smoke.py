@@ -1,6 +1,7 @@
 """Browser regression run with synthetic Suunto responses and a loopback proxy."""
 
 import argparse
+import json
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from html import escape
@@ -177,6 +178,7 @@ def exercise_amap(context, page, origin, store, older, newer, width):
     # Install a deterministic SDK stand-in without sending a real map request.
     requests = []
     offline = False
+    map_failure = ""
 
     def mock_sdk(route):
         requests.append(route.request.url)
@@ -184,11 +186,14 @@ def exercise_amap(context, page, origin, store, older, newer, width):
             route.abort()
             return
         callback = parse_qs(urlsplit(route.request.url).query)["callback"][0]
-        route.fulfill(content_type="application/javascript", body="""
+        route.fulfill(content_type="application/javascript", body=f"const fixtureMapFailure = {json.dumps(map_failure)};" + """
           window.mapCalls = {instances: 0, conversions: 0};
           window.AMap = {
             Map: class {
-              constructor(container) { this.container = container; window.mapCalls.instances++; }
+              constructor(container) {
+                if (fixtureMapFailure === 'tiles') throw new Error('tiles failed');
+                this.container = container; window.mapCalls.instances++;
+              }
               on(event, callback) { setTimeout(callback, 20); }
               add(markers) { this.container.dataset.markers = markers.map(m => m.title).join(','); }
               remove() {} setFitView() {} setZoomAndCenter() {} destroy() {}
@@ -198,6 +203,8 @@ def exercise_amap(context, page, origin, store, older, newer, width):
             convertFrom(points, type, complete) {
               if (type !== 'gps') throw new Error('unexpected coordinate system');
               window.mapCalls.conversions++;
+              if (fixtureMapFailure === 'domain') return complete('error', {infocode: '10006'});
+              if (fixtureMapFailure === 'conversion') return complete('error', {info: 'error'});
               complete('complete', {locations: points});
             },
           };
@@ -242,6 +249,12 @@ def exercise_amap(context, page, origin, store, older, newer, width):
     offline = False
     page.get_by_role("button", name="重试加载高德地图").click()
     expect(preview).to_be_visible()
+
+    for map_failure, message in (("", "坐标转换和底图均已加载"), ("domain", "高德拒绝了当前域名"),
+                                 ("conversion", "坐标转换失败"), ("tiles", "底图加载失败")):
+        page.goto(origin + "/settings#amap-settings")
+        page.get_by_role("button", name="测试连接").click()
+        expect(page.locator("#amap-check-status")).to_contain_text(message)
 
 
 def main():

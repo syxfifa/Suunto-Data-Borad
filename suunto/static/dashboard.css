@@ -201,6 +201,8 @@ code { overflow-wrap: anywhere; }
 #route-map:has(#amap-preview) .route-map-surface { max-width: none; height: clamp(14rem, 45vw, 25rem); }
 #route-map:has(#amap-preview) .route-map-surface > canvas { height: 100%; object-fit: contain; }
 #amap-preview { position: absolute; inset: 0; visibility: hidden; overflow: hidden; border-radius: .5rem; background: var(--canvas); }
+#amap-check-map { height: clamp(14rem, 45vw, 24rem); border-radius: .5rem; overflow: hidden; background: var(--canvas); }
+#amap-check-map:not([data-stage=tiles], [data-stage=ready]) { display: none; }
 #route-map.amap-visible #amap-preview { visibility: visible; }
 #route-map.amap-visible .route-map-surface > canvas { visibility: hidden; }
 #route-point-choice[hidden], #amap-retry[hidden], #amap-status:empty { display: none; }

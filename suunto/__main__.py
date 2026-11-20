@@ -14,6 +14,7 @@ from zipfile import BadZipFile
 
 import httpx
 
+from . import DEFAULT_PORT
 from .access import USERNAME
 from .maintenance import COMPONENTS, backup, restore, verify, volume_lock
 
@@ -103,7 +104,7 @@ def main():
         path = "probe/sample"
     try:
         credentials = (USERNAME, getpass("Dashboard password: ")) if args.authenticate else None
-        response = httpx.post("http://127.0.0.1:8000/api/" + path, json=body, timeout=900, trust_env=False,
+        response = httpx.post(f"http://127.0.0.1:{DEFAULT_PORT}/api/{path}", json=body, timeout=900, trust_env=False,
                               auth=credentials)
         result = response.json()
     except (httpx.HTTPError, ValueError) as exc:

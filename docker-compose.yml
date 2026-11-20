@@ -3,11 +3,11 @@ services:
     image: "jjsyx123/suunto-data-borad:latest"
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "7383:7383"
     volumes:
       - ./suunto-data:/data
     healthcheck:
-      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/healthz', timeout=3).close()"]
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:7383/healthz', timeout=3).close()"]
       interval: 15s
       timeout: 5s
       retries: 4

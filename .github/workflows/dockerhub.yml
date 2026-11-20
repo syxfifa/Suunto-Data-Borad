@@ -81,10 +81,11 @@ jobs:
       - name: Verify Compose startup and volume persistence
         run: |
           override="$RUNNER_TEMP/suunto-ci-compose.yml"
-          export COMPOSE_FILE="docker-compose.yml:$override"
+          legacy="$RUNNER_TEMP/suunto-ci-legacy.yml"
           export COMPOSE_PROJECT_NAME="suunto-upgrade-ci"
-          printf 'services:\n  app:\n    image: "%s"\n    volumes:\n      - legacy-data:/data\nvolumes:\n  legacy-data:\n' \
-            "jjsyx123/suunto-data-borad:0.7.0" > "$override"
+          git show 0d86dcf05a193f475aa5915c8c900ded169ba252:docker-compose.yml \
+            | sed 's/:latest"/:0.7.0"/' > "$legacy"
+          export COMPOSE_FILE="$legacy"
           docker compose config --quiet
           docker compose up -d --no-build --wait --wait-timeout 90
           curl --fail --silent --show-error http://127.0.0.1:8000/healthz
@@ -106,6 +107,7 @@ jobs:
           docker run --rm --user 0:0 --volumes-from "$old_container:ro" \
             --mount "type=bind,source=$(pwd -P)/suunto-data,target=/destination" \
             "$old_image" sh -ec 'test -f /data/suunto.sqlite; cp -a /data/. /destination/; chown -R 10001:10001 /destination; chmod 700 /destination'
+          export COMPOSE_FILE="docker-compose.yml:$override"
           printf 'services:\n  app:\n    image: "%s"\n' "$SUUNTO_IMAGE" > "$override"
           docker compose up -d --no-build --wait --wait-timeout 90
           docker inspect "$(docker compose ps -q app)" \
@@ -119,7 +121,9 @@ jobs:
           PY
           docker compose restart app
           docker compose up -d --no-build --wait --wait-timeout 90
-          curl --fail --silent --show-error http://127.0.0.1:8000/healthz
+          curl --fail --silent --show-error http://127.0.0.1:7383/healthz
+          probe="$(docker compose exec -T app python -m suunto probe)" || test "$?" -eq 1
+          printf '%s\n' "$probe" | python -c 'import json, sys; assert json.load(sys.stdin)["status"] == "authorization_required"'
           docker compose exec -T app python -c 'import json; from pathlib import Path; assert json.loads(Path("/data/config.json").read_bytes())["sync_interval_minutes"] == 15'
           umask 077
           snapshot="$RUNNER_TEMP/suunto-backup-ci.zip"
@@ -133,8 +137,8 @@ jobs:
           docker compose -p suunto-restore-ci run --rm --no-deps -T app python -m suunto restore < "$snapshot"
           docker compose -p suunto-restore-ci run --rm --no-deps -T app python -m suunto restore --component settings < "$snapshot"
           docker compose -p suunto-restore-ci up -d --no-build --wait --wait-timeout 90
-          curl --fail --silent --show-error http://127.0.0.1:8000/healthz
-          curl --fail --silent --show-error http://127.0.0.1:8000/diagnostics.json
+          curl --fail --silent --show-error http://127.0.0.1:7383/healthz
+          curl --fail --silent --show-error http://127.0.0.1:7383/diagnostics.json
           docker compose -p suunto-restore-ci exec -T app python - <<'PY'
           import json
           from pathlib import Path
@@ -149,6 +153,8 @@ jobs:
             export COMPOSE_FILE="docker-compose.yml:$RUNNER_TEMP/suunto-ci-compose.yml"
             docker compose -p suunto-upgrade-ci logs --no-color app
             docker compose -p suunto-restore-ci logs --no-color app
+          elif [[ -f "$RUNNER_TEMP/suunto-ci-legacy.yml" ]]; then
+            docker compose -f "$RUNNER_TEMP/suunto-ci-legacy.yml" -p suunto-upgrade-ci logs --no-color app
           fi
       - name: Check whether publishing is enabled
         id: release

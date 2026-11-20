@@ -17,11 +17,11 @@ from urllib.parse import urlencode, urlsplit
 
 import httpx
 
-from . import VERSION
+from . import DEFAULT_PORT, VERSION
 
 MCP_URL = "https://mcp.suunto.cn/open/mcp"
 ISSUER = "https://mcp.suunto.cn"
-REDIRECT = "http://127.0.0.1:8000/oauth/callback"
+REDIRECT = f"http://127.0.0.1:{DEFAULT_PORT}/oauth/callback"
 AUTHORIZATION_TIMEOUT = 600
 SCOPE = "mcp:tools"
 READ_TOOLS = frozenset({
@@ -160,7 +160,7 @@ class Client:
             metadata = self.metadata()
             credential = self.credential()
             client_id = credential.get("client_id")
-            if not client_id or credential.get("redirect_uri", REDIRECT) != redirect_uri:
+            if not client_id or credential.get("redirect_uri") != redirect_uri:
                 data = self.oauth_json("POST", metadata["registration_endpoint"], json={
                     "client_name": "Suunto LAN Dashboard", "application_type": "native",
                     "redirect_uris": [redirect_uri], "grant_types": ["authorization_code", "refresh_token"],

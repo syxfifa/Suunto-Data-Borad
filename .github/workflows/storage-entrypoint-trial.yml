@@ -1,0 +1,47 @@
+name: Trial of single-container storage initialization
+
+"on":
+  push:
+    branches: [experiment/single-container-permissions]
+
+permissions:
+  contents: read
+
+jobs:
+  trial:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Test initialization and privilege drop on a disposable local bind mount
+        run: |
+          set -euo pipefail
+          data="$(mktemp -d "$RUNNER_TEMP/suunto-entry-trial.XXXXXX")"
+          sudo chown 0:0 "$data"
+          dockerfile="$RUNNER_TEMP/Dockerfile.suunto-entry-trial"
+          sed '/^USER 10001:10001$/c\USER 0:0\nENTRYPOINT ["python", "-m", "suunto.container_probe_entry"]' Dockerfile > "$dockerfile"
+          grep -F 'ENTRYPOINT ["python", "-m", "suunto.container_probe_entry"]' "$dockerfile"
+          image="suunto-entry-trial:only-local"
+          container="suunto-entry-trial-$GITHUB_RUN_ID"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          docker build --file "$dockerfile" --tag "$image" .
+          start_and_verify() {
+            docker run -d --name "$container" -p "127.0.0.1::7383" \
+              --security-opt no-new-privileges --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE \
+              --cap-add FOWNER --cap-add SETGID --cap-add SETUID \
+              --mount "type=bind,source=$data,target=/data" "$image"
+            address="$(docker port "$container" 7383/tcp)"
+            curl --silent --show-error --fail --retry 15 --retry-delay 1 --retry-connrefused "http://$address/healthz"
+            docker exec --user 10001:10001 "$container" python -c 'from pathlib import Path; s=Path("/proc/1/status").read_text().splitlines(); assert all(next(l for l in s if l.startswith(f"{key}:")).split()[1:] == ["10001"]*4 for key in ("Uid", "Gid")); assert Path("/data/suunto.sqlite").is_file()'
+          }
+          start_and_verify
+          echo "Fresh root-owned directory: initialized, healthy, PID 1 is UID/GID 10001"
+          curl --silent --show-error --fail --data "minutes=17" "http://$address/settings"
+          docker stop "$container"
+          docker rm "$container"
+          sudo chown 0:0 "$data" "$data/.maintenance.lock" "$data/suunto.sqlite" "$data/config.json"
+          start_and_verify
+          docker exec --user 10001:10001 "$container" python -c 'import json; from pathlib import Path; assert json.loads(Path("/data/config.json").read_text())["sync_interval_minutes"] == 17'
+          echo "Existing root-owned files: repaired, healthy, saved settings preserved"

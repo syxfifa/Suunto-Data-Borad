@@ -40,6 +40,7 @@
 <section id="access">
   <h2>访问控制</h2>
   <p>本地看板密码{{ '已启用' if protected else '未启用' }}。用户名为 <code>suunto</code>。</p>
+  {% if not protected %}<p>能访问看板端口的设备均可查看本地数据。请限制为可信内网来源。</p>{% endif %}
   {% if secure %}
   <form action="/maintenance/access" method="post" class="controls">
     <label>{{ '更换密码' if protected else '设置密码' }}<input type="password" name="password" minlength="12" maxlength="128" autocomplete="new-password" required></label>

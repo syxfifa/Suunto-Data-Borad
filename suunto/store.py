@@ -1,9 +1,11 @@
 """SQLite storage for observed MCP records and synchronization state."""
 
 from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
 import json
 import sqlite3
+from uuid import uuid4
 
 
 SCHEMA = """
@@ -59,6 +61,21 @@ CREATE TABLE IF NOT EXISTS sync_failures (
     end_at TEXT,
     message TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sync_windows (
+    source TEXT NOT NULL,
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    message TEXT NOT NULL,
+    attempts INTEGER NOT NULL,
+    retry_at TEXT NOT NULL,
+    PRIMARY KEY (source, start_at, end_at)
+);
+CREATE INDEX IF NOT EXISTS sync_windows_due ON sync_windows(retry_at);
+CREATE TABLE IF NOT EXISTS sync_queue (
+    kind TEXT PRIMARY KEY,
+    trigger TEXT NOT NULL,
+    revision TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS workout_details (
     record_key TEXT PRIMARY KEY,
     fingerprint TEXT,
@@ -98,6 +115,12 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self.connect() as db:
             db.executescript(SCHEMA)
+            db.execute("""
+                INSERT OR IGNORE INTO sync_windows
+                SELECT source, start_at, end_at, message, 1, end_at
+                FROM sync_failures WHERE start_at IS NOT NULL AND end_at IS NOT NULL
+                """)
+            db.execute("DELETE FROM sync_failures WHERE start_at IS NOT NULL AND end_at IS NOT NULL")
             db.execute("UPDATE sync_runs SET status='interrupted' WHERE status='running'")
 
     def query(self, statement, params=()):
@@ -155,6 +178,8 @@ class Store:
                     """, (source, until, full_scan_at))
             if interval is not None:
                 start, end = interval
+                db.execute("DELETE FROM sync_windows WHERE source=? AND start_at>=? AND end_at<=?",
+                           (source, start, end))
                 previous = db.execute("""
                     SELECT min(start_at), max(end_at) FROM coverage
                     WHERE source=? AND start_at<=? AND end_at>=?
@@ -184,19 +209,59 @@ class Store:
         with self.connect() as db:
             db.execute("INSERT OR REPLACE INTO sync_failures VALUES (?, ?, ?, ?)", (source, start, end, message))
 
-    def clear_failure(self, source, interval=None):
+    def clear_failure(self, source):
         with self.connect() as db:
-            if interval is None:
-                db.execute("DELETE FROM sync_failures WHERE source=?", (source,))
-            else:
-                db.execute("DELETE FROM sync_failures WHERE source=? AND (start_at IS NULL OR "
-                           "(start_at>=? AND end_at<=?))", (source, *interval))
+            db.execute("DELETE FROM sync_failures WHERE source=?", (source,))
 
-    def prepare_backfill(self, sources, start, end):
+    def windows_due(self, at, sources, limit):
+        placeholders = ",".join("?" for _ in sources)
+        return self.query(f"""
+            SELECT * FROM sync_windows WHERE retry_at<=? AND source IN ({placeholders})
+            ORDER BY retry_at, source, start_at LIMIT ?
+            """, (at, *sources, limit))
+
+    def clear_windows(self, source, start, end):
+        with self.connect() as db:
+            db.execute("DELETE FROM sync_windows WHERE source=? AND start_at>=? AND end_at<=?", (source, start, end))
+
+    def window_failure(self, source, start, end, message, at, *, retry=True):
+        with self.connect() as db:
+            row = db.execute("SELECT attempts FROM sync_windows WHERE source=? AND start_at=? AND end_at=?",
+                             (source, start, end)).fetchone()
+            if row and not retry:
+                return
+            attempts = row[0] + 1 if row else 1
+            retry_at = at + timedelta(minutes=15 * 2 ** min(attempts - 1, 6))
+            db.execute("INSERT OR REPLACE INTO sync_windows VALUES (?, ?, ?, ?, ?, ?)",
+                       (source, start, end, message, attempts, retry_at.isoformat()))
+
+    @staticmethod
+    def _enqueue(db, kind, trigger):
+        db.execute("""
+            INSERT INTO sync_queue VALUES (?, ?, ?)
+            ON CONFLICT(kind) DO UPDATE SET trigger=excluded.trigger, revision=excluded.revision
+            WHERE excluded.trigger<>'scheduled'
+            """, (kind, trigger, uuid4().hex))
+
+    def enqueue(self, kind, trigger):
+        with self.connect() as db:
+            self._enqueue(db, kind, trigger)
+
+    def queued(self):
+        return {row["kind"]: row for row in self.query("SELECT * FROM sync_queue")}
+
+    def dequeue(self, kind, revision=None):
+        with self.connect() as db:
+            db.execute("DELETE FROM sync_queue WHERE kind=? AND (? IS NULL OR revision=?)",
+                       (kind, revision, revision))
+
+    def prepare_backfill(self, sources, start, end, *, activate=False):
         with self.connect() as db:
             db.execute("DELETE FROM backfill")
             db.executemany("INSERT INTO backfill VALUES (?, ?, ?, ?, NULL)",
                            ((source, start, end, start) for source in sources))
+            if activate:
+                self._enqueue(db, "backfill", "backfill")
 
     def backfill_error(self, source, message):
         with self.connect() as db:
@@ -240,6 +305,9 @@ class Store:
             SELECT max(finished_at) AS at FROM sync_runs
             WHERE status='ok' AND trigger NOT IN ('backfill', 'details', 'route_details')
             """)[0]["at"]
+        windows = self.query("SELECT * FROM sync_windows ORDER BY source, start_at, end_at")
+        source_failures = {row["source"]: row for row in windows}
+        source_failures.update((row["source"], row) for row in self.query("SELECT * FROM sync_failures"))
         return {
             "last_success_at": success,
             "counts": {row["source"]: row["n"] for row in self.query(
@@ -247,7 +315,8 @@ class Store:
             "runs": self.query("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 20"),
             "errors": self.query("SELECT * FROM sync_errors ORDER BY id DESC LIMIT 50"),
             "backfill": self.query("SELECT * FROM backfill ORDER BY rowid"),
-            "failures": {r["source"]: r for r in self.query("SELECT * FROM sync_failures")},
+            "window_failures": windows,
+            "failures": source_failures,
             "source_success": {r["source"]: r["checked_at"] for r in self.query("SELECT * FROM source_success")},
             "sources": self.query("""
                 SELECT source, count(*) AS n, min(occurred_at) AS first, max(occurred_at) AS last

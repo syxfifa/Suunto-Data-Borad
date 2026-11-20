@@ -130,15 +130,23 @@ def create_app(data_dir=None, *, client=None):
     discovery = {"status": "probing", "tools": [], "checked_at": None, "message": None}
     task = None
     task_name = None
+    wake = asyncio.Event()
 
-    def submit(trigger, **options):
+    def queue_increment(trigger):
+        store.enqueue("incremental", trigger)
+        sync.yield_history.set()
+        wake.set()
+
+    def submit(trigger, *, ticket=None, **options):
         nonlocal task, task_name
         if sync.stopping.is_set() or sync.lock.locked() or (task and not task.done()):
             return None
         if trigger == "backfill":
             sync.pause_history.clear()
+            sync.yield_history.clear()
 
         async def work():
+            result = None
             try:
                 result = await asyncio.to_thread(sync.run, trigger, **options)
                 if result and result["status"] == "authorization_required":
@@ -147,6 +155,13 @@ def create_app(data_dir=None, *, client=None):
             except Exception:
                 LOG.exception("Synchronization task failed")
                 return {"status": "failed"}
+            finally:
+                status = result["status"] if result else "failed"
+                keep = status in {"yielded", "interrupted"} or (
+                    trigger == "backfill" and status == "authorization_required")
+                if ticket and not keep and not sync.stopping.is_set():
+                    store.dequeue(ticket["kind"], ticket["revision"])
+                wake.set()
 
         task_name = trigger
         task = asyncio.create_task(work())
@@ -176,6 +191,8 @@ def create_app(data_dir=None, *, client=None):
         # Serve the authorization page even while the first network probe waits.
         logging.getLogger("httpx").setLevel(logging.WARNING)
         sync.stopping.clear()
+        sync.pause_history.clear()
+        sync.yield_history.clear()
         store.initialize()
         prune_logs()
         startup = asyncio.create_task(asyncio.to_thread(probe))
@@ -185,16 +202,31 @@ def create_app(data_dir=None, *, client=None):
 
         async def schedule():
             await startup
+            deadline = monotonic() + config.load() * 60
             while not stopping:
-                try:
-                    await asyncio.wait_for(schedule_changed.wait(), timeout=config.load() * 60)
+                wake.clear()
+                if schedule_changed.is_set():
                     schedule_changed.clear()
-                except asyncio.TimeoutError:
+                    deadline = monotonic() + config.load() * 60
+                if monotonic() >= deadline:
+                    deadline = monotonic() + config.load() * 60
+                    if discovery["status"] != "authorization_required":
+                        queue_increment("scheduled")
                     try:
                         await asyncio.to_thread(prune_logs)
                     except SQLiteError:
                         LOG.exception("Could not prune old sync logs")
-                    submit("scheduled")
+                if not stopping and not (task and not task.done()):
+                    queued = store.queued()
+                    ticket = queued.get("incremental")
+                    if ticket is None and discovery["status"] != "authorization_required":
+                        ticket = queued.get("backfill")
+                    if ticket:
+                        submit(ticket["trigger"], ticket=ticket)
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout=max(0, deadline - monotonic()))
+                except asyncio.TimeoutError:
+                    pass
 
         scheduler = asyncio.create_task(schedule())
         try:
@@ -202,7 +234,7 @@ def create_app(data_dir=None, *, client=None):
         finally:
             stopping = True
             sync.stopping.set()
-            schedule_changed.set()
+            wake.set()
             await scheduler
             if task is not None:
                 await task
@@ -326,9 +358,11 @@ def create_app(data_dir=None, *, client=None):
             return RedirectResponse("/maintenance?notice=busy", status_code=303, headers=NO_CACHE)
         try:
             await asyncio.to_thread(mcp.disconnect)
+            store.dequeue("incremental")
             discovery.update(status="authorization_required", tools=[], message="已从此看板断开 Suunto。")
         finally:
             sync.lock.release()
+            wake.set()
         return RedirectResponse("/maintenance?notice=disconnected", status_code=303, headers=NO_CACHE)
 
     @app.post("/oauth/start")
@@ -349,12 +383,14 @@ def create_app(data_dir=None, *, client=None):
                           samesite="lax", secure=request.url.scheme == "https")
         return result
 
-    def sync_after_authorization():
-        probe()
-        try:
-            sync.run("oauth")
-        except Exception:
-            LOG.exception("Synchronization after OAuth failed")
+    async def sync_after_authorization():
+        # Persist the work before probing again so an interrupted startup can recover it.
+        queue_increment("oauth")
+        job = submit("oauth", ticket=store.queued()["incremental"])
+        await asyncio.to_thread(probe)
+        wake.set()
+        if job is not None:
+            await asyncio.shield(job)
 
     def complete(request, code, browser_state, returned_state, issuer, callback_uri):
         try:
@@ -387,14 +423,16 @@ def create_app(data_dir=None, *, client=None):
         return complete(request, code, suunto_oauth_state, state, iss, redirect_uri)
 
     @app.post("/probe")
-    def browser_probe():
-        probe()
+    async def browser_probe():
+        await asyncio.to_thread(probe)
+        wake.set()
         return RedirectResponse("/settings", status_code=303, headers=NO_CACHE)
 
     @app.post("/api/probe")
-    def api_probe():
+    async def api_probe():
         # Return schemas from the wire and flag which known tools this app may call.
-        result = probe()
+        result = await asyncio.to_thread(probe)
+        wake.set()
         result["tools"] = [{**item, "allowed_read": item["name"] in READ_TOOLS} for item in result["tools"]]
         return result
 
@@ -411,7 +449,9 @@ def create_app(data_dir=None, *, client=None):
     @app.get("/api/status")
     def sync_status():
         active = bool(task and not task.done())
+        queued = store.queued()
         return {"running": active or sync.lock.locked(), "task": task_name if active else None,
+                "incremental_pending": "incremental" in queued, "backfill_active": "backfill" in queued,
                 "current_source": sync.current_source,
                 "retry_after": max(0, ceil(getattr(mcp, "cooldown", 0) - monotonic())), **store.status()}
 
@@ -424,7 +464,8 @@ def create_app(data_dir=None, *, client=None):
 
     @app.post("/sync")
     async def browser_sync():
-        return sync_redirect(submit("web"))
+        queue_increment("web")
+        return sync_redirect(True)
 
     def sync_redirect(job):
         target = "/settings?job=started#sync" if job else "/settings?job=busy#sync"
@@ -434,6 +475,7 @@ def create_app(data_dir=None, *, client=None):
     async def backfill(request: Request, mode: Annotated[str, Form()] = "",
                        start: Annotated[str, Form()] = "", end: Annotated[str, Form()] = ""):
         if mode == "pause":
+            store.dequeue("backfill")
             if task_name == "backfill" and task and not task.done():
                 sync.pause_history.set()
             return RedirectResponse("/settings?job=pause#sync", status_code=303, headers=NO_CACHE)
@@ -441,7 +483,10 @@ def create_app(data_dir=None, *, client=None):
         if mode == "resume":
             if not pending:
                 return settings_page(request, message="当前没有待继续的历史补采。")
-            return sync_redirect(submit("backfill"))
+            if not store.queued().get("backfill"):
+                store.enqueue("backfill", "backfill")
+                wake.set()
+            return sync_redirect(True)
         if pending and mode != "replace":
             return settings_page(request, message="已有未完成的历史补采，请继续或明确替换。")
         today = datetime.now(TZ).date()
@@ -461,7 +506,12 @@ def create_app(data_dir=None, *, client=None):
                      datetime.combine(last + timedelta(days=1), clock_time.min, TZ))
         if begin >= finish:
             return settings_page(request, message="所选时间范围尚无可查询时段。")
-        return sync_redirect(submit("backfill", history=(begin, finish)))
+        if task_name == "backfill" and task and not task.done():
+            return sync_redirect(False)
+        store.prepare_backfill((source for source, (_, chunk) in SOURCES.items() if chunk is not None),
+                               begin.isoformat(), finish.isoformat(), activate=True)
+        wake.set()
+        return sync_redirect(True)
 
     @app.post("/workout-details")
     async def refresh_details(key: Annotated[str, Form()] = ""):
@@ -554,10 +604,15 @@ def create_app(data_dir=None, *, client=None):
                       "duration": minutes * 60 if minutes is not None else None, "tss": tss})
         summary = None
         if count == 0:
-            failure = store.query("SELECT * FROM sync_failures WHERE source='workouts'")
-            match = failure and (not failure[0]["start_at"] or (
-                (not finish or failure[0]["start_at"] < finish.isoformat())
-                and (not begin or failure[0]["end_at"] > begin.isoformat())))
+            start_at = begin.isoformat() if begin else None
+            end_at = finish.isoformat() if finish else None
+            match = store.query("""
+                SELECT 1 FROM sync_failures WHERE source='workouts'
+                UNION ALL
+                SELECT 1 FROM sync_windows WHERE source='workouts'
+                    AND (? IS NULL OR start_at<?) AND (? IS NULL OR end_at>?)
+                LIMIT 1
+                """, (end_at, end_at, start_at, start_at))
             if match:
                 summary = "这段日期的运动同步遇到问题，请查看设置中的同步状态。"
             elif begin and covers(store.coverage("workouts"), begin, finish or datetime.now(TZ)):
@@ -687,6 +742,7 @@ def create_app(data_dir=None, *, client=None):
                      "message": message, "oauth_error": oauth_error,
                      "settings_minutes": config.load(), "discovery": discovery, "sync_status": status,
                      "sources": sources, "source_labels": SOURCE_LABELS, "prefs": prefs, "bindings": bindings,
+                     "access_protected": access.enabled(),
                      "daily_sources": daily_sources(), "account_has_data": account_has_data()},
             headers=NO_CACHE if request.url.path == "/oauth/callback" else HOME_HEADERS,
         )
@@ -706,6 +762,7 @@ def create_app(data_dir=None, *, client=None):
     async def save_settings(minutes: Annotated[int, Form(ge=1, le=1440)]):
         await asyncio.to_thread(config.save, minutes)
         app.state.schedule_changed.set()
+        wake.set()
         return RedirectResponse("/settings?saved=true", status_code=303, headers=NO_CACHE)
 
     @app.post("/preferences")
@@ -802,7 +859,7 @@ def create_app(data_dir=None, *, client=None):
     def diagnostics():
         status = store.status()
         # Build the report from explicitly allowed aggregates, never from diagnostic log bodies.
-        states = {"ok", "failed", "partial", "running", "interrupted", "paused", "authorization_required"}
+        states = {"ok", "failed", "partial", "running", "interrupted", "paused", "yielded", "authorization_required"}
         report = {
             "version": VERSION, "database_bytes": storage_size(data_dir),
             "authorization": mcp_state(), "access_control": access.enabled(),

@@ -5,6 +5,7 @@ import json
 from hashlib import sha256
 import logging
 from threading import Event, Lock
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 from .mcp import MCPError, NeedsAuthorization
@@ -92,6 +93,7 @@ class Synchronizer:
         self.lock = Lock()
         self.stopping = Event()
         self.pause_history = Event()
+        self.yield_history = Event()
         self.current_source = None
 
     def run(self, trigger, *, stop=None, history=None, detail_key=None):
@@ -143,6 +145,8 @@ class Synchronizer:
                         self.store.failure(source, None, None, str(exc))
                     self.log_error(run_id, source, str(exc))
                     failures += 1
+            if not self.stopping.is_set():
+                self.repair_windows(run_id, names)
             if "get_workout_detail" in names and not self.stopping.is_set():
                 self.fill_details(run_id, names)
             if self.stopping.is_set():
@@ -152,7 +156,9 @@ class Synchronizer:
             else:
                 status = "ok"
         except InterruptedError:
-            status = "paused" if trigger == "backfill" and not self.stopping.is_set() else "interrupted"
+            status = "interrupted"
+            if trigger == "backfill" and not self.stopping.is_set():
+                status = "paused" if self.pause_history.is_set() else "yielded"
         except MCPError as exc:
             self.log_error(run_id, "mcp", str(exc))
             status = "authorization_required" if isinstance(exc, NeedsAuthorization) else "failed"
@@ -179,15 +185,38 @@ class Synchronizer:
             end = min(start + chunk, stop)
             try:
                 clean = self.window(run_id, source, tool, start, end, names)
-            except (MCPError, ValueError) as exc:
-                self.store.failure(source, start.isoformat(), end.isoformat(), str(exc))
+            except NeedsAuthorization:
                 raise
-            interval = (start.isoformat(), end.isoformat())
+            except (MCPError, ValueError) as exc:
+                self.store.window_failure(source, start.isoformat(), end.isoformat(), str(exc), now(), retry=False)
+                raise
             if clean:
-                self.store.clear_failure(source, interval)
+                self.store.clear_failure(source)
             else:
-                self.store.failure(source, *interval, "部分记录无法解析，此窗口未确认覆盖。")
+                self.store.window_failure(source, start.isoformat(), end.isoformat(),
+                                          "部分记录无法解析，此窗口未确认覆盖。", now(), retry=False)
             start = end
+
+    def repair_windows(self, run_id, names):
+        supported = [source for source, (tool, chunk) in SOURCES.items() if chunk and tool in names]
+        if not supported:
+            return
+        for failure in self.store.windows_due(now().isoformat(), supported, 4):
+            if monotonic() < getattr(self.mcp, "cooldown", 0):
+                break
+            source = failure["source"]
+            tool, _ = SOURCES[source]
+            self.current_source = source
+            start, end = failure["start_at"], failure["end_at"]
+            try:
+                if not self.window(run_id, source, tool, datetime.fromisoformat(start),
+                                   datetime.fromisoformat(end), names, repair=True):
+                    raise MCPError("重试仍有部分记录无法解析。")
+            except NeedsAuthorization:
+                raise
+            except (MCPError, ValueError) as exc:
+                self.store.window_failure(source, start, end, str(exc), now())
+                self.log_error(run_id, source, f"修复历史缺口失败。{exc}")
 
     def backfill(self, run_id, names):
         failures = 0
@@ -203,8 +232,15 @@ class Synchronizer:
                     raise MCPError(f"MCP 未公开 {tool}。")
                 while start < stop:
                     end = min(start + chunk, stop)
-                    if not self.window(run_id, source, tool, start, end, names, historical=True):
-                        raise MCPError("部分记录无法解析，补采保留在待重试窗口。")
+                    try:
+                        if not self.window(run_id, source, tool, start, end, names, historical=True):
+                            raise MCPError("部分记录无法解析，补采保留在待重试窗口。")
+                    except NeedsAuthorization:
+                        raise
+                    except (MCPError, ValueError) as exc:
+                        self.store.window_failure(source, start.isoformat(), end.isoformat(), str(exc), now(),
+                                                  retry=False)
+                        raise
                     start = end
             except (MCPError, ValueError) as exc:
                 self.store.backfill_error(source, str(exc))
@@ -218,8 +254,8 @@ class Synchronizer:
             "SELECT 1 FROM sync_errors WHERE run_id=? LIMIT 1", (run_id,)
         ) else "ok"
 
-    def window(self, run_id, source, tool, start, stop, names, *, historical=False):
-        if self.stopping.is_set() or (historical and self.pause_history.is_set()):
+    def window(self, run_id, source, tool, start, stop, names, *, historical=False, repair=False):
+        if self.stopping.is_set() or (historical and (self.pause_history.is_set() or self.yield_history.is_set())):
             raise InterruptedError
         args = {"startDate": start.isoformat(), "endDate": stop.isoformat()}
         if source == "workouts":
@@ -232,10 +268,12 @@ class Synchronizer:
             if span <= 1:
                 raise MCPError("运动查询在一秒窗口仍达到 100 条上限。")
             middle = start + timedelta(seconds=span // 2)
-            left = self.window(run_id, source, tool, start, middle, names, historical=historical)
+            left = self.window(run_id, source, tool, start, middle, names, historical=historical, repair=repair)
             if historical and not left:
                 return False
-            right = self.window(run_id, source, tool, middle, stop, names, historical=historical)
+            right = self.window(run_id, source, tool, middle, stop, names, historical=historical, repair=repair)
+            if left and right:
+                self.store.clear_windows(source, start.isoformat(), stop.isoformat())
             return left and right
         errors = self.store.query("SELECT max(id) AS id FROM sync_errors WHERE run_id=?", (run_id,))[0]["id"]
         if source == "daily_activity":
@@ -248,7 +286,7 @@ class Synchronizer:
         details = []
         if listed:
             rows, details = self.merge_workout_list(rows)
-        self.store.commit(run_id, source, rows, until=None if historical else args["endDate"],
+        self.store.commit(run_id, source, rows, until=None if historical or repair else args["endDate"],
                           history_until=args["endDate"] if historical and clean else None,
                           interval=(args["startDate"], args["endDate"]) if clean else None,
                           details=details, checked_at=now().isoformat() if clean else None)

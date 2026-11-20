@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 
@@ -217,6 +217,102 @@ class SyncTest(unittest.TestCase):
             self.assertEqual(store.record("workouts", "old"), {})
             self.assertEqual(store.coverage("workouts"), [])
             self.assertEqual(store.status()["backfill"], [])
+
+    def test_legacy_failed_window_migrates_and_two_old_gaps_repair_independently(self):
+        first = datetime(2020, 1, 1, tzinfo=TZ)
+        second = first + timedelta(days=10)
+        day = timedelta(days=1)
+        # A v0.5 database retained one dated failure per source.
+        self.store.failure("sleep", first.isoformat(), (first + day).isoformat(), "旧窗口")
+        self.store.initialize()
+        self.mcp.fail_sleep = True
+        self.sync.run("backfill", history=(second, second + day))
+        self.assertEqual(len(self.store.status()["window_failures"]), 2)
+        self.store.initialize()
+        raw_sample = self.mcp.sample
+
+        def fail_second(name, args, discovered):
+            self.mcp.fail_sleep = name == "get_sleep_summary" and args["startDate"] == second.isoformat()
+            return raw_sample(name, args, discovered)
+
+        self.mcp.sample = fail_second
+        with patch("suunto.sync.now", return_value=self.stop + timedelta(days=400)):
+            sync = Synchronizer(self.mcp, self.store)
+            sync.run("test", stop=self.stop)
+            failed = self.store.status()["window_failures"]
+            self.assertEqual([(r["start_at"], r["attempts"]) for r in failed if r["source"] == "sleep"],
+                             [(second.isoformat(), 2)])
+            self.assertEqual(self.store.cursor("sleep")["scanned_until"], self.stop.isoformat())
+        self.mcp.sample = raw_sample
+        self.mcp.fail_sleep = False
+        later = self.stop + timedelta(days=400, hours=1)
+        with patch("suunto.sync.now", return_value=later):
+            sync.run("test", stop=self.stop + timedelta(minutes=30))
+        self.assertFalse(any(row["source"] == "sleep" for row in self.store.status()["window_failures"]))
+        self.assertTrue(any(row["start_at"] == second.isoformat() for row in self.store.coverage("sleep")))
+
+    def test_scheduled_increment_runs_before_next_backfill_window(self):
+        entered, release = Event(), Event()
+        fake = SampleMCP()
+        fake.http = Mock()
+        raw_sample = fake.sample
+
+        def sample(name, args, discovered):
+            if name == "list_user_workouts" and args["startDate"].startswith("2020-01-01"):
+                entered.set()
+                if not release.wait(5):
+                    raise MCPError("模拟网络超时")
+            return raw_sample(name, args, discovered)
+
+        fake.sample = sample
+        with patch("suunto.web.Config.load", return_value=0.01):
+            with TestClient(create_app(self.store.path.parent, client=fake)) as browser:
+                try:
+                    browser.post("/backfill", data={"mode": "custom", "start": "2020-01-01", "end": "2020-01-03"},
+                                 follow_redirects=False)
+                    self.assertTrue(entered.wait(2))
+                    for _ in range(50):
+                        if browser.get("/api/status").json()["incremental_pending"]:
+                            break
+                        Event().wait(0.02)
+                    self.assertTrue(browser.get("/api/status").json()["incremental_pending"])
+                finally:
+                    release.set()
+                for _ in range(80):
+                    if any(name == "get_sleep_summary" and args["startDate"].startswith("2020-")
+                           for name, args in fake.calls):
+                        break
+                    Event().wait(0.02)
+                self.assertGreater(len(fake.calls), 2)
+                self.assertEqual(fake.calls[1][0], "list_user_workouts")
+                self.assertFalse(fake.calls[1][1]["startDate"].startswith("2020-"))
+                self.assertTrue(any(run["trigger"] == "scheduled" for run in self.store.status()["runs"]))
+                self.assertTrue(any(run["status"] == "yielded" for run in self.store.status()["runs"]))
+                self.assertTrue(any(name == "get_sleep_summary" and args["startDate"].startswith("2020-")
+                                    for name, args in fake.calls))
+
+    def test_persisted_queue_resumes_on_startup_but_paused_history_stays_paused(self):
+        for active in (False, True):
+            with self.subTest(active=active), TemporaryDirectory() as directory:
+                store = Store(directory)
+                store.initialize()
+                store.prepare_backfill(["workouts"], "2020-01-01T00:00:00+08:00",
+                                       "2020-01-02T00:00:00+08:00", activate=True)
+                if not active:
+                    store.dequeue("backfill")
+                store.enqueue("incremental", "scheduled")
+                fake = SampleMCP()
+                fake.http = Mock()
+                with TestClient(create_app(directory, client=fake)) as browser:
+                    for _ in range(80):
+                        status = browser.get("/api/status").json()
+                        if status["runs"] and not status["running"] and not store.queued():
+                            break
+                        Event().wait(0.02)
+                    self.assertEqual([run["trigger"] for run in reversed(status["runs"])],
+                                     ["scheduled", "backfill"] if active else ["scheduled"])
+                    self.assertEqual(status["backfill"][0]["next_at"],
+                                     "2020-01-02T00:00:00+08:00" if active else "2020-01-01T00:00:00+08:00")
 
     def test_history_is_background_and_can_pause_between_windows(self):
         entered, finish_request = Event(), Event()

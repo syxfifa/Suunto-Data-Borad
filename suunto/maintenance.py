@@ -15,7 +15,8 @@ from .store import Store
 
 COMPONENTS = {"database": "suunto.sqlite", "settings": "config.json", "token": "token.json"}
 KNOWN_TABLES = {"records", "cursors", "sync_runs", "sync_errors", "coverage", "backfill",
-                "sync_failures", "source_success", "workout_details", "removed_routes"}
+                "sync_failures", "sync_windows", "sync_queue", "source_success",
+                "workout_details", "removed_routes"}
 
 
 @contextmanager
@@ -127,7 +128,7 @@ def restore(directory, input_file, component, *, replace=False, same_account=Fal
         if target.exists() and not replace:
             raise ValueError("恢复项已存在，请先确认已备份，并指定 --replace。")
         if (component == "token" or (component == "database" and (directory / "token.json").exists())) and not same_account:
-            raise ValueError("涉及已有账号凭据，请确认属于同一账号并指定 --same-account。")
+            raise ValueError("此操作可能混入不同账号的记录。确认归档和数据卷属于同一 Suunto 账号后指定 --same-account；新账号请使用独立数据卷。")
         if component == "database":
             copy_database(snapshot / filename, target)
         else:

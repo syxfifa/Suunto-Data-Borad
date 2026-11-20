@@ -23,20 +23,29 @@
   <p>本地最佳 · 最远距离 {{ best_km if best_km is not none else '—' }} km · 最大单次爬升 {{ best_climb if best_climb is not none else '—' }} m</p>
   <form action="/compare" class="controls">
     <input type="hidden" name="sport" value="{{ sport }}">
+    <input type="hidden" name="page" value="{{ comparison_page }}">
     {% for field, label, key in [('first', '活动 A', first), ('second', '活动 B', second)] %}
-    <label>{{ label }}<select name="{{ field }}" required><option value="">选择活动</option>
-      {% for at, item in options %}<option value="{{ item.workoutId }}" {% if item.workoutId == key %}selected{% endif %}>{{ at[:16] }} {{ item.workoutName or item.activityName }}</option>{% endfor %}
+    <label>{{ label }}<select name="{{ field }}"><option value="">选择活动</option>
+      {% for item in options %}<option value="{{ item.id }}" {% if item.id == key %}selected{% endif %}>{{ item.at[:16] if item.at else '—' }} {{ item.label or '未命名活动' }}</option>{% endfor %}
     </select></label>
     {% endfor %}
-    <button>对比活动</button>
+    <button>应用选择</button>
   </form>
+  {% if comparison_pages > 1 %}
+  <nav class="pagination" aria-label="对比候选活动分页">
+    {% if comparison_page > 1 %}<a href="/compare?page={{ comparison_page-1 }}&amp;{{ comparison_query }}">上一页</a>{% endif %}
+    <span>第 {{ comparison_page }} / {{ comparison_pages }} 页</span>
+    {% if comparison_page < comparison_pages %}<a href="/compare?page={{ comparison_page+1 }}&amp;{{ comparison_query }}">下一页</a>{% endif %}
+  </nav>
+  {% endif %}
   {% if comparison_rows %}
   <div class="table-scroll" role="region" tabindex="0" aria-label="运动对比结果">
 <table><thead><tr>{% for label in ('活动', '距离（km）', '时长（分钟）', '平均配速或速度', '爬升（m）', '平均心率', 'TSS') %}<th scope="col">{{ label }}</th>{% endfor %}</tr></thead>
     <tbody>{% for row in comparison_rows %}<tr><th>{{ 'A' if loop.first else 'B' }}</th>
       {% for cell in row %}<td>{{ cell if cell is not none else '—' }}</td>{% endfor %}</tr>{% endfor %}</tbody></table>
 </div>
-  {% elif first and second %}<p>请选择两条不同的同类型活动。</p>{% endif %}
+  {% elif first and second %}<p>请选择两条不同的同类型活动。</p>
+  {% elif first or second %}<p>已保存当前选择，可翻页选择另一条活动。</p>{% endif %}
 </section>
 {% endif %}
 {% if wellness_days is defined %}

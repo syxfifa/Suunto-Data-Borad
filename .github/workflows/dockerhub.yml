@@ -70,15 +70,41 @@ jobs:
             docker run --rm --platform "$platform" "$SUUNTO_IMAGE" \
               python -m unittest discover -s tests -v
           done
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Verify OAuth and date filtering in Chromium
+        run: |
+          python -m pip install -r requirements.txt playwright==1.57.0
+          python -m playwright install --with-deps chromium
+          PYTHONPATH=. python tests/browser_smoke.py
       - name: Verify Compose startup and volume persistence
         run: |
           override="$RUNNER_TEMP/suunto-ci-compose.yml"
-          printf 'services:\n  app:\n    image: "%s"\n' "$SUUNTO_IMAGE" > "$override"
           export COMPOSE_FILE="docker-compose.yml:$override"
+          export COMPOSE_PROJECT_NAME="suunto-upgrade-ci"
+          printf 'services:\n  app:\n    image: "%s"\n' "jjsyx123/suunto-data-borad:0.7.0" > "$override"
           docker compose config --quiet
           docker compose up -d --no-build --wait --wait-timeout 90
           curl --fail --silent --show-error http://127.0.0.1:8000/healthz
           curl --fail --silent --show-error --data "minutes=15" http://127.0.0.1:8000/settings
+          docker compose exec -T app python - <<'PY'
+          from suunto.store import Store
+          store = Store("/data")
+          at = "2026-01-01T08:00:00+08:00"
+          assert store.query("PRAGMA user_version")[0]["user_version"] == 0
+          run = store.start("upgrade_fixture", at)
+          store.commit(run, "workouts", [("fixture-old", at, {"workoutId": "fixture-old", "totalDistance": 1000})])
+          PY
+          docker compose stop app
+          printf 'services:\n  app:\n    image: "%s"\n' "$SUUNTO_IMAGE" > "$override"
+          docker compose up -d --no-build --wait --wait-timeout 90
+          docker compose exec -T app python - <<'PY'
+          from suunto.store import SCHEMA_VERSION, Store
+          store = Store("/data")
+          assert store.query("PRAGMA user_version")[0]["user_version"] == SCHEMA_VERSION
+          assert store.record("workouts", "fixture-old")["totalDistance"] == 1000
+          PY
           docker compose restart app
           docker compose up -d --no-build --wait --wait-timeout 90
           curl --fail --silent --show-error http://127.0.0.1:8000/healthz
@@ -88,13 +114,26 @@ jobs:
           docker compose exec -T app python -m suunto backup > "$snapshot"
           docker compose exec -T app python -m suunto verify < "$snapshot"
           docker compose stop app
-          docker compose run --rm --no-deps -T app python -m suunto restore --replace < "$snapshot"
-          docker compose up -d --no-build --wait --wait-timeout 90
+          docker compose -p suunto-restore-ci run --rm --no-deps -T app python -m suunto restore < "$snapshot"
+          docker compose -p suunto-restore-ci run --rm --no-deps -T app python -m suunto restore --component settings < "$snapshot"
+          docker compose -p suunto-restore-ci up -d --no-build --wait --wait-timeout 90
           curl --fail --silent --show-error http://127.0.0.1:8000/healthz
           curl --fail --silent --show-error http://127.0.0.1:8000/diagnostics.json
+          docker compose -p suunto-restore-ci exec -T app python - <<'PY'
+          import json
+          from pathlib import Path
+          from suunto.store import Store
+          assert Store("/data").record("workouts", "fixture-old")["totalDistance"] == 1000
+          assert json.loads(Path("/data/config.json").read_bytes())["sync_interval_minutes"] == 15
+          PY
       - name: Show Compose logs when a check fails
         if: failure()
-        run: docker compose logs --no-color app
+        run: |
+          if [[ -f "$RUNNER_TEMP/suunto-ci-compose.yml" ]]; then
+            export COMPOSE_FILE="docker-compose.yml:$RUNNER_TEMP/suunto-ci-compose.yml"
+            docker compose -p suunto-upgrade-ci logs --no-color app
+            docker compose -p suunto-restore-ci logs --no-color app
+          fi
       - name: Check whether publishing is enabled
         id: release
         if: github.ref == 'refs/heads/main'

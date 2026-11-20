@@ -126,6 +126,28 @@ class ReportsTest(unittest.TestCase):
                 browser.post("/settings", data={"minutes": 15})
                 self.assertIn('id="route-map-link"', browser.get("/routes").text)
 
+    def test_compare_retains_selected_activity_across_candidate_pages(self):
+        with TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.initialize()
+            at = datetime(2026, 1, 1, tzinfo=TZ)
+            run = store.start("test", at.isoformat())
+            store.commit(run, "workouts", [
+                (f"workout-{i}", (at + timedelta(hours=i)).isoformat(),
+                 {"workoutId": f"workout-{i}", "activityName": "Running", "workoutName": f"Run {i}",
+                  "totalDistance": 12000 if i == 0 else 3000})
+                for i in range(55)])
+            with TestClient(create_app(directory)) as browser:
+                first = browser.get("/compare", params={"sport": "Running", "first": "workout-54"}).text
+                self.assertIn("第 1 / 2 页", first)
+                self.assertNotIn('value="workout-0"', first)
+                second = browser.get("/compare", params={"sport": "Running", "first": "workout-54",
+                                                        "second": "workout-0", "page": 2}).text
+                self.assertIn('value="workout-54" selected', second)
+                self.assertIn('value="workout-0" selected', second)
+                self.assertIn("最远距离 12.0 km", second)
+                self.assertIn("运动对比结果", second)
+
     def test_routes_page_filters_before_paginating(self):
         with TemporaryDirectory() as directory:
             store = Store(directory)

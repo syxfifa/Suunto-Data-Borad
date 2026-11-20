@@ -2,7 +2,6 @@
 
 import asyncio
 from contextlib import ExitStack, asynccontextmanager
-from collections import Counter
 from datetime import date, datetime, time as clock_time, timedelta
 from ipaddress import ip_address
 import json
@@ -25,14 +24,15 @@ from starlette.background import BackgroundTask
 from .mcp import AUTHORIZATION_TIMEOUT, Client, MCPError, NeedsAuthorization, READ_TOOLS
 from .access import Access
 from . import VERSION
+from .library import library_router
 from .maintenance import storage_size, volume_lock
 from .config import Config
-from .reports import (WELLNESS_FIELDS, acwr_series, aurora_week, compare_metrics, daily_report, dates, grouped_totals,
+from .reports import (WELLNESS_FIELDS, acwr_series, aurora_week, daily_report, dates, grouped_totals,
                       intensity_charts, longest_streak, mapping_fields, midnight, period_summary,
                       sport_counts, sport_name, wellness)
 from .store import Store
 from .sync import SOURCES, Synchronizer, TZ
-from .views import covers, csv_cells, numeric, records, route_map_points, summary, table_rows, workout_chart, workout_metrics, workout_page
+from .views import covers, csv_cells, lower_bound, records, summary, workout_chart, workout_metrics, workout_page
 
 
 TEMPLATES = Jinja2Templates(directory=Path(__file__).with_name("templates"))
@@ -63,15 +63,6 @@ def add_review_links(series, sport, back, today):
     for item in series:
         item["links"] = [activity_link(start, end, sport, back) if start <= today.isoformat() else None
                          for start, end in item["ranges"]]
-
-
-def lower_bound(value, maximum):
-    if not value.strip():
-        return None
-    result = float(value)
-    if not 0 <= result <= maximum:
-        raise ValueError
-    return result
 
 
 def local_transport(request):
@@ -667,20 +658,6 @@ def create_app(data_dir=None, *, client=None):
                          workout_return=local_return(return_to, "/activities"),
                          charts=intensity_charts(row), optional_metrics=optional)
 
-    @app.get("/compare")
-    def compare(request: Request, sport: str = "", first: str = "", second: str = ""):
-        entries = records(store, "workouts")
-        sports = sorted({sport_name(row) for _, row in entries})
-        chosen = sport if sport in sports else sports[0] if sports else ""
-        options = [(at, row) for at, row in reversed(entries) if sport_name(row) == chosen]
-        allowed = {row["workoutId"]: row for _, row in options if row.get("workoutId")}
-        picked = [allowed[key] for key in (first, second) if key in allowed]
-        distance = max((v for _, row in options if (v := numeric(row.get("totalDistance"))) is not None), default=None)
-        climb = max((v for _, row in options if (v := numeric(summary(row).get("ascent"))) is not None), default=None)
-        return dashboard(request, "运动对比", comparison=True, sports=sports, sport=chosen, options=options,
-                         first=first, second=second, best_km=distance / 1000 if distance is not None else None,
-                         best_climb=climb, comparison_rows=[compare_metrics(row) for row in picked] if len(picked) == 2 and first != second else [])
-
     @app.get("/sleep-recovery")
     def sleep_recovery(request: Request, days: Annotated[int, Query(ge=7, le=90)] = 28):
         today = datetime.now(TZ).date()
@@ -709,54 +686,7 @@ def create_app(data_dir=None, *, client=None):
         return dashboard(request, "日常活动", charts=charts, daily_stats=metrics, providers=providers,
                          provider=selected, daily_period=period, daily_days=days, step_goal=goal)
 
-    @app.get("/routes")
-    def routes(request: Request, q: str = "", sport: str = "", watch: str = "", visibility: str = "",
-               km: str = "", updated: str = "", updated_to: str = "",
-               page: Annotated[int, Query(ge=1)] = 1):
-        all_routes = records(store, "routes")
-        sports = sorted({name for _, row in all_routes if isinstance(row.get("activityNames"), list)
-                         for name in row["activityNames"] if isinstance(name, str)})
-        try:
-            updated = date.fromisoformat(updated).isoformat() if updated else ""
-            updated_to = date.fromisoformat(updated_to).isoformat() if updated_to else ""
-            if updated and updated_to and updated > updated_to:
-                raise ValueError
-        except ValueError:
-            return dashboard(request, "保存路线", message="请输入有效的更新日期范围，结束日期不得早于开始日期。")
-        try:
-            km = lower_bound(km, 100000)
-        except ValueError:
-            return dashboard(request, "保存路线", message="请输入有效的距离。")
-        entries = [(at, row) for at, row in all_routes
-                   if (not q or q.strip().casefold() in str(row.get("description") or "").casefold())
-                   and (not sport or isinstance(row.get("activityNames"), list) and sport in row["activityNames"])
-                   and (not watch or watch == "on" and row.get("watchEnabled") is True
-                        or watch == "off" and row.get("watchEnabled") is False)
-                   and (not visibility or row.get("visibility") == visibility)
-                   and (km is None or numeric(row.get("totalDistance")) is not None and row["totalDistance"] >= km*1000)
-                   and (not (updated or updated_to) or row.get("modified") and at
-                        and (not updated or at[:10] >= updated) and (not updated_to or at[:10] <= updated_to))]
-        count = len(entries)
-        size = 25
-        route_pages = max(1, (count + size - 1) // size)
-        page = min(page, route_pages)
-        route_filter = {"q": q, "sport": sport, "watch": watch, "visibility": visibility,
-                        "km": km, "updated": updated, "updated_to": updated_to}
-        route_query = urlencode({key: value for key, value in route_filter.items() if value not in ("", None)})
-        distribution = Counter(name for _, row in entries if isinstance(row.get("activityNames"), list)
-                               for name in {x for x in row["activityNames"] if isinstance(x, str)})
-        newest_first = sorted(entries, key=lambda item: (item[0] or "", item[1]["routeId"]), reverse=True)
-        entries = list(reversed(newest_first[(page-1)*size:page*size]))
-        route_meta = [{"id": row["routeId"], "modified": at if row.get("modified") else None,
-                       "watch": row.get("watchEnabled"), "visibility": row.get("visibility")}
-                      for at, row in reversed(entries)]
-        return dashboard(request, "保存路线", headings=("路线名称或描述", "距离（km）", "运动类型", "地图"),
-                         rows=table_rows(entries, "routes"), route_maps=route_map_points(entries),
-                         route_meta=route_meta, route_sports=sports, route_summary=distribution.most_common(),
-                         route_filter=route_filter, route_query=route_query, route_page=page,
-                         route_pages=route_pages, route_count=count,
-                         route_basemap=config.read().get("route_basemap", False),
-                         route_detail_available=any(t["name"] == "get_route_summary" for t in discovery["tools"]))
+    app.include_router(library_router(store, config, discovery, dashboard))
 
     @app.get("/sync-status")
     def sync_page():

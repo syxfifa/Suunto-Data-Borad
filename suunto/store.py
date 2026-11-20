@@ -8,8 +8,8 @@ import sqlite3
 from uuid import uuid4
 
 
+SCHEMA_VERSION = 1
 SCHEMA = """
-PRAGMA journal_mode = WAL;
 CREATE TABLE IF NOT EXISTS records (
     source TEXT NOT NULL,
     record_key TEXT NOT NULL,
@@ -117,7 +117,13 @@ class Store:
     def initialize(self):
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self.connect() as db:
-            db.executescript(SCHEMA)
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+            if not 0 <= version <= SCHEMA_VERSION:
+                raise ValueError(f"SQLite 结构版本 {version} 不受本版本支持。")
+            db.execute("PRAGMA journal_mode=WAL")
+            if version == 0:
+                # Version 0 includes both fresh databases and existing unversioned releases.
+                db.executescript(f"BEGIN IMMEDIATE;\n{SCHEMA}\nPRAGMA user_version=1;")
             db.execute("""
                 INSERT OR IGNORE INTO sync_windows
                 SELECT source, start_at, end_at, message, 1, end_at

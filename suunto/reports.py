@@ -6,7 +6,7 @@ from statistics import mean, median
 from urllib.parse import urlencode
 
 from .sync import TZ, timestamp
-from .views import average_speed, chart, covers, numeric, summary
+from .views import average_speed, chart, covers, numeric, summary, workout_value
 
 
 # Optional metrics bind to observed entryData keys. The instance owner confirms
@@ -41,13 +41,13 @@ def sport_counts(rows):
 
 
 def period_totals(rows, covered):
-    vals = [numeric(row.get("tss")) for _, row in rows]
+    vals = [workout_value(row, "tss") for _, row in rows]
     known = bool(rows) or covered
     return {
         "n": len(rows) if known else None,
-        "km": observed_total([numeric(row.get("totalDistance")) for _, row in rows], 1000) if known else None,
-        "minutes": observed_total([numeric(row.get("totalTimeSeconds")) for _, row in rows], 60) if known else None,
-        "climb": observed_total([numeric(summary(row).get("ascent")) for _, row in rows], 1) if known else None,
+        "km": observed_total([workout_value(row, "distance") for _, row in rows], 1000) if known else None,
+        "minutes": observed_total([workout_value(row, "duration") for _, row in rows], 60) if known else None,
+        "climb": observed_total([workout_value(row, "ascent") for _, row in rows], 1) if known else None,
         "tss": observed_total(vals, 1) if known else None,
         "tss_count": sum(v is not None for v in vals),
         "covered": covered,
@@ -175,11 +175,12 @@ def compare_metrics(row):
     speed = average_speed(row)
     sport = str(sport_name(row)).lower()
     pace = round(1000 / speed) if speed and ("run" in sport or "跑" in sport) else None
-    distance = numeric(row.get("totalDistance"))
+    distance = workout_value(row, "distance")
+    duration = workout_value(row, "duration")
     return [round(distance/1000, 2) if distance is not None else None,
-            round(row["totalTimeSeconds"] / 60, 1) if numeric(row.get("totalTimeSeconds")) is not None else None,
+            round(duration / 60, 1) if duration is not None else None,
             f"{pace//60}:{pace%60:02d} min/km" if pace else f"{speed * 3.6:.2f} km/h" if speed is not None else None,
-            numeric(summary(row).get("ascent")), numeric(row.get("hrAvgValue")), numeric(row.get("tss"))]
+            workout_value(row, "ascent"), workout_value(row, "heart_rate"), workout_value(row, "tss")]
 
 
 def intensity_charts(row):

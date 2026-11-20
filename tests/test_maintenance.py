@@ -17,7 +17,7 @@ import httpx
 from suunto import VERSION
 from suunto.maintenance import backup, restore, verify, volume_lock
 from suunto.mcp import Client, MCPError, save_json
-from suunto.store import Store
+from suunto.store import SCHEMA_VERSION, Store
 from suunto.sync import TZ
 from suunto.web import create_app
 
@@ -96,6 +96,43 @@ class MaintenanceTest(unittest.TestCase):
             archive.writestr("../unexpected.json", "{}")
         with self.assertRaises(ValueError):
             verify(invalid)
+
+    def test_manifest_detects_changed_file_even_with_valid_zip_crc(self):
+        settings = self.directory / "config.json"
+        save_json(settings, {"sync_interval_minutes": 15})
+        archive = BytesIO()
+        backup(self.directory, archive)
+        with ZipFile(archive) as source:
+            files = {name: source.read(name) for name in source.namelist()}
+        manifest = json.loads(files["manifest.json"])
+        self.assertEqual((manifest["format"], manifest["app_version"], manifest["sqlite_user_version"]),
+                         (1, VERSION, SCHEMA_VERSION))
+        self.assertEqual(set(manifest["files"]), {"suunto.sqlite", "config.json"})
+        self.assertTrue(manifest["created_at"].endswith("+00:00"))
+
+        changed = BytesIO()
+        with ZipFile(changed, "w") as rebuilt:
+            for name, content in files.items():
+                rebuilt.writestr(name, b'{"sync_interval_minutes":25}' if name == "config.json" else content)
+        with self.assertRaisesRegex(ValueError, "与清单不一致"):
+            verify(changed)
+
+        # A pre-manifest archive containing an unversioned database remains restorable.
+        with self.store.connect() as db:
+            db.execute("PRAGMA user_version=0")
+        legacy = BytesIO()
+        unversioned = BytesIO()
+        backup(self.directory, unversioned)
+        with ZipFile(unversioned) as source, ZipFile(legacy, "w") as rebuilt:
+            for name in ("suunto.sqlite", "config.json"):
+                rebuilt.writestr(name, source.read(name))
+        self.assertEqual(verify(legacy), ["database", "settings"])
+        with TemporaryDirectory() as target:
+            restore(target, legacy, "database")
+            migrated = Store(target)
+            self.assertEqual(migrated.query("PRAGMA user_version")[0]["user_version"], 0)
+            migrated.initialize()
+            self.assertEqual(migrated.query("PRAGMA user_version")[0]["user_version"], SCHEMA_VERSION)
 
     def test_live_backup_sees_committed_wal_and_excludes_uncommitted_rows(self):
         with self.store.connect() as writer:

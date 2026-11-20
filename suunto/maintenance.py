@@ -1,6 +1,8 @@
 """Consistent SQLite backups, explicit offline restores and local diagnostics."""
 
 from contextlib import closing, contextmanager
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,11 +11,14 @@ import sqlite3
 from tempfile import TemporaryDirectory
 import zipfile
 
+from . import VERSION
 from .mcp import save_json
-from .store import Store
+from .store import SCHEMA_VERSION, Store
 
 
 COMPONENTS = {"database": "suunto.sqlite", "settings": "config.json", "token": "token.json"}
+MANIFEST = "manifest.json"
+BACKUP_FORMAT = 1
 KNOWN_TABLES = {"records", "cursors", "sync_runs", "sync_errors", "coverage", "backfill",
                 "sync_failures", "sync_windows", "sync_queue", "source_success",
                 "workout_details", "removed_routes", "route_absences"}
@@ -44,6 +49,9 @@ def volume_lock(directory):
 def check_database(path):
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
         db.execute("PRAGMA trusted_schema=OFF")
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+        if not 0 <= version <= SCHEMA_VERSION:
+            raise ValueError(f"SQLite 结构版本 {version} 不受本版本支持。")
         objects = db.execute("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchall()
         tables = {name for kind, name, _ in objects if kind == "table"}
         if ("records" not in tables or not tables <= KNOWN_TABLES
@@ -55,6 +63,7 @@ def check_database(path):
                 or db.execute("PRAGMA quick_check").fetchall() != [("ok",)]
                 or db.execute("PRAGMA foreign_key_check").fetchone()):
             raise ValueError("备份数据库完整性检查失败。")
+        return version
 
 
 def copy_database(source, target):
@@ -68,7 +77,8 @@ def backup(directory, output, *, include_token=False):
     with TemporaryDirectory() as temporary, zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         snapshot = Path(temporary) / COMPONENTS["database"]
         copy_database(directory / COMPONENTS["database"], snapshot)
-        check_database(snapshot)
+        schema_version = check_database(snapshot)
+        files = {snapshot.name: file_metadata(snapshot)}
         archive.write(snapshot, COMPONENTS["database"])
         for name in ["settings"] + (["token"] if include_token else []):
             try:
@@ -77,6 +87,16 @@ def backup(directory, output, *, include_token=False):
                 continue
             validate_json(name, data)
             archive.writestr(COMPONENTS[name], data)
+            files[COMPONENTS[name]] = {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        archive.writestr(MANIFEST, json.dumps({
+            "format": BACKUP_FORMAT, "app_version": VERSION, "sqlite_user_version": schema_version,
+            "created_at": datetime.now(timezone.utc).isoformat(), "files": files,
+        }, sort_keys=True))
+
+
+def file_metadata(path):
+    with path.open("rb") as handle:
+        return {"size": path.stat().st_size, "sha256": hashlib.file_digest(handle, "sha256").hexdigest()}
 
 
 def validate_json(name, content):
@@ -92,9 +112,26 @@ def validate_json(name, content):
 
 def extract_checked(archive, temporary):
     names = archive.namelist()
-    if (len(names) != len(set(names)) or not set(names) <= set(COMPONENTS.values())
+    if (len(names) != len(set(names)) or not set(names) <= {*COMPONENTS.values(), MANIFEST}
             or COMPONENTS["database"] not in names):
         raise ValueError("备份内容不符合预期。")
+    manifest = None
+    if MANIFEST in names:
+        if archive.getinfo(MANIFEST).file_size > 65536:
+            raise ValueError("备份清单过大。")
+        manifest = validate_json("manifest", archive.read(MANIFEST))
+        if (type(manifest.get("format")) is not int or manifest["format"] != BACKUP_FORMAT
+                or not isinstance(manifest.get("app_version"), str)
+                or type(manifest.get("sqlite_user_version")) is not int
+                or not isinstance(manifest.get("files"), dict)
+                or set(manifest["files"]) != set(names) - {MANIFEST}):
+            raise ValueError("备份清单格式或版本不受支持。")
+        try:
+            timestamp = datetime.fromisoformat(manifest.get("created_at"))
+            if timestamp.utcoffset() != timezone.utc.utcoffset(None):
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise ValueError("备份清单缺少有效的 UTC 创建时间。") from exc
     for component, name in COMPONENTS.items():
         if name not in names:
             continue
@@ -104,11 +141,18 @@ def extract_checked(archive, temporary):
                 raise ValueError("数据库备份超过 32 GiB。")
             with archive.open(name) as src, (temporary / name).open("wb") as dst:
                 shutil.copyfileobj(src, dst)
-            check_database(temporary / name)
+            if manifest and manifest["files"][name] != file_metadata(temporary / name):
+                raise ValueError(f"备份校验失败：{name} 与清单不一致。")
+            schema_version = check_database(temporary / name)
+            if manifest and schema_version != manifest["sqlite_user_version"]:
+                raise ValueError("备份数据库版本与清单不一致。")
         else:
             if entry.file_size > 1024 * 1024:
                 raise ValueError("设置或令牌文件过大。")
-            validate_json(component, archive.read(name))
+            data = archive.read(name)
+            if manifest and manifest["files"][name] != {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}:
+                raise ValueError(f"备份校验失败：{name} 与清单不一致。")
+            validate_json(component, data)
     return [component for component, name in COMPONENTS.items() if name in names]
 
 

@@ -77,7 +77,23 @@ SQLite 中的时间索引用北京时间。原始返回字段保存在 JSON 记�
 - **分享模式**只导出指标和日期，省略坐标、名称、设备来源、记录编号及原始 JSON。运动和健康指标仍属于个人数据，分享前请检查内容。
 - **设置 → 维护**显示版本、SQLite 占用、记录数、授权状态、最近同步时间，可下载脱敏诊断。诊断仅含运行汇总，不含日志正文、令牌、个人域名或原始记录。日志默认保留 90 天，可设为 7–365 天，最近一次成功同步仍可查看。
 - `/healthz` 用于 Compose 的存活检查。`/readyz` 返回最近已知的 MCP 探测和授权状态，未授权或无法确认可用时返回 `503`。访问控制启用时，`/readyz` 和数据接口均需要看板密码。
-- SQLite 保留原始 JSON。活动查询使用时间及运动类型索引，列表保持分页；设置页在 SQLite 内汇总已见字段名和类型。可在维护页观察数据库大小，再根据实际查询耗时决定是否添加周/月汇总表。
+- SQLite 保留原始 JSON。活动对比每页读取 50 条候选，已选活动可跨页保留。保存路线在 SQLite 中筛选和计数，每页读取 25 条记录的完整内容。可用一次性模拟卷测一年和三年数据的页面耗时、SQLite 批量写入和文件体积。测试只写入临时目录，使用模拟数据。
+
+```sh
+docker compose exec -T -e PYTHONPATH=/app app python tests/benchmark_queries.py
+```
+
+### 指标字段与单位
+
+| 看板指标 | MCP 记录字段 | 看板口径 |
+|---|---|---|
+| 活动距离与时长 | `totalDistance`、`totalTimeSeconds` | 米转公里，秒转分钟或小时 |
+| 爬升与训练效果 | `summary.ascent`、`summary.pte` | 米和 PTE 原值 |
+| 心率与训练负荷 | `hrAvgValue`、`tss` | bpm 和 TSS 原值 |
+| 睡眠与恢复 | `entryData.Duration`、`entryData.Balance` | 秒转小时，0–1 的身体资源值转百分比 |
+| 自选健康指标 | 部署者绑定的 `entryData` 路径 | 按设置确认的单位和字段类型展示 |
+
+活动的通用字段映射集中在 `suunto/views.py` 的 `WORKOUT_FIELDS`。字段缺失或类型变化时保留原始记录，数值统计显示缺失。
 
 ## NAS 备份、恢复和回滚
 
@@ -91,6 +107,8 @@ docker compose exec -T app python -m suunto verify < "$archive"
 ```
 
 归档默认包含数据库和已存在的 `config.json`。仅使用 `backup --include-token` 才会备份 OAuth 凭据。ZIP 本身没有加密。看板密码哈希保存在独立的 `access.json`，不会打包。归档、个人配置和导出文件应留在私有目录。
+
+自 `0.8.0` 起，备份清单包含应用版本、SQLite `user_version`、UTC 创建时间及组件大小和 SHA-256。校验与恢复都会检查组件完整性，也接受升级前生成的旧 ZIP。数据库在新版首次启动时从未标记版本迁移到结构版本 1。恢复新版归档请用支持该清单的镜像。
 
 从 `0.3.x` 首次升级时，旧容器没有备份命令。定义上面的 `archive` 变量后，先拉新镜像，用同一 Compose 项目下的新镜像读取原卷。验证成功后再重建服务。
 
@@ -152,9 +170,9 @@ docker compose exec app python -m unittest discover -s tests -v
 
 1. 把完整项目（包括隐藏的 `.github/` 目录）提交到 GitHub，在 Docker Hub 创建 `suunto-data-borad` 仓库。
 2. 工作流的 Docker Hub 用户名为 `jjsyx123`。在 GitHub 仓库的 Settings → Secrets and variables → Actions 添加具有镜像写权限的 `DOCKERHUB_TOKEN`。
-3. 推送到 `main` 后，工作流会构建 AMD64 和 ARM64 镜像，在两种架构运行测试，并检查 Compose 启动和设置持久化。验收通过后发布 `latest`、12 位提交哈希和 `VERSION` 中的版本标签。已发布的版本标签会保留原镜像。缺少令牌时，工作流只构建和测试。
+3. 推送到 `main` 后，工作流会构建 AMD64 和 ARM64 镜像，在两种架构运行测试。Chromium 用模拟服务验证 IP、不同域名与端口、HTTPS 反代授权和日期筛选。Compose 使用 `0.7.0` 镜像生成旧数据卷，再验证原地升级和全新卷恢复。验收通过后发布 `latest`、12 位提交哈希和版本标签。缺少令牌时，工作流只构建和测试。
 
-Compose 默认使用 `docker.io/jjsyx123/suunto-data-borad:latest`。需要固定版本时，可把 `image` 改成带发布标签的完整镜像名。私有镜像需先在 NAS 的终端运行 `docker login`。
+现有 Compose 使用 `jjsyx123/suunto-data-borad:latest`，手动拉取会跟随新发布。希望固定部署版本时，在 NAS 的 Compose 文件中使用 `image: "jjsyx123/suunto-data-borad:0.8.0"`。需要升级时改成下一版本标签再拉取，回退时改回已验证的标签。私有镜像需先在 NAS 的终端运行 `docker login`。
 
 ## 版本管理
 

@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 from fastapi.testclient import TestClient
 
 from suunto.mcp import MCPError, NeedsAuthorization
-from suunto.store import SCHEMA, Store
+from suunto.store import SCHEMA, SCHEMA_VERSION, Store
 from suunto.sync import SOURCES, Synchronizer, TZ
 from suunto.views import workout_chart
 from suunto.web import create_app
@@ -224,6 +224,12 @@ class SyncTest(unittest.TestCase):
             self.assertEqual(store.record("workouts", "old"), {})
             self.assertEqual(store.coverage("workouts"), [])
             self.assertEqual(store.status()["backfill"], [])
+            self.assertEqual(store.query("PRAGMA user_version")[0]["user_version"], SCHEMA_VERSION)
+            with store.connect() as db:
+                db.execute(f"PRAGMA user_version={SCHEMA_VERSION+1}")
+            with self.assertRaisesRegex(ValueError, "不受本版本支持"):
+                store.initialize()
+            self.assertEqual(store.record("workouts", "old"), {})
 
     def test_legacy_failed_window_migrates_and_two_old_gaps_repair_independently(self):
         first = datetime(2020, 1, 1, tzinfo=TZ)

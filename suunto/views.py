@@ -29,7 +29,28 @@ def records(store, source, start=None, end=None):
 
 
 SORTS = {"date": "occurred_at", "distance": "distance", "duration": "duration", "tss": "tss"}
-WORKOUT_PATHS = {"distance": "$.totalDistance", "duration": "$.totalTimeSeconds", "tss": "$.tss"}
+WORKOUT_FIELDS = {
+    "distance": ("totalDistance",),
+    "duration": ("totalTimeSeconds",),
+    "ascent": ("summary", "ascent"),
+    "heart_rate": ("hrAvgValue",),
+    "tss": ("tss",),
+    "pte": ("summary", "pte"),
+}
+WORKOUT_FILTERS = ("distance", "duration", "tss")
+
+
+def workout_value(row, metric):
+    for key in WORKOUT_FIELDS[metric]:
+        row = row.get(key) if isinstance(row, dict) else None
+    return numeric(row)
+
+
+def workout_sql(metric):
+    path = "$." + ".".join(WORKOUT_FIELDS[metric])
+    value = f"json_extract(payload, '{path}')"
+    return (f"CASE WHEN json_type(payload, '{path}') IN ('real','integer') "
+            f"AND abs(CAST({value} AS REAL))<=1.7976931348623157e308 THEN {value} END")
 
 
 def workout_filter(where, parameters, sport="", search="", minimums=None):
@@ -43,9 +64,8 @@ def workout_filter(where, parameters, sport="", search="", minimums=None):
                  "coalesce(json_extract(payload, '$.description'), '')), lower(?))>0"
         parameters.append(search)
     for metric, value in (minimums or {}).items():
-        if metric in WORKOUT_PATHS and value is not None:
-            path = WORKOUT_PATHS[metric]
-            where += f" AND json_type(payload, '{path}') IN ('real','integer') AND json_extract(payload, '{path}')>=?"
+        if metric in WORKOUT_FILTERS and value is not None:
+            where += f" AND ({workout_sql(metric)})>=?"
             parameters.append(value)
     return where, parameters
 
@@ -60,7 +80,7 @@ def workout_page(store, start, end, page, size=50, *, sport="", search="", minim
     direction = "ASC" if order == "asc" else "DESC"
     rows = store.query(f"""
         SELECT record_key, occurred_at, payload,
-               {", ".join(f"CASE WHEN json_type(payload, '{path}') IN ('real','integer') THEN json_extract(payload, '{path}') END AS {alias}" for alias, path in WORKOUT_PATHS.items())}
+               {", ".join(f"{workout_sql(metric)} AS {metric}" for metric in WORKOUT_FILTERS)}
         FROM records WHERE {where}
         ORDER BY {primary} IS NULL, {primary} {direction}, occurred_at DESC, record_key DESC LIMIT ? OFFSET ?
         """, [*parameters, size, (page - 1) * size])
@@ -77,6 +97,15 @@ def numeric(value):
     return value if type(value) in (int, float) and math.isfinite(value) else None
 
 
+def lower_bound(value, maximum):
+    if not value.strip():
+        return None
+    result = float(value)
+    if not 0 <= result <= maximum:
+        raise ValueError
+    return result
+
+
 def scaled(value, divisor=1, digits=1):
     return round(value / divisor, digits) if value is not None else None
 
@@ -87,7 +116,7 @@ def summary(row):
 
 
 def average_speed(row):
-    distance, seconds = numeric(row.get("totalDistance")), numeric(row.get("totalTimeSeconds"))
+    distance, seconds = workout_value(row, "distance"), workout_value(row, "duration")
     return distance / seconds if distance is not None and distance >= 0 and seconds is not None and seconds > 0 else None
 
 
@@ -116,9 +145,9 @@ def workout_metrics(row):
 
 def table_rows(entries, source):
     if source == "workouts":
-        return [[stamp, item.get("activityName"), scaled(numeric(item.get("totalDistance")), 1000, 2),
-                 scaled(numeric(item.get("totalTimeSeconds")), 60), numeric(item.get("hrAvgValue")),
-                 numeric((item.get("summary") or {}).get("pte")) if isinstance(item.get("summary"), dict) else None]
+        return [[stamp, item.get("activityName"), scaled(workout_value(item, "distance"), 1000, 2),
+                 scaled(workout_value(item, "duration"), 60), workout_value(item, "heart_rate"),
+                 workout_value(item, "pte")]
                 for stamp, item in reversed(entries)]
     return [[item.get("description"), scaled(numeric(item.get("totalDistance")), 1000, 2),
              "、".join(name for name in item["activityNames"] if isinstance(name, str))
@@ -154,16 +183,16 @@ def workout_chart(entries, weekly, first_day, last_day, intervals, tz, *, extend
         first_label -= timedelta(days=first_day.weekday())
     labels = []
     definitions = [
-        ("距离（公里）", "距离", lambda r: scaled(numeric(r.get("totalDistance")), 1000, 6), "sum"),
-        ("时长（分钟）", "时长", lambda r: scaled(numeric(r.get("totalTimeSeconds")), 60, 6), "sum"),
+        ("距离（公里）", "距离", lambda r: scaled(workout_value(r, "distance"), 1000, 6), "sum"),
+        ("时长（分钟）", "时长", lambda r: scaled(workout_value(r, "duration"), 60, 6), "sum"),
     ]
     if extended:
         definitions += [
             ("活动次数", "活动次数", lambda r: 1, "sum"),
-            ("累计爬升（m）", "爬升", lambda r: numeric(summary(r).get("ascent")), "sum"),
-            ("训练负荷（TSS）", "TSS", lambda r: numeric(r.get("tss")), "sum"),
-            ("TSS 记录覆盖（%）", "有 TSS 的活动", lambda r: numeric(r.get("tss")), "coverage"),
-            ("平均训练效果（PTE）", "PTE", lambda r: numeric(summary(r).get("pte")), "mean"),
+            ("累计爬升（m）", "爬升", lambda r: workout_value(r, "ascent"), "sum"),
+            ("训练负荷（TSS）", "TSS", lambda r: workout_value(r, "tss"), "sum"),
+            ("TSS 记录覆盖（%）", "有 TSS 的活动", lambda r: workout_value(r, "tss"), "coverage"),
+            ("平均训练效果（PTE）", "PTE", lambda r: workout_value(r, "pte"), "mean"),
         ]
     totals = [[] for _ in definitions]
     ranges = []

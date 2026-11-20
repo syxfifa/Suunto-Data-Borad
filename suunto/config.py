@@ -13,8 +13,8 @@ LOG = logging.getLogger(__name__)
 
 
 class Config:
-    def __init__(self, directory):
-        self.path = directory / "config.json"
+    def __init__(self, directory, filename="config.json"):
+        self.path = directory / filename
         self.lock = Lock()
 
     def read(self):
@@ -26,7 +26,7 @@ class Config:
         except FileNotFoundError:
             return {}
         except (ValueError, OSError):
-            LOG.warning("config.json is invalid; using the default sync interval")
+            LOG.warning("%s is invalid; using defaults", self.path.name)
             return {}
 
     def load(self):

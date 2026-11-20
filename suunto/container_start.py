@@ -8,7 +8,7 @@ import sys
 APP_UID = APP_GID = 10001
 DATA_FILES = (
     ".maintenance.lock", "suunto.sqlite", "suunto.sqlite-wal", "suunto.sqlite-shm",
-    "suunto.sqlite-journal", "config.json", "token.json", "access.json",
+    "suunto.sqlite-journal", "config.json", "token.json", "access.json", "amap.json",
 )
 
 

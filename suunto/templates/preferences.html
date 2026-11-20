@@ -39,3 +39,23 @@
     <button>保存偏好</button>
   </form>
 </section>
+<section id="amap-settings">
+  <h2>高德地图预览</h2>
+  {% if amap_saved %}<p class="notice" role="status">高德地图设置已保存。</p>{% endif %}
+  <p id="amap-privacy">启用后，打开「保存路线」会自动加载高德地图，并向高德发送预览位置。凭据保存在本机。</p>
+  <form action="/settings/amap" method="post">
+    <div class="controls">
+      <label><input type="checkbox" name="enabled" value="true" aria-describedby="amap-privacy" {% if amap_enabled %}checked{% endif %}>自动显示高德地图</label>
+      <label>高德 Web 端 Key{% if amap_has_key %}（已保存）{% endif %}<input name="key" autocomplete="off" spellcheck="false" maxlength="32"></label>
+      <label>安全密钥{% if amap_has_secret %}（已保存）{% endif %}<input type="password" name="secret" autocomplete="new-password" maxlength="32"></label>
+      <label>Suunto 路线坐标系<select name="coordinates">
+        <option value="">请选择</option>
+        <option value="gps" {% if amap_coordinates == 'gps' %}selected{% endif %}>GPS（WGS84）</option>
+        <option value="gaode" {% if amap_coordinates == 'gaode' %}selected{% endif %}>高德（GCJ-02）</option>
+      </select></label>
+    </div>
+    <p class="meta">凭据留空会保留已保存的值。请用已知地标核对 Suunto 路线坐标系。</p>
+    <button>保存地图设置</button>
+    {% if amap_has_key or amap_has_secret %}<button class="secondary" name="clear" value="true">清除高德凭据</button>{% endif %}
+  </form>
+</section>

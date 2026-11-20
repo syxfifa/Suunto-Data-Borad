@@ -9,6 +9,7 @@ suunto-storage
 **/suunto.sqlite
 **/suunto.sqlite-*
 **/access.json
+**/amap.json
 **/.maintenance.lock
 **/suunto-backup*.zip
 **/suunto*.csv

@@ -9,7 +9,7 @@
 {% include "reports_panels.html" %}
 {% if settings_minutes is defined %}
 <nav class="section-nav" aria-label="设置页分区">
-  <a href="#suunto">连接与授权</a><a href="#sync">同步</a><a href="#backfill">历史补采</a><a href="#preferences">显示偏好</a><a href="/maintenance#access">访问控制</a>
+  <a href="#suunto">连接与授权</a><a href="#sync">同步</a><a href="#backfill">历史补采</a><a href="#preferences">显示偏好</a><a href="#amap-settings">高德地图预览</a><a href="/maintenance#access">访问控制</a>
 </nav>
 {% if saved %}<p class="notice" role="status">已保存同步间隔。</p>{% endif %}
 <p>看板密码{{ '已启用' if access_protected else '未启用' }}。{% if not access_protected %}
@@ -165,19 +165,32 @@
 {% endif %}
 {% if route_maps is defined and route_maps|select|list %}
 <div class="controls"><button type="button" id="route-overview" aria-controls="route-map">预览本页路线的位置</button></div>
-<script src="/static/route-map.js?v=0.7.0" defer></script>
-<section id="route-map" tabindex="-1" hidden>
+{% if amap_preview %}<script src="/static/amap-preview.js?v=1.0.5" defer></script>{% endif %}
+<script src="/static/route-map.js?v=1.0.5" defer></script>
+<section id="route-map" tabindex="-1" hidden {% if amap_preview %}data-amap-key="{{ amap_preview.key }}" data-amap-coordinates="{{ amap_preview.coordinates }}"{% endif %}>
   <h2>路线位置预览</h2>
   <p id="route-point" role="status"></p>
-  <canvas width="680" height="280" role="img" aria-label="Suunto 路线位置点相对示意图"></canvas>
+  <div class="route-map-surface">
+    <canvas width="680" height="280" role="img" aria-label="Suunto 路线位置点相对示意图"></canvas>
+    {% if amap_preview %}<div id="amap-preview" aria-label="高德地图" inert></div>{% endif %}
+  </div>
+  {% if amap_preview %}
+    <p id="amap-status" class="meta" role="status"></p>
+    <button type="button" class="secondary" id="amap-retry" hidden>重试加载高德地图</button>
+  {% endif %}
   <div class="controls">
     <button type="button" data-map-zoom="in" aria-label="放大地图">＋</button><button type="button" data-map-zoom="out" aria-label="缩小地图">－</button>
     <button type="button" data-map-zoom="reset">复位</button>
-    <label>坐标<input id="route-coordinates" readonly></label><button type="button" id="copy-coordinates">复制坐标</button>
+    {% if amap_preview %}<label id="route-point-choice">位置点<select id="route-point-select"></select></label>{% endif %}
+    <div class="route-coordinate-actions">
+      <label>坐标<input id="route-coordinates" readonly></label><button type="button" id="copy-coordinates">复制坐标</button>
+    </div>
   </div>
-  <p>可拖动查看位置点。{% if route_basemap %}打开底图会向 OpenStreetMap 发送所选点的坐标。{% endif %}</p>
-  <button type="button" class="secondary" id="route-map-close">返回路线列表</button>
-  {% if route_basemap %}<a id="route-map-link" class="button" target="_blank" rel="noopener noreferrer" hidden>在 OpenStreetMap 打开底图</a>{% endif %}
+  {% if not amap_preview %}<p>可拖动查看位置点。{% if route_basemap %}打开底图会向 OpenStreetMap 发送所选点的坐标。{% endif %}</p>{% endif %}
+  <div class="controls">
+    <button type="button" class="secondary" id="route-map-close">返回路线列表</button>
+    {% if route_basemap and not amap_preview %}<a id="route-map-link" class="button" target="_blank" rel="noopener noreferrer" hidden>在 OpenStreetMap 打开底图</a>{% endif %}
+  </div>
 </section>
 {% endif %}
 {% if headings %}
@@ -192,10 +205,12 @@
     </tr></thead>
     <tbody {% if activity_keys is defined %}role="rowgroup"{% endif %}>{% for row in rows %}<tr {% if activity_keys is defined %}role="row" id="activity-{{ loop.index0 }}"{% endif %}>
       {% set meta = route_meta[loop.index0] if route_meta is defined else none %}
+      {% set points = route_maps[loop.index0] if route_maps is defined else [] %}
       {% for cell in row %}<td {% if activity_keys is defined %}role="cell"{% endif %}>
         {% if activity_keys is defined and loop.index > 2 %}<span class="cell-label" aria-hidden="true">{{ headings[loop.index0] }}</span>{% endif %}
         {% if activity_keys is defined and loop.first and cell %}
         <time datetime="{{ cell }}">{{ cell[:16]|replace('T', ' ') }}</time>
+      {% elif amap_preview and loop.first and points %}<button type="button" class="route-select secondary" aria-controls="route-map" aria-pressed="false">{{ cell or '未命名路线' }}</button>
       {% else %}{{ cell if cell is not none and cell != '' else '—' }}{% endif %}
       {% if meta and loop.first %}<div class="meta">最近更新 {{ local_time(meta.modified) }}</div>{% endif %}</td>{% endfor %}
       {% if activity_keys is defined %}
@@ -203,10 +218,12 @@
       {% endif %}
       {% if route_maps is defined %}
       <td class="route-points" data-route="{{ row[0] or '' }}">
-        {% for point in route_maps[loop.index0] %}
+        {% if amap_preview and points %}
+        <script type="application/json" class="route-point-data">{{ points|tojson }}</script>{{ points|length }} 个位置点
+        {% else %}{% for point in points %}
         <button type="button" class="map-point" aria-controls="route-map" data-lat="{{ point.lat }}" data-lon="{{ point.lon }}"
                 data-alt="{{ point.alt if point.alt is not none else '' }}">{{ point.label }}</button>
-        {% else %}暂无位置点{% endfor %}
+        {% else %}暂无位置点{% endfor %}{% endif %}
       </td>
       <td><details><summary>详情</summary>
         <p>可见性 {{ meta.visibility or '—' }} · 手表 {{ '已启用' if meta.watch is sameas true else '未启用' if meta.watch is sameas false else '—' }}</p>

@@ -23,6 +23,7 @@ from starlette.background import BackgroundTask
 
 from .mcp import AUTHORIZATION_TIMEOUT, Client, MCPError, NeedsAuthorization, READ_TOOLS
 from .access import Access
+from .amap import amap_router
 from . import VERSION
 from .library import library_router
 from .maintenance import storage_size, volume_lock
@@ -137,6 +138,7 @@ def create_app(data_dir=None, *, client=None):
     store = Store(data_dir)
     sync = Synchronizer(mcp, store)
     config = Config(data_dir)
+    amap_config = Config(data_dir, "amap.json")
     access = Access(data_dir)
     discovery = {"status": "probing", "tools": [], "checked_at": None, "message": None}
     task = None
@@ -686,13 +688,14 @@ def create_app(data_dir=None, *, client=None):
         return dashboard(request, "日常活动", charts=charts, daily_stats=metrics, providers=providers,
                          provider=selected, daily_period=period, daily_days=days, step_goal=goal)
 
-    app.include_router(library_router(store, config, discovery, dashboard))
+    app.include_router(amap_router(amap_config))
+    app.include_router(library_router(store, config, amap_config, discovery, dashboard))
 
     @app.get("/sync-status")
     def sync_page():
         return RedirectResponse("/settings#sync", status_code=303, headers=NO_CACHE)
 
-    def settings_page(request, *, saved=False, preferences_saved=False, message=None, oauth_error=None):
+    def settings_page(request, *, saved=False, preferences_saved=False, amap_saved=False, message=None, oauth_error=None):
         status = sync_status()
         status["backfill_pending"] = any(row["next_at"] < row["end_at"] for row in status["backfill"])
         spans = {row["source"]: row for row in status["sources"]}
@@ -703,6 +706,7 @@ def create_app(data_dir=None, *, client=None):
                     "available": any(tool["name"] == meta[0] for tool in discovery["tools"])}
                    for name, meta in SOURCES.items()]
         prefs = config.read()
+        map_settings = amap_config.read()
         field_sets = wellness_fields()
         configured = prefs.get("wellness_fields", {})
         cutoff = midnight(datetime.now(TZ).date() - timedelta(days=89)).isoformat()
@@ -725,6 +729,9 @@ def create_app(data_dir=None, *, client=None):
         return TEMPLATES.TemplateResponse(
             request=request, name="dashboard.html",
             context={"title": "设置", "saved": saved, "preferences_saved": preferences_saved,
+                     "amap_saved": amap_saved, "amap_enabled": map_settings.get("enabled", False),
+                     "amap_coordinates": map_settings.get("coordinates"),
+                     "amap_has_key": bool(map_settings.get("key")), "amap_has_secret": bool(map_settings.get("secret")),
                      "message": message, "oauth_error": oauth_error,
                      "settings_minutes": config.load(), "discovery": discovery, "sync_status": status,
                      "sources": sources, "source_labels": SOURCE_LABELS, "prefs": prefs, "bindings": bindings,
@@ -735,14 +742,14 @@ def create_app(data_dir=None, *, client=None):
 
     @app.get("/settings")
     def settings(request: Request, saved: bool = False, authorized: bool = False, refresh_required: bool = False,
-                 job: str = "", preferences_saved: bool = False):
+                 job: str = "", preferences_saved: bool = False, amap_saved: bool = False):
         message = {"started": "任务已提交。", "busy": "已有同步任务运行中，请稍后重试。",
                    "pause": "已请求暂停，当前请求结束后会保留补采进度。"}.get(job)
         if authorized and mcp.credential().get("access_token"):
             message = "Suunto 授权成功，已安排同步。"
             if refresh_required:
                 message += " 本次授权未返回刷新令牌，到期后需重新授权。"
-        return settings_page(request, saved=saved, preferences_saved=preferences_saved, message=message)
+        return settings_page(request, saved=saved, preferences_saved=preferences_saved, amap_saved=amap_saved, message=message)
 
     @app.post("/settings")
     async def save_settings(minutes: Annotated[int, Form(ge=1, le=1440)]):

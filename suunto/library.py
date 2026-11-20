@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, Query, Request
 
+from .amap import amap_ready
 from .reports import compare_metrics
 from .views import lower_bound, record_filter, route_map_points, table_rows, workout_filter, workout_sql
 
@@ -15,7 +16,7 @@ ROUTE_SPORTS = """CASE WHEN json_type(payload, '$.activityNames')='array'
                         THEN json_extract(payload, '$.activityNames') ELSE '[]' END"""
 
 
-def library_router(store, config, discovery, render):
+def library_router(store, config, amap_config, discovery, render):
     router = APIRouter()
 
     @router.get("/compare")
@@ -141,11 +142,14 @@ def library_router(store, config, discovery, render):
         route_filter = {"q": q, "sport": sport, "watch": watch, "visibility": visibility,
                         "km": km, "updated": first or "", "updated_to": last or ""}
         query = urlencode({key: value for key, value in route_filter.items() if value not in ("", None)})
+        amap = amap_config.read()
+        preview = {"key": amap["key"], "coordinates": amap["coordinates"]} if amap_ready(amap) else None
         return render(request, "保存路线", headings=("路线名称或描述", "距离（km）", "运动类型", "地图"),
                       rows=table_rows(entries, "routes"), route_maps=route_map_points(entries), route_meta=metadata,
                       route_sports=sports, route_summary=distribution, route_filter=route_filter, route_query=query,
                       route_page=page, route_pages=pages, route_count=count,
                       route_basemap=config.read().get("route_basemap", False),
+                      amap_preview=preview,
                       route_detail_available=any(t["name"] == "get_route_summary" for t in discovery["tools"]))
 
     return router

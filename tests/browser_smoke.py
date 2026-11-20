@@ -161,6 +161,87 @@ def exercise(browser, origin, fixture, width):
         expect(page.get_by_role("link", name="返回复盘图表")).to_be_visible()
         if not page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"):
             raise AssertionError(f"Dashboard exceeds {width}px page width")
+        exercise_amap(context, page, origin, store, when.isoformat(), now.isoformat(), width)
+
+
+def exercise_amap(context, page, origin, store, older, newer, width):
+    run = store.start("routes_fixture", newer)
+    store.commit(run, "routes", [
+        ("no-point", newer, {"routeId": "no-point", "name": "无坐标"}),
+        ("first", newer, {"routeId": "first", "name": "公园环线", "description": "公园环线",
+         "startPoint": {"latitude": 30.5, "longitude": 120.5},
+         "endPoint": {"latitude": 30.6, "longitude": 120.6}}),
+        ("second", older, {"routeId": "second", "name": "海边步道", "description": "海边步道",
+         "centerPoint": {"latitude": 31.5, "longitude": 121.5}}),
+    ])
+    # Install a deterministic SDK stand-in without sending a real map request.
+    requests = []
+    offline = False
+
+    def mock_sdk(route):
+        requests.append(route.request.url)
+        if offline:
+            route.abort()
+            return
+        callback = parse_qs(urlsplit(route.request.url).query)["callback"][0]
+        route.fulfill(content_type="application/javascript", body="""
+          window.mapCalls = {instances: 0, conversions: 0};
+          window.AMap = {
+            Map: class {
+              constructor(container) { this.container = container; window.mapCalls.instances++; }
+              on(event, callback) { setTimeout(callback, 20); }
+              add(markers) { this.container.dataset.markers = markers.map(m => m.title).join(','); }
+              remove() {} setFitView() {} setZoomAndCenter() {} destroy() {}
+              zoomIn() { this.container.dataset.zoom = 'in'; }
+            },
+            Marker: class { constructor({title}) { this.title = title; } },
+            convertFrom(points, type, complete) {
+              if (type !== 'gps') throw new Error('unexpected coordinate system');
+              window.mapCalls.conversions++;
+              complete('complete', {locations: points});
+            },
+          };
+        """ + f"window.{callback}();")
+
+    context.route("https://webapi.amap.com/maps?*", mock_sdk)
+    page.goto(origin + "/routes")
+    expect(page.locator("#route-map")).to_be_hidden()
+    assert not requests
+    page.goto(origin + "/settings")
+    settings = page.locator("#amap-settings")
+    settings.get_by_label("自动显示高德地图").check()
+    settings.get_by_label("高德 Web 端 Key").fill("a" * 32)
+    settings.get_by_label("安全密钥").fill("b" * 32)
+    settings.get_by_label("Suunto 路线坐标系").select_option("gps")
+    settings.get_by_role("button", name="保存地图设置").click()
+    expect(settings.get_by_text("高德地图设置已保存。")).to_be_visible()
+    page.goto(origin + "/routes?q=missing")
+    expect(page.locator("#amap-preview")).to_have_count(0)
+    assert not requests
+    page.goto(origin + "/routes")
+    preview = page.locator("#amap-preview")
+    expect(preview).to_be_visible()
+    first = page.locator('.route-select[aria-pressed="true"]').inner_text()
+    other = page.locator('.route-select[aria-pressed="false"]')
+    assert first == "公园环线"
+    expect(preview).to_have_attribute("data-markers", "起点,终点")
+    page.get_by_role("button", name="放大地图").click()
+    expect(preview).to_have_attribute("data-zoom", "in")
+    other.click()
+    expect(preview).to_be_visible()
+    page.get_by_role("button", name=first).click()
+    expect(preview).to_be_visible()
+    assert page.evaluate("window.mapCalls") == {"instances": 1, "conversions": 2}
+    assert len(requests) == 1
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Map overflows at {width}px"
+
+    offline = True
+    page.reload()
+    expect(page.locator("#amap-status")).to_contain_text("仍可查看和复制坐标")
+    expect(page.locator("#route-coordinates")).not_to_have_value("")
+    offline = False
+    page.get_by_role("button", name="重试加载高德地图").click()
+    expect(preview).to_be_visible()
 
 
 def main():
@@ -184,7 +265,7 @@ def main():
                                 exercise(browser, origin, fixture, width)
                         else:
                             exercise(browser, f"http://{host}:{port}", fixture, width)
-                    print(f"{host} · {width}px · OAuth callback, chart drill-down and date filters passed")
+                    print(f"{host} · {width}px · OAuth, date filters and AMap preview passed")
                 finally:
                     fixture.doCleanups()
         finally:

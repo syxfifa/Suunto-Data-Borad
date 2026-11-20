@@ -121,7 +121,7 @@
   {% include "chart_grid.html" %}
   <details class="advanced-charts panel">
     <summary>进阶分析</summary>
-    <p class="meta">所选时段最长连续活动 {{ streak }} 天。ACWR = 近 7 天 TSS ÷ 近 28 天 TSS 的周均值，仅在 28 天完整覆盖、每条活动有 TSS 且分母大于零时计算。</p>
+    <p class="meta">连续活动最长 {{ streak }} 天。ACWR = 近 7 天 TSS ÷（近 28 天 TSS ÷ 4），当前 {{ acwr_days }} / {{ days }} 天可计算。28 天须完整覆盖，每条活动须有 TSS，且分母须大于零。</p>
     {% with chart_items = advanced_charts, chart_layout = 'secondary-charts' %}
       {% include "chart_grid.html" %}
     {% endwith %}
@@ -136,7 +136,7 @@
 {% for title, totals in [('周报', weeks), ('月报', monthly_totals)] %}
 <section class="table-wrap">
   <h2>{{ title }}</h2>
-  <p>点击时段查看活动。TSS 栏括号为有 TSS 的活动数 / 活动总数。</p>
+  <p>点击时段查看活动。TSS 使用 Suunto 记录值，括号为有效活动数 / 总活动数。</p>
   {% if totals %}
   <div class="table-scroll" role="region" tabindex="0" aria-label="{{ title }}">
 <table><thead><tr>{% for h in ('时间', '次数', '距离（km）', '时长（分钟）', '爬升（m）', 'TSS', '数据覆盖') %}<th scope="col">{{ h }}</th>{% endfor %}</tr></thead>
@@ -289,7 +289,8 @@
         {% if source.failure.start_at %}<div>{{ local_time(source.failure.start_at) }} 至 {{ local_time(source.failure.end_at) }}</div>{% endif %}
         {% elif discovery.status == 'ready' and not source.available %}MCP 未公开此工具
         {% elif source.cursor %}增量已处理至 {{ local_time(source.cursor.scanned_until) }}{% else %}等待增量同步{% endif %}
-        {% if source.checked_at %}<div>最近成功查询 {{ local_time(source.checked_at) }}</div>{% endif %}</td>
+        {% if source.checked_at %}<div>最近成功查询 {{ local_time(source.checked_at) }}</div>{% endif %}
+        {% if source.next_retry %}<div>自动重试最早 {{ local_time(source.next_retry) }}</div>{% endif %}</td>
     </tr>{% endfor %}</tbody>
   </table>
 </div>
@@ -300,11 +301,17 @@
   <p>共 {{ sync_status.window_failures|length }} 个。增量同步处理新数据后，会重试到期的窗口。</p>
   <div class="table-scroll" role="region" tabindex="0" aria-label="待修复的日期窗口">
     <table>
-      <thead><tr><th scope="col">数据来源</th><th scope="col">起止时间（北京时间）</th><th scope="col">失败次数</th><th scope="col">可重试时间</th><th scope="col">最近错误</th></tr></thead>
+      <thead><tr><th scope="col">数据来源</th><th scope="col">起止时间（北京时间）</th><th scope="col">失败次数</th><th scope="col">下次自动重试</th><th scope="col">最近错误</th><th scope="col">操作</th></tr></thead>
       <tbody>{% for item in sync_status.window_failures %}
         <tr><th scope="row">{{ source_labels.get(item.source, item.source) }}</th>
           <td>{{ local_time(item.start_at) }} 至 {{ local_time(item.end_at) }}</td>
-          <td>{{ item.attempts }}</td><td>{{ local_time(item.retry_at) }}</td><td>{{ item.message }}</td></tr>
+          <td>{{ item.attempts }}</td><td>{{ local_time(item.retry_at) }}</td><td>{{ item.message }}</td>
+          <td><form method="post" action="/sync/window">
+            <input type="hidden" name="source" value="{{ item.source }}">
+            <input type="hidden" name="start" value="{{ item.start_at }}">
+            <input type="hidden" name="end" value="{{ item.end_at }}">
+            <button class="secondary" {% if sync_status.running or sync_status.retry_after %}disabled{% endif %}>重试此窗口</button>
+          </form></td></tr>
       {% endfor %}</tbody>
     </table>
   </div>
@@ -320,7 +327,7 @@
     <thead><tr><th scope="col">数据来源</th><th scope="col">目标范围</th><th scope="col">当前进度</th></tr></thead>
     <tbody>{% for item in sync_status.backfill %}<tr><th scope="row">{{ source_labels[item.source] }}</th>
       <td>{{ local_time(item.start_at) }} 至 {{ local_time(item.end_at) }}</td>
-      <td>{% if item.next_at == item.end_at %}范围已处理{% else %}已处理至 {{ local_time(item.next_at) }}{% endif %}
+      <td>{% if item.next_at == item.end_at %}范围已处理{% else %}已处理至 {{ local_time(item.next_at) }} · 预计剩余 {{ item.remaining }} 个窗口{% endif %}
       {% if item.error %}<div>{{ item.error }}</div>{% endif %}</td></tr>{% endfor %}</tbody>
   </table>
 </div>
@@ -350,7 +357,7 @@
     <tbody>{% for run in sync_status.runs %}
       <tr><td>{{ local_time(run.started_at) }}</td>
         <td>{{ {'backfill': '历史补采', 'details': '运动详情', 'route_details': '路线详情', 'web': '手动同步', 'scheduled': '定时同步',
-                'oauth': '授权后同步', 'cli': '命令行同步'}.get(run.trigger, run.trigger) }}</td>
+                'oauth': '授权后同步', 'cli': '命令行同步', 'window_retry': '重试单个窗口'}.get(run.trigger, run.trigger) }}</td>
         <td>{{ {'paused': '已暂停', 'yielded': '让出执行位置', 'interrupted': '已中断', 'running': '进行中', 'partial': '部分完成',
                 'ok': '完成', 'failed': '失败', 'authorization_required': '等待授权'}.get(run.status, run.status) }}</td>
         <td>{{ run.received }}</td><td>{{ run.changed }}</td></tr>

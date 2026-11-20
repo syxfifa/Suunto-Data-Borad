@@ -239,6 +239,7 @@ code { overflow-wrap: anywhere; }
   .settings-grid .sync-interval { grid-column: auto; }
 }
 @media (max-width: 42rem) {
+  .workout-key-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem .9rem; }
   .activity-results { padding-block: 0; }
   .activity-results .table-scroll { overflow: visible; }
   .activity-results table, .activity-results tbody { display: block; min-width: 0; }

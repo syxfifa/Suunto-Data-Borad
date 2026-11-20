@@ -14,11 +14,13 @@ import zipfile
 from . import VERSION
 from .mcp import save_json
 from .store import SCHEMA_VERSION, Store
+from .sync import TZ
 
 
 COMPONENTS = {"database": "suunto.sqlite", "settings": "config.json", "token": "token.json"}
 MANIFEST = "manifest.json"
 BACKUP_FORMAT = 1
+BACKUP_STATUS = "backup-status.json"
 KNOWN_TABLES = {"records", "cursors", "sync_runs", "sync_errors", "coverage", "backfill",
                 "sync_failures", "sync_windows", "sync_queue", "source_success",
                 "workout_details", "removed_routes", "route_absences"}
@@ -156,9 +158,21 @@ def extract_checked(archive, temporary):
     return [component for component, name in COMPONENTS.items() if name in names]
 
 
-def verify(input_file):
+def verify(input_file, *, record_to=None):
     with zipfile.ZipFile(input_file) as archive, TemporaryDirectory() as temporary:
-        return extract_checked(archive, Path(temporary))
+        components = extract_checked(archive, Path(temporary))
+    if record_to is not None:
+        save_json(Path(record_to) / BACKUP_STATUS, {"verified_at": datetime.now(TZ).isoformat()})
+    return components
+
+
+def last_verified_backup(directory):
+    try:
+        value = json.loads((Path(directory) / BACKUP_STATUS).read_bytes())["verified_at"]
+        at = datetime.fromisoformat(value)
+        return at.astimezone(TZ).isoformat() if at.tzinfo else None
+    except (OSError, KeyError, TypeError, ValueError):
+        return None
 
 
 def restore(directory, input_file, component, *, replace=False, same_account=False):

@@ -148,6 +148,7 @@ def exercise(browser, origin, fixture, width):
         store.commit(run, "workouts", [("sample-activity", when.isoformat(), {
             "workoutId": "sample-activity", "activityName": "Running", "workoutName": "Browser fixture",
             "totalDistance": 5000, "totalTimeSeconds": 1800, "tss": 28,
+            "summary": {"ascent": 48},
         })])
         # Exercise the interactive links as well as the manually submitted date filter.
         page.goto(origin + "/training?sport=Running")
@@ -162,6 +163,19 @@ def exercise(browser, origin, fixture, width):
         expect(page.get_by_role("link", name="返回复盘图表")).to_be_visible()
         if not page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"):
             raise AssertionError(f"Dashboard exceeds {width}px page width")
+        filtered = urlsplit(page.url)
+        page.get_by_role("link", name="查看详情").click()
+        expect(page.get_by_text("48", exact=True)).to_be_hidden()
+        page.get_by_text("完整运动指标").click()
+        expect(page.get_by_text("48", exact=True)).to_be_visible()
+        page.get_by_role("link", name="加入同类运动对比").click()
+        page.get_by_role("button", name="应用选择").click()
+        page.get_by_role("link", name="返回之前的活动页面").click()
+        page.get_by_role("link", name="返回筛选后的活动列表").click()
+        updated = urlsplit(page.url)
+        expected_filter = parse_qs(filtered.query)
+        assert all(parse_qs(updated.query).get(key) == value for key, value in expected_filter.items())
+        assert parse_qs(updated.query)["page"] == ["1"] and updated.fragment == "activity-0"
         exercise_amap(context, page, origin, store, when.isoformat(), now.isoformat(), width)
 
 

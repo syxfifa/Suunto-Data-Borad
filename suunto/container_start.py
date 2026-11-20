@@ -9,6 +9,7 @@ APP_UID = APP_GID = 10001
 DATA_FILES = (
     ".maintenance.lock", "suunto.sqlite", "suunto.sqlite-wal", "suunto.sqlite-shm",
     "suunto.sqlite-journal", "config.json", "token.json", "access.json", "amap.json",
+    "sync-cooldown.json", "backup-status.json",
 )
 
 

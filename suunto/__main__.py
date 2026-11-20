@@ -57,7 +57,8 @@ def maintain(args):
         else:
             with archive_input(args.archive) as archive:
                 if args.action == "verify":
-                    print(json.dumps({"status": "verified", "components": verify(archive)}))
+                    components = verify(archive, record_to=args.data_dir if args.record else None)
+                    print(json.dumps({"status": "verified", "components": components}))
                 else:
                     restore(args.data_dir, archive, args.component, replace=args.replace, same_account=args.same_account)
                     print(f"Restored {args.component}.")
@@ -82,6 +83,7 @@ def main():
     archive.add_argument("--include-token", action="store_true")
     check = actions.add_parser("verify", help="Verify an archive from a file or stdin (-)")
     check.add_argument("archive", nargs="?", default="-")
+    check.add_argument("--record", action="store_true", help="Record successful verification in the dashboard data directory")
     restore_cmd = actions.add_parser("restore", help="Restore one component while the app is stopped")
     restore_cmd.add_argument("archive", nargs="?", default="-")
     restore_cmd.add_argument("--component", choices=COMPONENTS, default="database")

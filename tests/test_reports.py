@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+from csv import DictReader
 import json
 from tempfile import TemporaryDirectory
 import unittest
@@ -7,13 +8,33 @@ from urllib.parse import urlencode
 
 from fastapi.testclient import TestClient
 
-from suunto.reports import acwr_series, aurora_week, daily_report, dates, intensity_charts, midnight, period_summary, wellness
+from suunto.reports import acwr_series, aurora_week, compare_metrics, daily_report, dates, intensity_charts, midnight, period_summary, wellness
 from suunto.store import Store
 from suunto.sync import Synchronizer, TZ
 from suunto.web import create_app
+from suunto.views import csv_cells, table_rows, workout_metrics
 
 
 class ReportsTest(unittest.TestCase):
+    def test_activity_listing_detail_comparison_and_export_share_units(self):
+        with TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.initialize()
+            at = "2026-01-01T08:00:00+08:00"
+            row = {"activityName": "Running", "totalDistance": 1234.56, "totalTimeSeconds": 611,
+                   "hrAvgValue": 132, "tss": 16, "summary": {"pte": 2.7, "ascent": 22}}
+            run = store.start("workout", at)
+            store.commit(run, "workouts", [("example", at, row)])
+            store.commit(run, "recovery", [("hrv", at, {"entryData": {"CapturedHRV": 43.5}})])
+            listed = table_rows([(at, row)], "workouts")[0]
+            detail = workout_metrics(row)
+            compared = compare_metrics(row)
+            exported = list(DictReader(csv_cells(store, format="columns", hrv_field="CapturedHRV")))
+            activity = next(item for item in exported if item["record_key"] == "example")
+            hrv = next(item for item in exported if item["record_key"] == "hrv")
+            self.assertEqual((listed[2], detail["距离（km）"], compared[0], float(activity["distance_km"])), (1.23,) * 4)
+            self.assertEqual((listed[3], detail["时长（分钟）"], compared[1], float(activity["duration_min"])), (10.18,) * 4)
+            self.assertEqual((activity["pte"], hrv["hrv_ms"]), ("2.7", "43.5"))
     def test_period_distinguishes_verified_zero_missing_fields_and_unsynced_time(self):
         first = midnight(date(2026, 1, 1))
         second = first + timedelta(days=1)

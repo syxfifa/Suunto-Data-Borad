@@ -15,7 +15,8 @@ from fastapi.testclient import TestClient
 import httpx
 
 from suunto import VERSION
-from suunto.maintenance import backup, restore, verify, volume_lock
+from suunto.access import Access, USERNAME
+from suunto.maintenance import backup, last_verified_backup, restore, verify, volume_lock
 from suunto.mcp import Client, MCPError, save_json
 from suunto.store import SCHEMA_VERSION, Store
 from suunto.sync import TZ
@@ -66,10 +67,17 @@ class MaintenanceTest(unittest.TestCase):
         self.store.commit(self.run_id, "routes", [("route-a", self.at, {"routeId": "route-a"})])
         save_json(self.directory / "config.json", {"sync_interval_minutes": 15})
         save_json(self.directory / "token.json", {"access_token": "fake-token"})
-        save_json(self.directory / "access.json", {"digest": "fake-password-hash"})
+        password = "fixture-password-100"
+        Access(self.directory).set_password(password)
         basic = BytesIO()
         backup(self.directory, basic)
         self.assertEqual(verify(basic), ["database", "settings"])
+        self.assertIsNone(last_verified_backup(self.directory))
+        self.assertEqual(verify(basic, record_to=self.directory), ["database", "settings"])
+        verified_at = last_verified_backup(self.directory)
+        self.assertTrue(verified_at.endswith("+08:00"))
+        with TestClient(create_app(self.directory), base_url="https://testserver") as browser:
+            self.assertIn(verified_at, browser.get("/maintenance", auth=(USERNAME, password)).text)
         secret = BytesIO()
         backup(self.directory, secret, include_token=True)
         self.assertEqual(verify(secret), ["database", "settings", "token"])
@@ -95,7 +103,8 @@ class MaintenanceTest(unittest.TestCase):
             archive.writestr("suunto.sqlite", "broken")
             archive.writestr("../unexpected.json", "{}")
         with self.assertRaises(ValueError):
-            verify(invalid)
+            verify(invalid, record_to=self.directory)
+        self.assertEqual(last_verified_backup(self.directory), verified_at)
 
     def test_manifest_detects_changed_file_even_with_valid_zip_crc(self):
         settings = self.directory / "config.json"
@@ -233,4 +242,8 @@ class MaintenanceTest(unittest.TestCase):
             self.assertGreater(client.cooldown, monotonic() + 25)
             with self.assertRaisesRegex(MCPError, "Retry-After"):
                 client.send("GET", "https://mcp.suunto.cn/")
+            restarted = Client(self.directory, http)
+            self.assertGreater(restarted.cooldown, monotonic() + 25)
+            with self.assertRaisesRegex(MCPError, "Retry-After"):
+                restarted.send("GET", "https://mcp.suunto.cn/")
             self.assertEqual(len(attempts), 1)

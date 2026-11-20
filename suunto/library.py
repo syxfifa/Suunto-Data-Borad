@@ -9,7 +9,7 @@ from fastapi import APIRouter, Query, Request
 
 from .amap import amap_ready
 from .reports import compare_metrics
-from .views import lower_bound, record_filter, route_map_points, table_rows, workout_filter, workout_sql
+from .views import local_return, lower_bound, record_filter, route_map_points, table_rows, workout_filter, workout_sql
 
 
 ROUTE_SPORTS = """CASE WHEN json_type(payload, '$.activityNames')='array'
@@ -21,7 +21,7 @@ def library_router(store, config, amap_config, discovery, render):
 
     @router.get("/compare")
     def compare(request: Request, sport: str = "", first: str = "", second: str = "",
-                page: Annotated[int, Query(ge=1)] = 1):
+                page: Annotated[int, Query(ge=1)] = 1, return_to: str = ""):
         size = 50
         with store.connect() as db:
             db.execute("BEGIN")
@@ -57,12 +57,14 @@ def library_router(store, config, amap_config, discovery, render):
                                         "label": body.get("workoutName") or body.get("activityName")})
         rows = [compare_metrics(picked[key]) for key in (first, second)] if (
             first != second and first in picked and second in picked) else []
+        back = local_return(return_to, "/workout", "/activities")
         return render(request, "运动对比", comparison=True, sports=sports, sport=chosen, options=options,
+                      comparison_return=back,
                       first=first, second=second,
                       best_km=stats["distance"] / 1000 if stats["distance"] is not None else None,
                       best_climb=stats["climb"], comparison_rows=rows, comparison_page=page,
                       comparison_pages=pages, comparison_query=urlencode(
-                          {"sport": chosen, "first": first, "second": second}))
+                          {"sport": chosen, "first": first, "second": second, "return_to": back or ""}))
 
     @router.get("/routes")
     def routes(request: Request, q: str = "", sport: str = "", watch: str = "", visibility: str = "",

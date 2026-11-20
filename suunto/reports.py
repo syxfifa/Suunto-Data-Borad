@@ -6,7 +6,7 @@ from statistics import mean, median
 from urllib.parse import urlencode
 
 from .sync import TZ, timestamp
-from .views import average_speed, chart, covers, numeric, summary, workout_value
+from .views import WORKOUT_DIVISORS, chart, covers, numeric, summary, workout_display_value, workout_speed, workout_value
 
 
 # Optional metrics bind to observed entryData keys. The instance owner confirms
@@ -45,8 +45,8 @@ def period_totals(rows, covered):
     known = bool(rows) or covered
     return {
         "n": len(rows) if known else None,
-        "km": observed_total([workout_value(row, "distance") for _, row in rows], 1000) if known else None,
-        "minutes": observed_total([workout_value(row, "duration") for _, row in rows], 60) if known else None,
+        "km": observed_total([workout_value(row, "distance") for _, row in rows], WORKOUT_DIVISORS["distance"]) if known else None,
+        "minutes": observed_total([workout_value(row, "duration") for _, row in rows], WORKOUT_DIVISORS["duration"]) if known else None,
         "climb": observed_total([workout_value(row, "ascent") for _, row in rows], 1) if known else None,
         "tss": observed_total(vals, 1) if known else None,
         "tss_count": sum(v is not None for v in vals),
@@ -143,7 +143,7 @@ def grouped_totals(rows, first, last, coverage, monthly=False):
 def acwr_series(rows, first, last, coverage):
     daily = defaultdict(list)
     for at, row in rows:
-        daily[date.fromisoformat(at[:10])].append(numeric(row.get("tss")))
+        daily[date.fromisoformat(at[:10])].append(workout_value(row, "tss"))
     labels, ratio = [], []
     for day in dates(first, last):
         start = day - timedelta(days=27)
@@ -172,14 +172,9 @@ def longest_streak(rows):
 
 
 def compare_metrics(row):
-    speed = average_speed(row)
-    sport = str(sport_name(row)).lower()
-    pace = round(1000 / speed) if speed and ("run" in sport or "跑" in sport) else None
-    distance = workout_value(row, "distance")
-    duration = workout_value(row, "duration")
-    return [round(distance/1000, 2) if distance is not None else None,
-            round(duration / 60, 1) if duration is not None else None,
-            f"{pace//60}:{pace%60:02d} min/km" if pace else f"{speed * 3.6:.2f} km/h" if speed is not None else None,
+    unit, speed = workout_speed(row)
+    return [workout_display_value(row, "distance"), workout_display_value(row, "duration"),
+            f"{speed} {unit}" if speed is not None else None,
             workout_value(row, "ascent"), workout_value(row, "heart_rate"), workout_value(row, "tss")]
 
 
@@ -331,11 +326,12 @@ def wellness(sleep, recovery, training, days, fields, stage_unit, *, training_co
             for at, row in reversed(recovery):
                 value = numeric(row["entryData"].get(fields.get(key)))
                 if at[:10] in labels and value is not None:
-                    latest_metrics.append((title, value, at, len(set(values).intersection(labels))))
+                    in_range = [values[day] for day in labels if day in values]
+                    latest_metrics.append((title, value, at, len(in_range), sum(map(len, in_range))))
                     break
     tss = defaultdict(list)
     for at, row in training:
-        tss[at[:10]].append(numeric(row.get("tss")))
+        tss[at[:10]].append(workout_value(row, "tss"))
     known_tss = {d: values for d, values in tss.items() if all(v is not None for v in values)}
     for day in days:
         label = day.isoformat()

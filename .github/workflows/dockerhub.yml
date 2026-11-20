@@ -115,7 +115,8 @@ jobs:
           umask 077
           snapshot="$RUNNER_TEMP/suunto-backup-ci.zip"
           docker compose exec -T --user 10001:10001 app python -m suunto backup > "$snapshot"
-          docker compose exec -T --user 10001:10001 app python -m suunto verify < "$snapshot"
+          docker compose exec -T --user 10001:10001 app python -m suunto verify --record < "$snapshot"
+          docker compose exec -T --user 10001:10001 app python -c 'from suunto.maintenance import last_verified_backup; assert last_verified_backup("/data")'
           docker compose down
           restored="$RUNNER_TEMP/suunto-restore-data"
           printf 'services:\n  app:\n    image: "%s"\n    volumes:\n      - "%s:/data"\n' \
@@ -131,6 +132,52 @@ jobs:
           from suunto.store import Store
           assert Store("/data").record("workouts", "fixture-activity")["totalDistance"] == 1000
           assert json.loads(Path("/data/config.json").read_bytes())["sync_interval_minutes"] == 15
+          PY
+      - name: Verify upgrade from the previous release with persisted data
+        run: |
+          previous="docker.io/${DOCKERHUB_USERNAME,,}/suunto-data-borad:1.0.6"
+          data="$(mktemp -d "$RUNNER_TEMP/suunto-upgrade-XXXXXX")"
+          old="suunto-upgrade-old-${GITHUB_RUN_ID}"
+          candidate="suunto-upgrade-new-${GITHUB_RUN_ID}"
+          trap 'docker rm -f "$old" "$candidate" >/dev/null 2>&1 || true' EXIT
+          function start_image() {
+            docker run -d --network none --name "$1" --mount "type=bind,src=$data,dst=/data" "$2"
+            for attempt in {1..30}; do
+              if docker exec --user 10001:10001 "$1" python -c 'from urllib.request import urlopen; urlopen("http://127.0.0.1:7383/healthz", timeout=2).close()' 2>/dev/null; then
+                return
+              fi
+              sleep 1
+            done
+            docker logs "$1"
+            return 1
+          }
+          docker pull "$previous"
+          start_image "$old" "$previous"
+          docker exec -i --user 10001:10001 "$old" python - <<'PY'
+          from pathlib import Path
+          from suunto.config import Config
+          from suunto.mcp import save_json
+          from suunto.store import Store
+          data = Path("/data")
+          Config(data).save(26)
+          save_json(data / "token.json", {"access_token": "offline-fixture", "expires_at": 0, "refresh_at": 0})
+          save_json(data / "amap.json", {"enabled": False, "coordinates": "gps"})
+          at = "2026-01-01T08:00:00+08:00"
+          store = Store(data)
+          store.commit(store.start("upgrade_fixture", at), "workouts", [("upgrade", at, {"workoutId": "upgrade"})])
+          PY
+          docker stop "$old"
+          start_image "$candidate" "$SUUNTO_IMAGE"
+          docker exec -i --user 10001:10001 "$candidate" python - <<'PY'
+          import json
+          from pathlib import Path
+          from suunto.config import Config
+          from suunto.store import Store
+          data = Path("/data")
+          assert Store(data).record("workouts", "upgrade")["workoutId"] == "upgrade"
+          assert Config(data).load() == 26
+          assert Config(data, "amap.json").read() == {"enabled": False, "coordinates": "gps"}
+          assert json.loads((data / "token.json").read_bytes())["access_token"] == "offline-fixture"
           PY
       - name: Show Compose logs when a check fails
         if: failure()

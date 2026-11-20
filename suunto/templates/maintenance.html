@@ -12,6 +12,7 @@
     <div><dt>SQLite 占用（MiB）</dt><dd>{{ size }}</dd></div>
     <div><dt>Suunto 数据连接</dt><dd>{{ {'ready': '可用', 'authorization_required': '待授权', 'probing': '待探测', 'error': '连接异常'}[mcp_status] }}</dd></div>
     <div><dt>上次完整同步</dt><dd>{% if last_sync %}<time datetime="{{ last_sync }}">{{ last_sync[:16]|replace('T', ' ') }}</time>{% else %}—{% endif %}</dd></div>
+    <div><dt>上次备份验证（北京时间）</dt><dd>{% if backup_verified %}<time datetime="{{ backup_verified }}">{{ backup_verified[:16]|replace('T', ' ') }}</time>{% else %}尚未记录{% endif %}</dd></div>
   </dl>
   <dl>{% for key, count in counts.items() %}<div><dt>{{ source_labels[key] }}记录</dt><dd>{{ count }}</dd></div>{% endfor %}</dl>
   <p>诊断文件仅含状态、计数和版本等运行信息。</p>

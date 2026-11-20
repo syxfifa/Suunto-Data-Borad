@@ -235,6 +235,15 @@ class Store:
             ORDER BY retry_at, source, start_at LIMIT ?
             """, (at, *sources, limit))
 
+    def window_record(self, source, start, end):
+        rows = self.query("SELECT * FROM sync_windows WHERE source=? AND start_at=? AND end_at=?", (source, start, end))
+        return rows[0] if rows else None
+
+    def advance_repaired_backfill(self, source, start, end):
+        with self.connect() as db:
+            db.execute("UPDATE backfill SET next_at=?, error=NULL WHERE source=? AND next_at=? AND end_at>=?",
+                       (end, source, start, end))
+
     def clear_windows(self, source, start, end):
         with self.connect() as db:
             db.execute("DELETE FROM sync_windows WHERE source=? AND start_at>=? AND end_at<=?", (source, start, end))
@@ -324,9 +333,9 @@ class Store:
             stats = dict(db.execute("""
                 SELECT
                     (SELECT max(finished_at) FROM sync_runs
-                     WHERE status='ok' AND trigger NOT IN ('backfill', 'details', 'route_details')) AS last_success_at,
+                     WHERE status='ok' AND trigger NOT IN ('backfill', 'details', 'route_details', 'window_retry')) AS last_success_at,
                     (SELECT status FROM sync_runs WHERE finished_at IS NOT NULL
-                     AND trigger NOT IN ('backfill', 'details', 'route_details') ORDER BY id DESC LIMIT 1) AS latest_status
+                     AND trigger NOT IN ('backfill', 'details', 'route_details', 'window_retry') ORDER BY id DESC LIMIT 1) AS latest_status
                 """).fetchone())
             stats["source_success"] = dict(db.execute("SELECT source, checked_at FROM source_success").fetchall())
         return stats

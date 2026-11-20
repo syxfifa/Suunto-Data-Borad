@@ -288,6 +288,62 @@ class SyncTest(unittest.TestCase):
         self.assertFalse(any(row["source"] == "sleep" for row in self.store.status()["window_failures"]))
         self.assertTrue(any(row["start_at"] == second.isoformat() for row in self.store.coverage("sleep")))
 
+    def test_retry_one_window_does_not_fetch_other_sources_and_advances_backfill(self):
+        source = "sleep"
+        start = datetime(2020, 1, 1, tzinfo=TZ)
+        end = start + timedelta(days=1)
+        key = (source, start.isoformat(), end.isoformat())
+        self.store.prepare_backfill([source], key[1], (end + timedelta(days=2)).isoformat())
+        self.store.window_failure(*key, "fixture", self.stop)
+        other = ("recovery", key[1], key[2])
+        self.store.window_failure(*other, "fixture", self.stop)
+        self.mcp.http = Mock()
+        self.mcp.credential = lambda: {"access_token": "fixture"}
+        with TestClient(create_app(self.store.path.parent, client=self.mcp)) as browser:
+            self.assertIn("预计剩余 1 个窗口", browser.get("/settings").text)
+            self.assertIn("重试此窗口", browser.get("/settings").text)
+            request = {"source": source, "start": key[1], "end": key[2]}
+            self.mcp.cooldown = monotonic() + 30
+            self.assertIn("window_limited", browser.post("/sync/window", data=request, follow_redirects=False).headers["location"])
+            self.mcp.cooldown = 0
+            self.assertIn("started", browser.post("/sync/window", data=request, follow_redirects=False).headers["location"])
+            for _ in range(80):
+                if not browser.get("/api/status").json()["running"]:
+                    break
+                Event().wait(0.02)
+        self.assertEqual([name for name, _ in self.mcp.calls], ["get_sleep_summary"])
+        self.assertIsNone(self.store.window_record(*key))
+        self.assertIsNotNone(self.store.window_record(*other))
+        self.assertEqual(self.store.status()["backfill"][0]["next_at"], key[2])
+        self.assertIsNone(self.store.status()["last_success_at"])
+
+    def test_backfill_restart_resumes_after_last_committed_window(self):
+        start = datetime(2020, 1, 1, tzinfo=TZ)
+        boundary = start + SOURCES["workouts"][1]
+        end = boundary + timedelta(days=1)
+        self.store.prepare_backfill(["workouts"], start.isoformat(), end.isoformat(), activate=True)
+
+        def interrupt_after_request(name, args, discovered):
+            self.sync.stopping.set()
+            return {"content": [{"type": "text", "text": "[]"}]}
+
+        with patch.object(self.mcp, "sample", side_effect=interrupt_after_request) as interrupted:
+            self.assertEqual(self.sync.run("backfill")["status"], "interrupted")
+            interrupted.assert_called_once()
+        self.assertEqual(self.store.status()["backfill"][0]["next_at"], boundary.isoformat())
+        restarted = SampleMCP()
+        restarted.http = Mock()
+        with TestClient(create_app(self.store.path.parent, client=restarted)) as browser:
+            for _ in range(80):
+                status = browser.get("/api/status").json()
+                if not status["backfill_active"]:
+                    break
+                Event().wait(0.02)
+            self.assertFalse(status["backfill_active"])
+        self.assertEqual([(name, args["startDate"]) for name, args in restarted.calls],
+                         [("list_user_workouts", boundary.isoformat())])
+        self.assertEqual(self.store.status()["backfill"][0]["next_at"], end.isoformat())
+
     def test_scheduled_increment_runs_before_next_backfill_window(self):
         entered, release = Event(), Event()
         fake = SampleMCP()

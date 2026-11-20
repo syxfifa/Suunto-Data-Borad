@@ -23,6 +23,7 @@ MCP_URL = "https://mcp.suunto.cn/open/mcp"
 ISSUER = "https://mcp.suunto.cn"
 REDIRECT = f"http://127.0.0.1:{DEFAULT_PORT}/oauth/callback"
 AUTHORIZATION_TIMEOUT = 600
+COOLDOWN_FILE = "sync-cooldown.json"
 SCOPE = "mcp:tools"
 READ_TOOLS = frozenset({
     "list_user_workouts", "get_workout_detail", "get_sleep_summary", "get_recovery_summary",
@@ -83,6 +84,22 @@ class Client:
         self.pending = None
         self.headers = None
         self.cooldown = 0.0
+        self.cooldown_path = self.path.with_name(COOLDOWN_FILE)
+        try:
+            expiry = json.loads(self.cooldown_path.read_bytes()).get("retry_at")
+            if type(expiry) in (int, float) and math.isfinite(expiry) and expiry > time.time():
+                self.cooldown = time.monotonic() + (expiry - time.time())
+        except FileNotFoundError:
+            pass
+        except (AttributeError, ValueError, OSError, OverflowError):
+            LOG.warning("Could not read the persisted Suunto retry time")
+
+    def limit_until(self, delay):
+        self.cooldown = time.monotonic() + delay
+        try:
+            save_json(self.cooldown_path, {"retry_at": time.time() + delay})
+        except OSError:
+            LOG.warning("Could not persist the Suunto retry time")
 
     def disconnect(self):
         with self.lock:
@@ -116,8 +133,8 @@ class Client:
                 delay = retry_delay(response.headers.get("Retry-After"), attempt)
                 response.close()
                 LOG.warning("Suunto HTTP 429, Retry-After %.0f seconds", delay)
+                self.limit_until(delay)
                 if delay > 15 or attempt == 2:
-                    self.cooldown = time.monotonic() + delay
                     raise MCPError(f"Suunto HTTP 429，请等待 {delay:.0f} 秒。")
                 time.sleep(delay)
                 continue

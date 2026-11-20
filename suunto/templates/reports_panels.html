@@ -3,25 +3,31 @@
   {% if workout_return %}<a href="{{ workout_return }}">返回筛选后的活动列表</a>{% endif %}
   <p>{{ workout.activityName or '未标注运动类型' }} · {{ workout_at or '—' }}</p>
   {% if workout.description %}<p>{{ workout.description }}</p>{% endif %}
-  <dl>{% for label, value in metrics.items() %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
+  <dl class="workout-key-metrics">{% for label, value in metrics.items() %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
+  {% if extra_metrics %}<details><summary>完整运动指标</summary>
+    <dl>{% for label, value in extra_metrics.items() %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
+  </details>{% endif %}
   {% if optional_metrics %}<details><summary>其他 Suunto 指标（原值）</summary>
     <dl>{% for label, value in optional_metrics.items() %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
   </details>{% endif %}
   <p>平均速度或配速按整次活动的距离和时长计算。区间图使用 Suunto 返回的累计时长。</p>
   <div class="controls">
-    <a href="/compare?first={{ workout_id|urlencode }}&amp;sport={{ (workout.activityName or '')|urlencode }}">加入同类运动对比</a>
+    <a href="{{ compare_url }}">加入同类运动对比</a>
     <form method="post" action="/workout-details"><input type="hidden" name="key" value="{{ workout_id }}"><button>重新读取详情</button></form>
   </div>
 </section>
 {% endif %}
 {% if comparison %}
 <section>
+  {% if comparison_return %}<p><a href="{{ comparison_return }}">返回之前的活动页面</a></p>{% endif %}
   <form action="/compare" class="controls">
+    {% if comparison_return %}<input type="hidden" name="return_to" value="{{ comparison_return }}">{% endif %}
     <label>运动类型<select name="sport">{% for name in sports %}<option {% if name == sport %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
     <button>切换运动类型</button>
   </form>
   <p>本地最佳 · 最远距离 {{ best_km if best_km is not none else '—' }} km · 最大单次爬升 {{ best_climb if best_climb is not none else '—' }} m</p>
   <form action="/compare" class="controls">
+    {% if comparison_return %}<input type="hidden" name="return_to" value="{{ comparison_return }}">{% endif %}
     <input type="hidden" name="sport" value="{{ sport }}">
     <input type="hidden" name="page" value="{{ comparison_page }}">
     {% for field, label, key in [('first', '活动 A', first), ('second', '活动 B', second)] %}
@@ -55,8 +61,8 @@
 <p>晨间身体资源取北京时间 05:00–10:00 的首条有效读数，日均使用当天所有有效读数。压力图按有效样本计数。</p>
 <p>可在<a href="/settings#preferences">设置</a>中为已采到的字段配置睡眠阶段、HRV 和静息心率。</p>
 {% if latest_metrics %}
-<section><h2>最近读数</h2><ul>
-  {% for label, value, at, days in latest_metrics %}<li>{{ label }} {{ value }} · {{ at }} · 范围内有效 {{ days }} 天</li>{% endfor %}
+<section><h2>最近读数</h2><p>HRV 图使用日中位数，14 日基线至少需要 3 天有效读数，CSV 保留每条有效读数。</p><ul>
+  {% for label, value, at, days, samples in latest_metrics %}<li>{{ label }} {{ value }} · {{ at }} · 有效 {{ samples }} 条 / {{ days }} 天</li>{% endfor %}
 </ul></section>
 {% endif %}
 {% endif %}

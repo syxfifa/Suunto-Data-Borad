@@ -96,7 +96,7 @@ class Synchronizer:
         self.yield_history = Event()
         self.current_source = None
 
-    def run(self, trigger, *, stop=None, history=None, detail_key=None, discover=None):
+    def run(self, trigger, *, stop=None, history=None, detail_key=None, discover=None, window_key=None):
         if not self.lock.acquire(blocking=False):
             return None
         run_id = None
@@ -110,6 +110,10 @@ class Synchronizer:
                     *(bound.isoformat() for bound in history),
                 )
             names = {tool["name"] for tool in (discover or self.mcp.tools)()}
+            if trigger == "window_retry":
+                failure = self.store.window_record(*window_key)
+                status = "ok" if not failure or self.retry_window(run_id, names, failure) else "failed"
+                return {"run_id": run_id, "status": status}
             if trigger == "backfill":
                 status = self.backfill(run_id, names)
                 return {"run_id": run_id, "status": status}
@@ -204,19 +208,27 @@ class Synchronizer:
         for failure in self.store.windows_due(now().isoformat(), supported, 4):
             if monotonic() < getattr(self.mcp, "cooldown", 0):
                 break
-            source = failure["source"]
-            tool, _ = SOURCES[source]
-            self.current_source = source
-            start, end = failure["start_at"], failure["end_at"]
-            try:
-                if not self.window(run_id, source, tool, datetime.fromisoformat(start),
-                                   datetime.fromisoformat(end), names, repair=True):
-                    raise MCPError("重试仍有部分记录无法解析。")
-            except NeedsAuthorization:
-                raise
-            except (MCPError, ValueError) as exc:
-                self.store.window_failure(source, start, end, str(exc), now())
-                self.log_error(run_id, source, f"修复历史缺口失败。{exc}")
+            self.retry_window(run_id, names, failure)
+
+    def retry_window(self, run_id, names, failure):
+        source = failure["source"]
+        tool, _ = SOURCES[source]
+        self.current_source = source
+        start, end = failure["start_at"], failure["end_at"]
+        try:
+            if tool not in names:
+                raise MCPError(f"MCP 未公开 {tool}。")
+            if not self.window(run_id, source, tool, datetime.fromisoformat(start), datetime.fromisoformat(end),
+                               names, repair=True):
+                raise MCPError("重试仍有部分记录无法解析。")
+            self.store.advance_repaired_backfill(source, start, end)
+            return True
+        except NeedsAuthorization:
+            raise
+        except (MCPError, ValueError) as exc:
+            self.store.window_failure(source, start, end, str(exc), now())
+            self.log_error(run_id, source, f"修复历史缺口失败。{exc}")
+            return False
 
     def backfill(self, run_id, names):
         failures = 0

@@ -6,6 +6,18 @@ import csv
 from io import StringIO
 import json
 import math
+import re
+from urllib.parse import urlsplit
+
+
+def local_return(value, *allowed_paths):
+    if not value or re.search(r"[\\\x00-\x20\x7f]", value):
+        return None
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    return value if not (parsed.scheme or parsed.netloc or value.startswith("//")) and parsed.path in allowed_paths else None
 
 
 def record_filter(source, start=None, end=None):
@@ -38,12 +50,18 @@ WORKOUT_FIELDS = {
     "pte": ("summary", "pte"),
 }
 WORKOUT_FILTERS = ("distance", "duration", "tss")
+WORKOUT_DIVISORS = {"distance": 1000, "duration": 60}
 
 
 def workout_value(row, metric):
     for key in WORKOUT_FIELDS[metric]:
         row = row.get(key) if isinstance(row, dict) else None
     return numeric(row)
+
+
+def workout_display_value(row, metric, digits=2):
+    value = workout_value(row, metric)
+    return scaled(value, WORKOUT_DIVISORS[metric], digits) if metric in WORKOUT_DIVISORS else value
 
 
 def workout_sql(metric):
@@ -120,22 +138,27 @@ def average_speed(row):
     return distance / seconds if distance is not None and distance >= 0 and seconds is not None and seconds > 0 else None
 
 
-def workout_metrics(row):
+def workout_speed(row):
     speed = average_speed(row)
     sport = str(row.get("activityName") or "").lower()
     pace = round(1000 / speed) if speed and ("run" in sport or "跑" in sport) else None
-    heart = row.get("hrAvgValue")
+    if pace:
+        return "min/km", f"{pace//60}:{pace%60:02d}"
+    return "km/h", scaled(speed, 1 / 3.6, 2)
+
+
+def workout_metrics(row):
+    unit, speed = workout_speed(row)
     details = summary(row)
     metrics = {
-        "距离（km）": scaled(numeric(row.get("totalDistance")), 1000, 2),
-        "用时（分钟）": scaled(numeric(row.get("totalTimeSeconds")), 60),
-        ("平均配速（min/km）" if pace else "平均速度（km/h）"):
-            f"{pace//60}:{pace%60:02d}" if pace else round(speed * 3.6, 2) if speed is not None else None,
-        "爬升（m）": numeric(details.get("ascent")), "下降（m）": numeric(details.get("descent")),
-        "平均心率（bpm）": numeric(heart), "最高心率（bpm）": numeric(row.get("hrMaxValue")),
+        "距离（km）": workout_display_value(row, "distance"),
+        "时长（分钟）": workout_display_value(row, "duration"),
+        ("平均配速（min/km）" if unit == "min/km" else "平均速度（km/h）"): speed,
+        "爬升（m）": workout_value(row, "ascent"), "下降（m）": numeric(details.get("descent")),
+        "平均心率（bpm）": workout_value(row, "heart_rate"), "最高心率（bpm）": numeric(row.get("hrMaxValue")),
         "最低心率（bpm）": numeric(row.get("hrMinValue")), "平均步频": numeric(details.get("avgCadence")),
         "最高步频": numeric(details.get("maxCadence")), "平均功率（W）": numeric(details.get("avgPower")),
-        "TSS": numeric(row.get("tss")), "PTE": numeric(details.get("pte")),
+        "TSS": workout_value(row, "tss"), "PTE": workout_value(row, "pte"),
         "峰值 EPOC": numeric(details.get("peakEpoc")),
         "恢复时间（Suunto 原值）": numeric(details.get("recoveryTime")),
         "能量（kcal）": numeric(row.get("energy")), "步数": numeric(row.get("stepCount")),
@@ -145,8 +168,8 @@ def workout_metrics(row):
 
 def table_rows(entries, source):
     if source == "workouts":
-        return [[stamp, item.get("activityName"), scaled(workout_value(item, "distance"), 1000, 2),
-                 scaled(workout_value(item, "duration"), 60), workout_value(item, "heart_rate"),
+        return [[stamp, item.get("activityName"), workout_display_value(item, "distance"),
+                 workout_display_value(item, "duration"), workout_value(item, "heart_rate"),
                  workout_value(item, "pte")]
                 for stamp, item in reversed(entries)]
     return [[item.get("description"), scaled(numeric(item.get("totalDistance")), 1000, 2),
@@ -183,8 +206,8 @@ def workout_chart(entries, weekly, first_day, last_day, intervals, tz, *, extend
         first_label -= timedelta(days=first_day.weekday())
     labels = []
     definitions = [
-        ("距离（公里）", "距离", lambda r: scaled(workout_value(r, "distance"), 1000, 6), "sum"),
-        ("时长（分钟）", "时长", lambda r: scaled(workout_value(r, "duration"), 60, 6), "sum"),
+        ("距离（公里）", "距离", lambda r: workout_display_value(r, "distance", 9), "sum"),
+        ("时长（分钟）", "时长", lambda r: workout_display_value(r, "duration", 9), "sum"),
     ]
     if extended:
         definitions += [
@@ -233,7 +256,7 @@ def chart(title, labels, columns, kind="line"):
 
 
 def csv_cells(store, source=None, start=None, end=None, *, format="raw", share=False,
-              sport="", search="", minimums=None):
+              sport="", search="", minimums=None, hrv_field=None):
     buffer = StringIO()
     writer = csv.writer(buffer)
 
@@ -262,7 +285,7 @@ def csv_cells(store, source=None, start=None, end=None, *, format="raw", share=F
     fields = ("source", "date") if share else ("source", "record_key", "occurred_at")
     columns = ("activity_type", "distance_km", "duration_min", "avg_hr_bpm", "tss", "elevation_gain_m",
                "sleep_hours", "body_resources_percent", "stress_state", "steps", "energy_kcal")
-    yield "\ufeff" + line(fields + (("payload",) if raw else columns + (() if share else ("name", "provider"))))
+    yield "\ufeff" + line(fields + (("payload",) if raw else columns + (() if share else ("name", "provider")) + ("pte", "hrv_ms")))
     # StreamingResponse may advance this iterator on different worker threads.
     with store.connect(check_same_thread=False) as db:
         cursor = db.execute(f"""
@@ -290,11 +313,12 @@ def csv_cells(store, source=None, start=None, end=None, *, format="raw", share=F
                 if payload.get("Name") == "energyconsumption":
                     energy = scaled(sample, 4184, 2)
             balance = numeric(data.get("Balance"))
-            metric_values = (sport_name, scaled(numeric(payload.get("totalDistance")), 1000, 3),
-                             scaled(numeric(payload.get("totalTimeSeconds")), 60, 2),
-                             numeric(payload.get("hrAvgValue")), numeric(payload.get("tss")),
-                             numeric(summary(payload).get("ascent")), scaled(numeric(data.get("Duration")), 3600, 3),
+            metric_values = (sport_name, workout_display_value(payload, "distance"),
+                             workout_display_value(payload, "duration"),
+                             workout_value(payload, "heart_rate"), workout_value(payload, "tss"),
+                             workout_value(payload, "ascent"), scaled(numeric(data.get("Duration")), 3600, 2),
                              round(balance * 100, 2) if balance is not None and 0 <= balance <= 1 else None,
                              numeric(data.get("StressState")), step, energy)
             private = () if share else (payload.get("workoutName") or payload.get("description"), payload.get("Source"))
-            yield line(prefix + metric_values + private)
+            hrv = numeric(data.get(hrv_field)) if name == "recovery" and hrv_field else None
+            yield line(prefix + metric_values + private + (workout_value(payload, "pte"), hrv))

@@ -1,6 +1,6 @@
 # Suunto Data Borad 使用手册
 
-当前版本 **V1.0.6**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。健康检查由镜像提供。
+当前版本 **V1.0.7**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。健康检查由镜像提供。
 
 ## 第一次部署
 
@@ -25,6 +25,8 @@ Compose 的 `7383:7383` 左侧是 NAS 端口，右侧是容器端口。`./suunto
 | `config.json` | 在网页保存的同步间隔、目标和地图偏好 |
 | `access.json` | 启用看板密码后生成的密码哈希 |
 | `amap.json` | 本地高德配置和凭据。备份命令生成的归档中不包含此文件 |
+| `sync-cooldown.json` | Suunto 限流时的重试期限，用于容器重启后继续等待 |
+| `backup-status.json` | 最近一次通过 `verify --record` 记录的备份验证时间 |
 
 ## 看板功能
 
@@ -58,8 +60,8 @@ Compose 的 `7383:7383` 左侧是 NAS 端口，右侧是容器端口。`./suunto
 ## 同步、导出与备份
 
 - **手动同步**。打开 **设置 → 同步 → 立即同步**。自动同步默认每 30 分钟，间隔可在设置页调整。
-- **补历史**。打开 **设置 → 历史补采**，选近 90 天、近一年或自定义日期。可以暂停后继续。待修复日期和失败日志也在设置中查看。
-- **导出 CSV**。在 **设置 → 同步 → 自定义导出** 选择数据来源、日期和格式。运动活动页可以导出当前筛选的全部结果。分享模式会省略坐标、名称、设备来源、编号和原始 JSON。
+- **补历史**。打开 **设置 → 历史补采**，选近 90 天、近一年或自定义日期。可以暂停后继续，并查看每个来源预计剩余窗口。打开「待修复的日期窗口」可查看下一次自动重试时间，也可重试单个窗口。Suunto 限流期间，重启容器后仍会等待。
+- **导出 CSV**。在 **设置 → 同步 → 自定义导出** 选择数据来源、日期和格式。运动活动页可以导出当前筛选的全部结果。分列格式中，距离用公里、时长用分钟，`hrv_ms` 来自设置中已绑定的恢复字段。分享模式会省略坐标、名称、设备来源、编号和原始 JSON。
 - **维护**。在 **设置 → 维护** 查看版本、授权、SQLite 占用或下载脱敏诊断。通过可信 HTTPS 访问时，可启用看板密码。多实例分别使用不同的项目目录、容器名和 NAS 主机端口。
 
 在 NAS 项目目录执行备份。默认包括数据库和已有设置，确需备份授权时在 `backup` 后加 `--include-token`。归档应存放在私有目录。
@@ -68,7 +70,7 @@ Compose 的 `7383:7383` 左侧是 NAS 端口，右侧是容器端口。`./suunto
 umask 077
 archive="$HOME/suunto-backup-$(date +%F-%H%M%S).zip"
 docker compose exec -T --user 10001:10001 app python -m suunto backup > "$archive"
-docker compose exec -T --user 10001:10001 app python -m suunto verify < "$archive"
+docker compose exec -T --user 10001:10001 app python -m suunto verify --record < "$archive"
 ```
 
 恢复前备份当前数据，确认目标 Compose 项目和数据目录。在项目目录先停止 app，用已校验的归档恢复数据库和设置。确认归档与目标数据属于同一 Suunto 账号。
@@ -79,6 +81,12 @@ docker compose run --rm --no-deps -T app python -m suunto restore --component da
 docker compose run --rm --no-deps -T app python -m suunto restore --component settings --replace < "$archive"
 docker compose up -d
 ```
+
+`verify --record` 成功后，维护页会显示验证时间。恢复到空目录后，在设置中连接原 Suunto 账号并重新配置高德地图。默认归档不含这些凭据。
+
+### 固定版本与回滚
+
+想固定版本，可将 Compose 的 `image` 改为 `jjsyx123/suunto-data-borad:1.0.7`，执行 `docker compose pull` 和 `docker compose up -d`。更新前先验证备份。需要回滚本次发布时，把标签换回 `1.0.6`，继续使用同一个 `./suunto-storage`，再执行相同命令。在后续涉及 SQLite 结构升级的版本中，回滚前按对应版本说明判断是否需要恢复升级前的备份。
 
 ## 排查与发布
 

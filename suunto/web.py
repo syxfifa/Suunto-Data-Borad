@@ -27,14 +27,14 @@ from .access import Access
 from .amap import amap_router
 from . import VERSION
 from .library import library_router
-from .maintenance import storage_size, volume_lock
+from .maintenance import last_verified_backup, storage_size, volume_lock
 from .config import Config
 from .reports import (WELLNESS_FIELDS, acwr_series, aurora_week, daily_report, dates, grouped_totals,
                       intensity_charts, longest_streak, mapping_fields, midnight, period_summary,
                       sport_counts, sport_name, wellness)
 from .store import Store
 from .sync import SOURCES, Synchronizer, TZ
-from .views import covers, csv_cells, lower_bound, records, summary, workout_chart, workout_metrics, workout_page
+from .views import covers, csv_cells, local_return, lower_bound, records, summary, workout_chart, workout_metrics, workout_page
 
 
 TEMPLATES = Jinja2Templates(directory=Path(__file__).with_name("templates"))
@@ -45,16 +45,6 @@ HOME_HEADERS = {**NO_CACHE, "Referrer-Policy": "same-origin"}
 DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 SOURCE_LABELS = dict(workouts="运动活动", sleep="睡眠", recovery="恢复", daily_activity="日常活动",
                      routes="保存路线", workout_details="运动详情")
-
-
-def local_return(value, *allowed_paths):
-    if not value or re.search(r"[\\\x00-\x20\x7f]", value):
-        return None
-    try:
-        parsed = urlsplit(value)
-    except ValueError:
-        return None
-    return value if not (parsed.scheme or parsed.netloc or value.startswith("//")) and parsed.path in allowed_paths else None
 
 
 def activity_link(start, end, sport="", return_to=""):
@@ -174,7 +164,7 @@ def create_app(data_dir=None, *, client=None):
             finally:
                 status = result["status"] if result else "failed"
                 keep = status in {"yielded", "interrupted"} or (
-                    trigger == "backfill" and status == "authorization_required")
+                    trigger == "backfill" and status == "authorization_required") or bool(retry_after())
                 if ticket and not keep and not sync.stopping.is_set():
                     store.dequeue(ticket["kind"], ticket["revision"])
                 wake.set()
@@ -240,15 +230,19 @@ def create_app(data_dir=None, *, client=None):
                         await asyncio.to_thread(prune_logs)
                     except SQLiteError:
                         LOG.exception("Could not prune old sync logs")
+                wait = max(0, deadline - monotonic())
                 if not stopping and not (task and not task.done()):
                     queued = store.queued()
                     ticket = queued.get("incremental")
                     if ticket is None and discovery["status"] != "authorization_required":
                         ticket = queued.get("backfill")
-                    if ticket:
+                    cooldown = retry_after()
+                    if ticket and cooldown:
+                        wait = min(wait, cooldown)
+                    elif ticket:
                         submit(ticket["trigger"], ticket=ticket)
                 try:
-                    await asyncio.wait_for(wake.wait(), timeout=max(0, deadline - monotonic()))
+                    await asyncio.wait_for(wake.wait(), timeout=wait)
                 except asyncio.TimeoutError:
                     pass
 
@@ -544,6 +538,19 @@ def create_app(data_dir=None, *, client=None):
         wake.set()
         return sync_redirect(True)
 
+    @app.post("/sync/window")
+    async def retry_sync_window(source: Annotated[str, Form()], start: Annotated[str, Form()],
+                                end: Annotated[str, Form()]):
+        key = (source, start, end)
+        if source not in SOURCES or SOURCES[source][1] is None or not store.window_record(*key):
+            return RedirectResponse("/settings?job=window_missing#sync", status_code=303, headers=NO_CACHE)
+        if mcp_state() == "authorization_required":
+            return RedirectResponse("/settings?job=window_auth#sync", status_code=303, headers=NO_CACHE)
+        if retry_after():
+            return RedirectResponse("/settings?job=window_limited#sync", status_code=303, headers=NO_CACHE)
+        job = submit("window_retry", window_key=key)
+        return sync_redirect(job)
+
     @app.post("/workout-details")
     async def refresh_details(key: Annotated[str, Form()] = ""):
         if key and store.record("workouts", key) is None:
@@ -588,9 +595,11 @@ def create_app(data_dir=None, *, client=None):
         weeks = grouped_totals(current, first_day, today, coverage)
         for item in months + weeks:
             item["link"] = activity_link(item["start"], item["end"], selected, back + "#training-reports")
+        acwr = acwr_series(history, first_day, today, coverage)
         return dashboard(request, "训练趋势", show_period=True, weekly=weekly,
                          charts=series[:2] + [series[4]], sport=selected, sports=sports, days=days,
-                         advanced_charts=series[2:4] + series[5:] + [acwr_series(history, first_day, today, coverage)],
+                         advanced_charts=series[2:4] + series[5:] + [acwr],
+                         acwr_days=sum(value is not None for value in acwr["columns"]["ACWR"]),
                          monthly_totals=months, weeks=weeks,
                          streak=longest_streak(current), training_mix=sport_counts(current))
 
@@ -680,9 +689,16 @@ def create_app(data_dir=None, *, client=None):
                     "avgPower", "pte", "peakEpoc", "recoveryTime", "zones"}
         optional = {labels.get(key, key): value for key, value in detail.items()
                     if key not in featured and value is not None}
+        back = local_return(return_to, "/activities")
+        detail_url = "/workout?" + urlencode({"id": id, "return_to": back or ""})
+        compare_url = "/compare?" + urlencode({"first": id, "sport": sport_name(row), "return_to": detail_url})
+        metrics = workout_metrics(row)
+        key_labels = ("距离（km）", "时长（分钟）", "平均配速（min/km）", "平均速度（km/h）", "平均心率（bpm）", "TSS")
         return dashboard(request, row.get("workoutName") or sport_name(row), workout=row, workout_id=id,
-                         workout_at=found[0]["occurred_at"], metrics=workout_metrics(row),
-                         workout_return=local_return(return_to, "/activities"),
+                         workout_at=found[0]["occurred_at"],
+                         metrics={key: metrics[key] for key in key_labels if key in metrics},
+                         extra_metrics={key: value for key, value in metrics.items() if key not in key_labels},
+                         workout_return=back, compare_url=compare_url,
                          charts=intensity_charts(row), optional_metrics=optional)
 
     @app.get("/sleep-recovery")
@@ -723,10 +739,18 @@ def create_app(data_dir=None, *, client=None):
     def settings_page(request, *, saved=False, preferences_saved=False, amap_saved=False, message=None, oauth_error=None):
         status = sync_status()
         status["backfill_pending"] = any(row["next_at"] < row["end_at"] for row in status["backfill"])
+        for row in status["backfill"]:
+            duration = datetime.fromisoformat(row["end_at"]) - datetime.fromisoformat(row["next_at"])
+            row["remaining"] = max(0, ceil(duration / SOURCES[row["source"]][1]))
+        retry_times = {}
+        for row in status["window_failures"]:
+            source = row["source"]
+            retry_times[source] = min(row["retry_at"], retry_times.get(source, row["retry_at"]))
         spans = {row["source"]: row for row in status["sources"]}
         sources = [{"name": name, "label": SOURCE_LABELS[name], "span": spans.get(name),
                     "coverage": store.coverage(name), "cursor": store.cursor(name),
                     "checked_at": status["source_success"].get(name),
+                    "next_retry": retry_times.get(name),
                     "failure": status["failures"].get(name),
                     "available": any(tool["name"] == meta[0] for tool in discovery["tools"])}
                    for name, meta in SOURCES.items()]
@@ -769,7 +793,10 @@ def create_app(data_dir=None, *, client=None):
     def settings(request: Request, saved: bool = False, authorized: bool = False, refresh_required: bool = False,
                  job: str = "", preferences_saved: bool = False, amap_saved: bool = False):
         message = {"started": "任务已提交。", "busy": "已有同步任务运行中，请稍后重试。",
-                   "pause": "已请求暂停，当前请求结束后会保留补采进度。"}.get(job)
+                   "pause": "已请求暂停，当前请求结束后会保留补采进度。",
+                   "window_missing": "这个窗口已处理或已移除，请刷新后查看。",
+                   "window_auth": "请先连接 Suunto，再重试此窗口。",
+                   "window_limited": "Suunto 正在限流，窗口暂不能重试。"}.get(job)
         if authorized and mcp.credential().get("access_token"):
             message = "Suunto 授权成功，已安排同步。"
             if refresh_required:
@@ -846,6 +873,7 @@ def create_app(data_dir=None, *, client=None):
         begin = midnight(first) if first else None
         finish = midnight(last + timedelta(days=1)) if last else None
         rows = csv_cells(store, source, begin, finish, format=format, share=share, sport=sport, search=q.strip(),
+                         hrv_field=config.read().get("wellness_fields", {}).get("hrv"),
                          minimums={"distance": distance * 1000 if distance is not None else None,
                                    "duration": duration * 60 if duration is not None else None, "tss": stress})
         name = "suunto-share.csv" if share else "suunto.csv"
@@ -870,6 +898,7 @@ def create_app(data_dir=None, *, client=None):
                      "counts": {name: status["counts"].get(name, 0) for name in SOURCES}, "source_labels": SOURCE_LABELS,
                      "size": round(storage_size(data_dir)/1024**2, 2), "mcp_status": mcp_state(),
                      "last_sync": status["last_success_at"], "log_days": config.retention_days(),
+                     "backup_verified": last_verified_backup(data_dir),
                      "protected": access.enabled(), "secure": local_transport(request)},
             headers=HOME_HEADERS)
 

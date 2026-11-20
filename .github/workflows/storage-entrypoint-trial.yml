@@ -25,7 +25,7 @@ jobs:
           grep -F 'ENTRYPOINT ["python", "-m", "suunto.container_probe_entry"]' "$dockerfile"
           image="suunto-entry-trial:only-local"
           container="suunto-entry-trial-$GITHUB_RUN_ID"
-          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          trap 'result=$?; if [ "$result" -ne 0 ]; then docker logs "$container" || true; fi; docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
           docker build --file "$dockerfile" --tag "$image" .
           start_and_verify() {
             docker run -d --name "$container" -p "127.0.0.1::7383" \
@@ -33,7 +33,7 @@ jobs:
               --cap-add FOWNER --cap-add SETGID --cap-add SETUID \
               --mount "type=bind,source=$data,target=/data" "$image"
             address="$(docker port "$container" 7383/tcp)"
-            curl --silent --show-error --fail --retry 15 --retry-delay 1 --retry-connrefused "http://$address/healthz"
+            curl --silent --show-error --fail --retry 15 --retry-delay 1 --retry-all-errors "http://$address/healthz"
             docker exec --user 10001:10001 "$container" python -c 'from pathlib import Path; s=Path("/proc/1/status").read_text().splitlines(); assert all(next(l for l in s if l.startswith(f"{key}:")).split()[1:] == ["10001"]*4 for key in ("Uid", "Gid")); assert Path("/data/suunto.sqlite").is_file()'
           }
           start_and_verify

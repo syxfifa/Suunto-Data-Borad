@@ -104,7 +104,7 @@
 {% endif %}
 {% if charts is defined %}
 <script src="/static/chart.umd.min.js" defer></script>
-<script src="/static/charts.js?v=0.3.1" defer></script>
+<script src="/static/charts.js?v=0.5.0" defer></script>
 {% if show_period %}
   {% set chart_items = charts %}
   {% set chart_layout = 'primary-charts' %}
@@ -146,7 +146,7 @@
 {% endif %}
 {% if route_maps is defined and route_maps|select|list %}
 <div class="controls"><button type="button" id="route-overview">预览匹配路线的位置</button></div>
-<script src="/static/route-map.js?v=0.3.0" defer></script>
+<script src="/static/route-map.js?v=0.5.0" defer></script>
 <section id="route-map" hidden>
   <h2>路线位置预览</h2>
   <p id="route-point" role="status"></p>

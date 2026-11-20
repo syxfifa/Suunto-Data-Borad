@@ -56,6 +56,62 @@ def observed_total(values, divisor):
     return round(sum(values) / divisor, 2) if all(value is not None for value in values) else None
 
 
+def aurora_week(first, selected, today, workouts, sleep, recovery, intervals, fields):
+    """Summarize Beijing calendar days without equating missing samples to zero."""
+    days = dates(first, first + timedelta(days=6))
+    grouped = defaultdict(list)
+    for stamp, row in workouts:
+        grouped[stamp[:10]].append((stamp, row))
+    durations = defaultdict(list)
+    for item in sleep_sessions(sleep, fields):
+        duration = item["duration"]
+        if duration is not None and duration >= 0:
+            durations[item["day"]].append(duration)
+    balance, morning = defaultdict(list), {}
+    for stamp, row in recovery:
+        data = row.get("entryData")
+        value = numeric(data.get("Balance")) if isinstance(data, dict) else None
+        if value is not None and 0 <= value <= 1:
+            day = stamp[:10]
+            balance[day].append(value)
+            if "05:00" <= stamp[11:16] < "10:00":
+                morning.setdefault(day, value)
+
+    snapshots = []
+    for day in days:
+        key = day.isoformat()
+        rows = grouped[key]
+        covered = day < today and covers(intervals, midnight(day), midnight(day + timedelta(days=1)))
+        totals = period_totals(rows)
+        sleep_hours = round(sum(durations[key]) / 3600, 1) if durations[key] else None
+        resource = morning.get(key)
+        label = "晨间身体资源"
+        if resource is None and balance[key]:
+            resource = mean(balance[key])
+            label = "日均身体资源"
+        snapshots.append({
+            "date": day, "n": totals["n"], "covered": covered,
+            "future": day > today, "picked": day == selected, "sleep": sleep_hours,
+            "resource": round(resource * 100) if resource is not None else None,
+            "resource_label": label, "km": totals["km"] if rows or covered else None,
+            "minutes": totals["minutes"] if rows or covered else None,
+            "tss": totals["tss"] if rows and totals["tss_count"] == totals["n"] else 0 if covered and not rows else None,
+        })
+    labels = [day.strftime("%m/%d") for day in days]
+    def make_series(name, field, unit, *, activity=False):
+        result = chart(name, labels, {unit: [item[field] for item in snapshots]}, "bar")
+        result["aurora"] = True
+        result["selected"] = (selected - first).days
+        if activity:
+            result["ranges"] = [(day.isoformat(), day.isoformat()) for day in days]
+        return result
+
+    return snapshots, [
+        [make_series("睡眠时长", "sleep", "小时"), make_series("身体资源", "resource", "%")],
+        [make_series("训练负荷", "tss", "TSS", activity=True), make_series("训练距离", "km", "km", activity=True)],
+    ]
+
+
 def grouped_totals(rows, monthly=False):
     buckets = defaultdict(list)
     for at, row in rows:

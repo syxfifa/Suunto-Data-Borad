@@ -6,13 +6,29 @@ from unittest.mock import Mock
 
 from fastapi.testclient import TestClient
 
-from suunto.reports import acwr_series, daily_report, dates, intensity_charts, midnight, wellness
+from suunto.reports import acwr_series, aurora_week, daily_report, dates, intensity_charts, midnight, wellness
 from suunto.store import Store
 from suunto.sync import Synchronizer, TZ
 from suunto.web import create_app
 
 
 class ReportsTest(unittest.TestCase):
+    def test_aurora_week_uses_observed_resources_and_preserves_missing_days(self):
+        first, chosen, today = date(2026, 11, 16), date(2026, 11, 18), date(2026, 11, 19)
+        coverage = [{"start_at": midnight(first).isoformat(), "end_at": midnight(chosen).isoformat()}]
+        workouts = [("2026-11-18T19:00:00+08:00", {"totalDistance": 5200, "totalTimeSeconds": 1800, "tss": 38})]
+        sleep = [("2026-11-18T08:00:00+08:00", {"entryData":{"Duration": 25200, "SleepId": 1}})]
+        recovery = [("2026-11-18T07:00:00+08:00", {"entryData":{"Balance":0.76}}),
+                    ("2026-11-18T16:00:00+08:00", {"entryData":{"Balance":0.60}})]
+        days, charts = aurora_week(first, chosen, today, workouts, sleep, recovery, coverage, {})
+        self.assertEqual((days[2]["resource"], days[2]["sleep"], days[2]["km"]), (76, 7, 5.2))
+        self.assertEqual(days[2]["resource_label"], "晨间身体资源")
+        self.assertEqual(days[1]["tss"], 0)
+        self.assertIsNone(days[3]["tss"])
+        self.assertIsNone(days[4]["resource"])
+        self.assertTrue(days[4]["future"])
+        self.assertEqual(charts[1][0]["columns"]["TSS"][:4], [0, 0, 38, None])
+
     def test_acwr_requires_all_activity_tss_and_28_day_coverage(self):
         last = date(2026, 1, 28)
         first = last - timedelta(days=27)

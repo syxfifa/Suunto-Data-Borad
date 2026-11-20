@@ -1,6 +1,8 @@
 const routeMap = document.querySelector("#route-map");
 const canvas = routeMap.querySelector("canvas");
 const ctx = canvas.getContext("2d");
+const mapTheme = getComputedStyle(document.documentElement);
+const mapColor = (name) => mapTheme.getPropertyValue(name).trim();
 const pointStatus = document.querySelector("#route-point");
 const link = document.querySelector("#route-map-link");
 const coordinates = document.querySelector("#route-coordinates");
@@ -27,9 +29,9 @@ function drawPoints(points, selected) {
   const maxNorth = Math.max(...north);
   const scale = zoom * Math.min((width - 88) / Math.max(maxEast - minEast, 0.00001),
                                (height - 88) / Math.max(maxNorth - minNorth, 0.00001));
-  ctx.fillStyle = "#edf5f4";
+  ctx.fillStyle = mapColor("--canvas");
   ctx.fillRect(0, 0, width, height);
-  ctx.strokeStyle = "#d1e1df";
+  ctx.strokeStyle = mapColor("--line");
   ctx.beginPath();
   for (let x = 20; x < width; x += 32) {
     ctx.moveTo(x, 0);
@@ -41,7 +43,7 @@ function drawPoints(points, selected) {
   }
   ctx.stroke();
   ctx.font = "bold 17px system-ui";
-  ctx.fillStyle = "#124b55";
+  ctx.fillStyle = mapColor("--ink");
   ctx.fillText("↑ 北", 14, 25);
 
   // Draw the selected marker last so it stays visible at overlapping coordinates.
@@ -55,9 +57,9 @@ function drawPoints(points, selected) {
     ctx.beginPath();
     const radius = (index === activeIndex ? 10 : 7) + Math.min(8, (points[index].count || 1) - 1);
     ctx.arc(x, y, radius, 0, Math.PI * 2);
-    ctx.fillStyle = index === activeIndex ? "#b33922" : "#124b55";
+    ctx.fillStyle = mapColor(index === activeIndex ? "--chart-rose" : "--chart-cyan");
     ctx.fill();
-    ctx.strokeStyle = "#fff";
+    ctx.strokeStyle = mapColor("--surface");
     ctx.lineWidth = 2;
     ctx.stroke();
   }

@@ -27,7 +27,7 @@ from .access import Access
 from . import VERSION
 from .maintenance import storage_size, volume_lock
 from .config import Config
-from .reports import (WELLNESS_FIELDS, acwr_series, compare_metrics, daily_report, dates, grouped_totals,
+from .reports import (WELLNESS_FIELDS, acwr_series, aurora_week, compare_metrics, daily_report, dates, grouped_totals,
                       intensity_charts, longest_streak, mapping_fields, midnight, period_totals,
                       sport_counts, sport_name, wellness)
 from .store import Store
@@ -238,10 +238,26 @@ def create_app(data_dir=None, *, client=None):
         return await call_next(request)
 
     @app.get("/")
-    def index(request: Request):
+    def index(request: Request, day: date | None = None):
         today = datetime.now(TZ)
+        chosen = day or today.date()
+        earliest = date(1900, 1, 1)
+        if not earliest <= chosen <= today.date():
+            raise HTTPException(422, "请选择有效的历史日期。")
+        review_start = chosen - timedelta(days=chosen.weekday())
+        review_end = review_start + timedelta(days=6)
+        query_end = min(today, midnight(review_end + timedelta(days=1)))
+        preferences = config.read()
         overview = []
         intervals = store.coverage("workouts")
+        snapshots, review_charts = aurora_week(
+            review_start, chosen, today.date(),
+            records(store, "workouts", midnight(review_start), query_end),
+            records(store, "sleep", midnight(review_start - timedelta(days=1)), today if review_end >= today.date()
+                    else midnight(review_end + timedelta(days=2))),
+            records(store, "recovery", midnight(review_start), query_end),
+            intervals, preferences.get("wellness_fields", {}),
+        )
         if store.query("SELECT 1 FROM records WHERE source='workouts' LIMIT 1") or intervals:
             for days in (7, 28):
                 start = datetime.combine(today.date() - timedelta(days=days-1), clock_time.min, TZ)
@@ -269,7 +285,11 @@ def create_app(data_dir=None, *, client=None):
             context={"overview": overview, "week": period_totals(week_rows), "prior": period_totals(previous),
                      "month": period_totals([(at, row) for at, row in data if at[:10] >= month_start.isoformat()]),
                      "sports": sport_counts(week_rows), "last_sync": stats["last_success_at"],
-                     "weekly_goal": config.read().get("weekly_km")},
+                     "weekly_goal": preferences.get("weekly_km"), "review_days": snapshots,
+                     "selected": snapshots[(chosen - review_start).days], "week_from": review_start,
+                     "week_to": review_end, "review_charts": review_charts,
+                     "previous_week": chosen - timedelta(days=7) if chosen - timedelta(days=7) >= earliest else None,
+                     "next_week": min(today.date(), chosen + timedelta(days=7)) if review_end < today.date() else None},
             headers=HOME_HEADERS,
         )
 

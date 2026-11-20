@@ -1,12 +1,82 @@
 {% extends "base.html" %}
 {% macro amount(value) -%}
-{{ value if value is not none else '—' }}
+{{ '—' if value is none else value|int if value == value|int else value }}
 {%- endmacro %}
 {% block content %}
 <div class="page-heading">
-  <h1>首页概览</h1>
+  <h1>睡眠与训练</h1>
   <p class="meta">最近成功同步 {% if last_sync %}<time datetime="{{ last_sync }}">{{ last_sync[:16]|replace('T', ' ') }}</time> · 北京时间{% else %}—{% endif %}</p>
 </div>
+<div class="aurora-review">
+  <section class="aurora-calendar" aria-labelledby="review-calendar">
+    <div class="section-heading">
+      <h2 id="review-calendar">选择对照日期</h2>
+      <nav class="week-nav" aria-label="切换对照周">
+        {% if previous_week %}<a href="/?day={{ previous_week }}">上一周</a>{% endif %}
+        <span>{{ week_from.strftime('%m/%d') }}–{{ week_to.strftime('%m/%d') }}</span>
+        {% if next_week %}<a href="/?day={{ next_week }}">下一周</a>{% endif %}
+      </nav>
+    </div>
+    <div class="aurora-days">
+      {% for item in review_days %}
+      {% set weekday = ['一','二','三','四','五','六','日'][loop.index0] %}
+      {% if item.future %}
+      <span class="future-day" aria-label="{{ item.date }}，尚未到达"><span>周{{ weekday }}</span><strong>{{ item.date.day }}</strong></span>
+      {% else %}
+      <a href="/?day={{ item.date }}" aria-label="{{ item.date }}，周{{ weekday }}" {% if item.picked %}aria-current="date"{% endif %}>
+        <span>周{{ weekday }}</span><strong>{{ item.date.day }}</strong>
+      </a>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </section>
+  <div class="aurora-pair aurora-snapshot">
+    <section class="aurora-recovery" aria-labelledby="aurora-recovery-title">
+      <h2 id="aurora-recovery-title">昨夜与晨间</h2>
+      <div class="aurora-ring-layout">
+        <div class="aurora-ring" style="--pct: {{ selected.resource|default(0, true) }}%">
+          <div><strong>{{ amount(selected.resource) }}{% if selected.resource is not none %}<span>%</span>{% endif %}</strong>
+            <small>{{ selected.resource_label if selected.resource is not none else '身体资源' }}</small></div>
+        </div>
+        <dl><div><dt>睡眠时长</dt><dd>{{ amount(selected.sleep) }}{% if selected.sleep is not none %} <small>小时</small>{% endif %}</dd></div></dl>
+      </div>
+      {% if selected.resource is none or selected.sleep is none %}<p class="meta">所选日缺少部分睡眠或恢复记录。</p>{% endif %}
+    </section>
+    <section class="aurora-training" aria-labelledby="aurora-training-title">
+      <div class="section-heading">
+        <h2 id="aurora-training-title">当日训练</h2>
+        {% if selected.n %}<a href="/activities?start={{ selected.date }}&amp;end={{ selected.date }}">{{ selected.n }} 次活动</a>{% endif %}
+      </div>
+      <dl class="metrics aurora-metrics">
+        {% for name, value, unit in [('距离', selected.km, 'km'), ('时长', selected.minutes, '分钟'), ('训练负荷', selected.tss, 'TSS')] %}
+        <div><dt>{{ name }}</dt><dd>{{ amount(value) }}{% if value is not none %} <small>{{ unit }}</small>{% endif %}</dd></div>
+        {% endfor %}
+      </dl>
+      {% if not selected.n %}
+      <p class="meta">{{ '对应日期已查询，无运动记录。' if selected.covered else '暂未确认此日期的运动数据覆盖。' }}</p>
+      {% endif %}
+    </section>
+  </div>
+  <div class="aurora-pair aurora-charts">
+    {% for pair in review_charts %}
+    <section class="chart-panel aurora-chart" aria-labelledby="review-chart-{{ loop.index }}">
+      <div class="section-heading">
+        <h2 id="review-chart-{{ loop.index }}">{{ '一周恢复' if loop.first else '一周训练' }}</h2>
+        <select class="chart-metric" aria-label="{{ '恢复图表指标' if loop.first else '训练图表指标' }}" hidden>
+          {% for series in pair %}<option value="{{ loop.index0 }}">{{ series.title }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="plot">
+        <canvas role="img" aria-label="{{ pair[0].title }}"></canvas>
+      </div>
+      <p class="empty-state chart-empty" hidden>本周暂无此指标记录。</p>
+      <script type="application/json" class="chart-data">{{ pair|tojson }}</script>
+    </section>
+    {% endfor %}
+  </div>
+</div>
+<script src="/static/chart.umd.min.js" defer></script>
+<script src="/static/charts.js?v=0.5.0" defer></script>
 <section class="panel overview-summary">
   <div class="section-heading">
     <h2>本周与本月</h2>

@@ -1,24 +1,38 @@
-const colors = ["#15646a", "#a24928", "#654b8b", "#49713b"];
-const axis = "#4a6265";
-const grid = "#d5e0de";
+const chartTheme = getComputedStyle(document.documentElement);
+const themeColor = (name) => chartTheme.getPropertyValue(name).trim();
+const colors = ["--chart-cyan", "--chart-rose", "--chart-lilac", "--chart-gold"].map(themeColor);
+const axis = themeColor("--muted");
+const grid = themeColor("--line");
+
+function auroraFill({chart, dataIndex}, selected) {
+  const area = chart.chartArea;
+  const top = dataIndex === selected ? colors[1] : colors[0];
+  if (!area) return top;
+  const fill = chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
+  fill.addColorStop(0, top);
+  fill.addColorStop(1, "#8e86e5");
+  return fill;
+}
 
 function renderChart(canvas, series) {
   const datasets = Object.entries(series.columns).map(([label, data], index) => ({
     label,
     data,
     borderColor: colors[index % colors.length],
-    backgroundColor: colors[index % colors.length],
-    borderWidth: 2,
-    borderRadius: 3,
+    backgroundColor: series.aurora ? (context) => auroraFill(context, series.selected) : colors[index % colors.length],
+    borderWidth: series.aurora ? 0 : 2,
+    borderRadius: series.aurora ? 8 : 3,
+    maxBarThickness: 32,
     pointRadius: 2,
   }));
-  new Chart(canvas, {
+  return new Chart(canvas, {
     type: series.kind,
     data: { labels: series.labels, datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      animation: matchMedia("(prefers-reduced-motion: reduce)").matches ? false : undefined,
+      animation: matchMedia("(prefers-reduced-motion: reduce)").matches ? false :
+        series.aurora ? {duration: 420, easing: "easeOutQuart"} : undefined,
       color: axis,
       onClick: (_, bars) => {
         const range = series.ranges?.[bars[0]?.index];
@@ -29,30 +43,48 @@ function renderChart(canvas, series) {
       },
       plugins: {legend: {display: datasets.length > 1, labels: {boxWidth: 12}}},
       scales: {
-        x: {stacked: Boolean(series.stacked), grid: {display: false}, ticks: {maxTicksLimit: 8, maxRotation: 0}},
-        y: {beginAtZero: true, stacked: Boolean(series.stacked), grid: {color: grid}, ticks: {maxTicksLimit: 5}},
+        x: {stacked: Boolean(series.stacked), grid: {display: false}, ticks: {color: axis, maxTicksLimit: 8, maxRotation: 0}},
+        y: {
+          beginAtZero: true, stacked: Boolean(series.stacked), grid: {color: grid}, ticks: {color: axis, maxTicksLimit: 5},
+          title: {display: Boolean(series.aurora), text: Object.keys(series.columns)[0], color: axis},
+          suggestedMax: series.aurora && Object.hasOwn(series.columns, "%") ? 100 : undefined,
+        },
       },
     },
   });
 }
 
 for (const element of document.querySelectorAll(".chart-data")) {
-  const series = JSON.parse(element.textContent);
+  const data = JSON.parse(element.textContent);
   const panel = element.parentElement;
   const canvas = panel.querySelector("canvas");
-  if (!Object.values(series.columns).some((values) => values.some(Number.isFinite))) {
-    canvas.parentElement.hidden = true;
-    panel.querySelector(".chart-empty").hidden = false;
+  const selector = panel.querySelector(".chart-metric");
+  let chart;
+
+  function show(series) {
+    chart?.destroy();
+    chart = null;
+    const available = Object.values(series.columns).some((values) => values.some(Number.isFinite));
+    canvas.parentElement.hidden = !available;
+    panel.querySelector(".chart-empty").hidden = available;
+    canvas.setAttribute("aria-label", series.title);
+    if (available) chart = renderChart(canvas, series);
+  }
+
+  if (selector) {
+    selector.hidden = false;
+    selector.addEventListener("change", () => show(data[Number(selector.value)]));
+    show(data[Number(selector.value)]);
     continue;
   }
   const disclosure = element.closest("details");
   if (disclosure && !disclosure.open) {
     disclosure.addEventListener("toggle", function onOpen() {
       if (!disclosure.open) return;
-      renderChart(canvas, series);
+      show(data);
       disclosure.removeEventListener("toggle", onOpen);
     });
   } else {
-    renderChart(canvas, series);
+    show(data);
   }
 }

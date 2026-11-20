@@ -1,0 +1,7 @@
+{% macro coverage_status(item, values) -%}
+  {% if item.covered and item.n == 0 %}已确认无活动
+  {% elif not item.covered %}同步未完成{% if item.n %} · 已入库小计{% endif %}
+  {%- endif %}
+  {% if item.n and none in values %}{% if not item.covered %} · {% endif %}部分活动缺少指标{% endif %}
+  {% if item.covered and item.n and none not in values %}已确认覆盖{% endif %}
+{%- endmacro %}

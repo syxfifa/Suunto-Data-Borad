@@ -203,9 +203,16 @@ class SyncTest(unittest.TestCase):
         self.assertFalse(self.store.query("SELECT * FROM removed_routes"))
         self.mcp.route_data = lambda _: [{"routeId": "route-a"}]
         self.sync.run("test", stop=self.stop + timedelta(days=1, minutes=1))
+        self.assertFalse(self.store.query("SELECT * FROM removed_routes"))
+        self.assertTrue(self.store.query("SELECT 1 FROM route_absences WHERE record_key='route-b'"))
+        self.store.initialize()
+        self.sync.run("test", stop=self.stop + timedelta(days=2, minutes=1))
         removed = {row["record_key"] for row in self.store.query("SELECT * FROM removed_routes")}
         self.assertIn("route-b", removed)
         self.assertNotIn("route-a", removed)
+        self.mcp.route_data = lambda _: [{"routeId": "route-b"}]
+        self.sync.run("test", stop=self.stop + timedelta(days=2, minutes=2))
+        self.assertFalse(self.store.query("SELECT 1 FROM removed_routes WHERE record_key='route-b'"))
 
     def test_existing_sqlite_database_adds_state_without_discarding_records(self):
         with TemporaryDirectory() as directory:

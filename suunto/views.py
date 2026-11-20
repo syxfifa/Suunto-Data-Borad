@@ -33,7 +33,9 @@ WORKOUT_PATHS = {"distance": "$.totalDistance", "duration": "$.totalTimeSeconds"
 
 
 def workout_filter(where, parameters, sport="", search="", minimums=None):
-    if sport:
+    if sport == "未标注运动类型":
+        where += " AND coalesce(json_extract(payload, '$.activityName'), '')=''"
+    elif sport:
         where += " AND json_extract(payload, '$.activityName')=?"
         parameters.append(sport)
     if search:
@@ -165,15 +167,19 @@ def workout_chart(entries, weekly, first_day, last_day, intervals, tz, *, extend
         ]
     totals = [[] for _ in definitions]
     ranges = []
+    coverage = []
+    counts = []
     for offset in range(0, (last_day - first_label).days + 1, step):
         bucket = first_label + timedelta(days=offset)
         start = max(first_day, bucket)
         end = min(last_day + timedelta(days=1), bucket + timedelta(days=step))
         covered = covers(intervals, datetime.combine(start, time.min, tz), datetime.combine(end, time.min, tz))
+        coverage.append(covered)
         label = bucket.isoformat()
         labels.append(f"{label}（部分覆盖）" if weekly and not covered else label)
         ranges.append((start.isoformat(), (end-timedelta(days=1)).isoformat()))
         rows = grouped.get(label, [])
+        counts.append(len(rows))
         for column, (_, _, metric, method) in zip(totals, definitions):
             values = [v for row in rows if (v := metric(row)) is not None]
             if method == "coverage":
@@ -188,6 +194,8 @@ def workout_chart(entries, weekly, first_day, last_day, intervals, tz, *, extend
     if extended:
         for series in result:
             series["ranges"] = ranges
+            series["covered"] = coverage
+            series["counts"] = counts
     return result
 
 

@@ -12,6 +12,7 @@ let zoom = 1;
 let offsetX = 0;
 let offsetY = 0;
 let drag = null;
+let mapTrigger;
 
 function drawPoints(points, selected) {
   const {width, height} = canvas;
@@ -66,7 +67,7 @@ function drawPoints(points, selected) {
   ctx.lineWidth = 1;
 }
 
-function show(points, selected, label, individual) {
+function show(points, selected, label, individual, trigger) {
   const {lat, lon, alt} = selected;
   coordinates.value = individual ? `${lat.toFixed(6)}, ${lon.toFixed(6)}` : "";
   pointStatus.textContent = [label, coordinates.value, individual && alt !== "" ? alt + " m" : ""]
@@ -83,7 +84,9 @@ function show(points, selected, label, individual) {
   zoom = 1;
   offsetX = offsetY = 0;
   drawPoints(pointsShown, pointShown);
+  mapTrigger = trigger;
   routeMap.hidden = false;
+  routeMap.focus({preventScroll: true});
   routeMap.scrollIntoView({block: "start"});
 }
 
@@ -110,13 +113,18 @@ for (const group of document.querySelectorAll(".route-points")) {
   }
   for (const point of points) {
     point.button.addEventListener("click", () => {
-      show(points, point, [group.dataset.route, point.label].filter(Boolean).join(" · "), true);
+      show(points, point, [group.dataset.route, point.label].filter(Boolean).join(" · "), true, point.button);
     });
   }
 }
-document.querySelector("#route-overview").addEventListener("click", () => {
+document.querySelector("#route-overview").addEventListener("click", (event) => {
   const locations = [...overviewPoints.values()];
-  show(locations, locations[0], `路线库位置 · ${routeCount} 条 · ${locations.length} 组邻近位置`, false);
+  show(locations, locations[0], `本页路线位置 · ${routeCount} 条 · ${locations.length} 组邻近位置`,
+       false, event.currentTarget);
+});
+document.querySelector("#route-map-close").addEventListener("click", () => {
+  routeMap.hidden = true;
+  mapTrigger?.focus();
 });
 for (const control of document.querySelectorAll("[data-map-zoom]")) {
   control.addEventListener("click", () => {

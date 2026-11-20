@@ -28,7 +28,7 @@ from . import VERSION
 from .maintenance import storage_size, volume_lock
 from .config import Config
 from .reports import (WELLNESS_FIELDS, acwr_series, aurora_week, compare_metrics, daily_report, dates, grouped_totals,
-                      intensity_charts, longest_streak, mapping_fields, midnight, period_totals,
+                      intensity_charts, longest_streak, mapping_fields, midnight, period_summary,
                       sport_counts, sport_name, wellness)
 from .store import Store
 from .sync import SOURCES, Synchronizer, TZ
@@ -43,6 +43,26 @@ HOME_HEADERS = {**NO_CACHE, "Referrer-Policy": "same-origin"}
 DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 SOURCE_LABELS = dict(workouts="运动活动", sleep="睡眠", recovery="恢复", daily_activity="日常活动",
                      routes="保存路线", workout_details="运动详情")
+
+
+def local_return(value, *allowed_paths):
+    if not value or re.search(r"[\\\x00-\x20\x7f]", value):
+        return None
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    return value if not (parsed.scheme or parsed.netloc or value.startswith("//")) and parsed.path in allowed_paths else None
+
+
+def activity_link(start, end, sport="", return_to=""):
+    return "/activities?" + urlencode({"start": start, "end": end, "sport": sport, "return_to": return_to})
+
+
+def add_review_links(series, sport, back, today):
+    for item in series:
+        item["links"] = [activity_link(start, end, sport, back) if start <= today.isoformat() else None
+                         for start, end in item["ranges"]]
 
 
 def lower_bound(value, maximum):
@@ -280,7 +300,6 @@ def create_app(data_dir=None, *, client=None):
         review_end = review_start + timedelta(days=6)
         query_end = min(today, midnight(review_end + timedelta(days=1)))
         preferences = config.read()
-        overview = []
         intervals = store.coverage("workouts")
         snapshots, review_charts = aurora_week(
             review_start, chosen, today.date(),
@@ -290,35 +309,29 @@ def create_app(data_dir=None, *, client=None):
             records(store, "recovery", midnight(review_start), query_end),
             intervals, preferences.get("wellness_fields", {}),
         )
-        if store.query("SELECT 1 FROM records WHERE source='workouts' LIMIT 1") or intervals:
-            for days in (7, 28):
-                start = datetime.combine(today.date() - timedelta(days=days-1), clock_time.min, TZ)
-                covered = covers(intervals, start, datetime.combine(today.date(), clock_time.min, TZ))
-                row = store.query("""
-                    SELECT count(*) AS n,
-                           sum(CASE WHEN json_type(payload,'$.totalDistance') IN ('real','integer')
-                                    THEN json_extract(payload,'$.totalDistance') END) / 1000.0 AS km,
-                           sum(CASE WHEN json_type(payload,'$.totalTimeSeconds') IN ('real','integer')
-                                    THEN json_extract(payload,'$.totalTimeSeconds') END) / 3600.0 AS hours
-                    FROM records WHERE source='workouts' AND occurred_at>=?
-                    """, (start.isoformat(),))[0]
-                overview.append({"days": days, "covered": covered, **row})
+        back = "/?" + urlencode({"day": chosen}) + "#aurora-review"
+        add_review_links(review_charts[1], "", back, today.date())
+        selected = snapshots[(chosen - review_start).days]
+        selected_end = min(today, midnight(chosen + timedelta(days=1)))
+        selected["confirmed_until"] = period_summary([], midnight(chosen), selected_end, intervals)["confirmed_until"]
         day = today.date()
         week_start = day - timedelta(days=day.weekday())
         month_start = day.replace(day=1)
-        data = records(store, "workouts", midnight(min(month_start, week_start - timedelta(days=7))), today)
+        previous_start = week_start - timedelta(days=7)
+        data = records(store, "workouts", midnight(min(month_start, day - timedelta(days=27))), today)
         week_rows = [(at, row) for at, row in data if at[:10] >= week_start.isoformat()]
-        previous_end = today - timedelta(days=7)
-        previous = [(at, row) for at, row in data
-                    if (week_start-timedelta(days=7)).isoformat() <= at[:10] and at < previous_end.isoformat()]
+        overview = [{"days": days, **period_summary(data, midnight(day - timedelta(days=days-1)), today, intervals)}
+                    for days in (7, 28)]
         stats = store.status()
         return TEMPLATES.TemplateResponse(
             request=request, name="discovery.html",
-            context={"overview": overview, "week": period_totals(week_rows), "prior": period_totals(previous),
-                     "month": period_totals([(at, row) for at, row in data if at[:10] >= month_start.isoformat()]),
+            context={"overview": overview, "week": period_summary(data, midnight(week_start), today, intervals),
+                     "prior": period_summary(data, midnight(previous_start), today - timedelta(days=7), intervals),
+                     "month": period_summary(data, midnight(month_start), today, intervals),
+                     "selected_link": activity_link(chosen, chosen, return_to=back), "today": day,
                      "sports": sport_counts(week_rows), "last_sync": stats["last_success_at"],
                      "weekly_goal": preferences.get("weekly_km"), "review_days": snapshots,
-                     "selected": snapshots[(chosen - review_start).days], "week_from": review_start,
+                     "selected": selected, "week_from": review_start,
                      "week_to": review_end, "review_charts": review_charts,
                      "previous_week": chosen - timedelta(days=7) if chosen - timedelta(days=7) >= earliest else None,
                      "next_week": min(today.date(), chosen + timedelta(days=7)) if review_end < today.date() else None},
@@ -533,36 +546,41 @@ def create_app(data_dir=None, *, client=None):
                                          context={"title": title, **context}, headers=HOME_HEADERS)
 
     def recent(source, days=28):
-        today = datetime.now(TZ).date()
-        return records(store, source, datetime.combine(today - timedelta(days=days - 1), clock_time.min, TZ))
+        current = datetime.now(TZ)
+        return records(store, source, midnight(current.date() - timedelta(days=days - 1)), current)
 
     @app.get("/training")
     def training(request: Request, period: str = "day", sport: str = "",
                  days: Annotated[int, Query(ge=7, le=366)] = 90):
         weekly = period == "week"
-        today = datetime.now(TZ).date()
+        current_time = datetime.now(TZ)
+        today = current_time.date()
         first_day = today - timedelta(days=days-1)
         coverage = store.coverage("workouts")
         context_rows = records(store, "workouts", midnight(first_day - timedelta(days=27)),
-                               midnight(today+timedelta(days=1)))
+                               current_time)
         sports = sorted({sport_name(row) for _, row in context_rows})
         selected = sport if sport in sports else ""
         history = [(at, row) for at, row in context_rows if not selected or sport_name(row) == selected]
         current = [(at, row) for at, row in history if at[:10] >= first_day.isoformat()]
         series = workout_chart(current, weekly, first_day, today, coverage, TZ, extended=True)
-        for item in series:
-            item["sport"] = selected if selected != "未标注运动类型" else ""
+        back = "/training?" + urlencode({"period": "week" if weekly else "day", "sport": selected, "days": days})
+        add_review_links(series, selected, back + "#training-charts", today)
+        months = grouped_totals(current, first_day, today, coverage, monthly=True)
+        weeks = grouped_totals(current, first_day, today, coverage)
+        for item in months + weeks:
+            item["link"] = activity_link(item["start"], item["end"], selected, back + "#training-reports")
         return dashboard(request, "训练趋势", show_period=True, weekly=weekly,
                          charts=series[:2] + [series[4]], sport=selected, sports=sports, days=days,
                          advanced_charts=series[2:4] + series[5:] + [acwr_series(history, first_day, today, coverage)],
-                         monthly_totals=grouped_totals(current, monthly=True), weeks=grouped_totals(current),
+                         monthly_totals=months, weeks=weeks,
                          streak=longest_streak(current), training_mix=sport_counts(current))
 
     @app.get("/activities")
     def workouts(request: Request, start: str = "", end: str = "",
                  page: Annotated[int, Query(ge=1)] = 1, sport: str = "", q: str = "",
                  km: str = "", minutes: str = "", tss: str = "",
-                 sort: str = "date", order: str = "desc"):
+                 sort: str = "date", order: str = "desc", return_to: str = ""):
         today = datetime.now(TZ).date()
         activity_span = store.query(
             "SELECT min(occurred_at) AS first, max(occurred_at) AS last FROM records WHERE source='workouts'"
@@ -574,12 +592,13 @@ def create_app(data_dir=None, *, client=None):
         presets = [(f"近 {days} 天", (today - timedelta(days=days-1)).isoformat()) for days in (7, 28, 90)]
         presets.append(("本月", today.replace(day=1).isoformat()))
         activity_types = store.query("""
-            SELECT DISTINCT json_extract(payload, '$.activityName') AS sport FROM records
-            WHERE source='workouts' AND json_type(payload, '$.activityName')='text' ORDER BY sport
+            SELECT DISTINCT coalesce(nullif(json_extract(payload, '$.activityName'), ''), '未标注运动类型') AS sport
+            FROM records WHERE source='workouts' ORDER BY sport
         """)
         search_state = {"sport": sport, "q": q, "km": km, "minutes": minutes, "tss": tss, "sort": sort, "order": order}
         filters = {"filters": True, "activity_span": activity_span, "available_days": available_days,
                    "presets": presets, "today": today, "activity_types": activity_types, "search": search_state,
+                   "review_return": local_return(return_to, "/", "/training"),
                    "search_query": urlencode({key: value for key, value in search_state.items() if value not in ("", None)})}
         start, end = start.strip(), end.strip()
         try:
@@ -621,13 +640,17 @@ def create_app(data_dir=None, *, client=None):
                 summary = "本地没有匹配记录，所选范围尚未确认完整。可到设置发起历史补采。"
         export_query = urlencode({"source": "workouts", "start": first or "", "end": last or "",
                                   **{key: search_state[key] for key in ("sport", "q", "km", "minutes", "tss")}})
-        return dashboard(request, "运动活动", **filters, start=first, end=last,
+        current_page = "/activities?" + urlencode({"start": first or "", "end": last or "", "page": page,
+                                                 **search_state, "return_to": filters["review_return"] or ""})
+        details = ["/workout?" + urlencode({"id": key, "return_to": current_page + f"#activity-{index}"})
+                   for index, key in enumerate(keys)]
+        return dashboard(request, "运动活动", **filters, start=first, end=last, detail_links=details,
                          headings=("北京时间", "运动类型", "距离（km）", "时长（分钟）", "平均心率", "训练效果 PTE"),
                          rows=rows, activity_keys=keys, result_count=count, page=page, pages=pages,
                          empty_message=summary, export_query=export_query)
 
     @app.get("/workout")
-    def workout(request: Request, id: str):
+    def workout(request: Request, id: str, return_to: str = ""):
         found = store.query("SELECT occurred_at, payload FROM records WHERE source='workouts' AND record_key=?", (id,))
         if not found:
             raise HTTPException(404, "找不到该活动。")
@@ -641,6 +664,7 @@ def create_app(data_dir=None, *, client=None):
                     if key not in featured and value is not None}
         return dashboard(request, row.get("workoutName") or sport_name(row), workout=row, workout_id=id,
                          workout_at=found[0]["occurred_at"], metrics=workout_metrics(row),
+                         workout_return=local_return(return_to, "/activities"),
                          charts=intensity_charts(row), optional_metrics=optional)
 
     @app.get("/compare")
@@ -664,10 +688,14 @@ def create_app(data_dir=None, *, client=None):
         preferences = config.read()
         fields = preferences.get("wellness_fields", {})
         unit = preferences.get("sleep_stage_unit", "seconds")
-        charts, sleep_rows, count, latest_metrics = wellness(recent("sleep", days+1), recent("recovery", days),
-                                              recent("workouts", days), span, fields, unit)
+        sleep = recent("sleep", days+1)
+        charts, sleep_rows, count, latest_metrics = wellness(sleep, recent("recovery", days),
+            recent("workouts", days), span, fields, unit, training_coverage=store.coverage("workouts"))
+        first = span[0].isoformat()
         return dashboard(request, "睡眠与恢复", charts=charts, wellness_days=days, sleep_rows=sleep_rows,
-                         sleep_count=count, latest_metrics=latest_metrics)
+                         sleep_count=count, sleep_samples=sum(at[:10] >= first for at, _ in sleep),
+                         latest_sleep=next((row[0] for row in sleep_rows if row[-1] is not None), None),
+                         latest_metrics=latest_metrics)
 
     @app.get("/daily-activity")
     def daily_activity(request: Request, source: str = "", period: str = "day",
@@ -683,16 +711,18 @@ def create_app(data_dir=None, *, client=None):
 
     @app.get("/routes")
     def routes(request: Request, q: str = "", sport: str = "", watch: str = "", visibility: str = "",
-               km: str = "",
-               updated: str = ""):
+               km: str = "", updated: str = "", updated_to: str = "",
+               page: Annotated[int, Query(ge=1)] = 1):
         all_routes = records(store, "routes")
         sports = sorted({name for _, row in all_routes if isinstance(row.get("activityNames"), list)
                          for name in row["activityNames"] if isinstance(name, str)})
-        if updated:
-            try:
-                updated = date.fromisoformat(updated).isoformat()
-            except ValueError:
-                return dashboard(request, "保存路线", message="请选择有效的更新日期。")
+        try:
+            updated = date.fromisoformat(updated).isoformat() if updated else ""
+            updated_to = date.fromisoformat(updated_to).isoformat() if updated_to else ""
+            if updated and updated_to and updated > updated_to:
+                raise ValueError
+        except ValueError:
+            return dashboard(request, "保存路线", message="请输入有效的更新日期范围，结束日期不得早于开始日期。")
         try:
             km = lower_bound(km, 100000)
         except ValueError:
@@ -704,17 +734,27 @@ def create_app(data_dir=None, *, client=None):
                         or watch == "off" and row.get("watchEnabled") is False)
                    and (not visibility or row.get("visibility") == visibility)
                    and (km is None or numeric(row.get("totalDistance")) is not None and row["totalDistance"] >= km*1000)
-                   and (not updated or row.get("modified") and at and at[:10] >= updated)]
+                   and (not (updated or updated_to) or row.get("modified") and at
+                        and (not updated or at[:10] >= updated) and (not updated_to or at[:10] <= updated_to))]
+        count = len(entries)
+        size = 25
+        route_pages = max(1, (count + size - 1) // size)
+        page = min(page, route_pages)
+        route_filter = {"q": q, "sport": sport, "watch": watch, "visibility": visibility,
+                        "km": km, "updated": updated, "updated_to": updated_to}
+        route_query = urlencode({key: value for key, value in route_filter.items() if value not in ("", None)})
+        distribution = Counter(name for _, row in entries if isinstance(row.get("activityNames"), list)
+                               for name in {x for x in row["activityNames"] if isinstance(x, str)})
+        newest_first = sorted(entries, key=lambda item: (item[0] or "", item[1]["routeId"]), reverse=True)
+        entries = list(reversed(newest_first[(page-1)*size:page*size]))
         route_meta = [{"id": row["routeId"], "modified": at if row.get("modified") else None,
                        "watch": row.get("watchEnabled"), "visibility": row.get("visibility")}
                       for at, row in reversed(entries)]
-        distribution = Counter(name for _, row in entries if isinstance(row.get("activityNames"), list)
-                               for name in set(x for x in row["activityNames"] if isinstance(x, str)))
         return dashboard(request, "保存路线", headings=("路线名称或描述", "距离（km）", "运动类型", "地图"),
                          rows=table_rows(entries, "routes"), route_maps=route_map_points(entries),
                          route_meta=route_meta, route_sports=sports, route_summary=distribution.most_common(),
-                         route_filter={"q": q, "sport": sport, "watch": watch,
-                         "visibility": visibility, "km": km, "updated": updated},
+                         route_filter=route_filter, route_query=route_query, route_page=page,
+                         route_pages=route_pages, route_count=count,
                          route_basemap=config.read().get("route_basemap", False),
                          route_detail_available=any(t["name"] == "get_route_summary" for t in discovery["tools"]))
 
@@ -734,8 +774,24 @@ def create_app(data_dir=None, *, client=None):
                    for name, meta in SOURCES.items()]
         prefs = config.read()
         field_sets = wellness_fields()
-        bindings = [(key, label, mapping_fields(field_sets[source], kind))
-                    for key, (source, label, kind) in WELLNESS_FIELDS.items()]
+        configured = prefs.get("wellness_fields", {})
+        cutoff = midnight(datetime.now(TZ).date() - timedelta(days=89)).isoformat()
+        samples = {source: store.query(
+            "SELECT count(*) AS n FROM records WHERE source=? AND occurred_at>=?", (source, cutoff)
+        )[0]["n"] for source in field_sets}
+        stage_unit = {"seconds": "秒", "minutes": "分钟", "ms": "毫秒"}[prefs.get("sleep_stage_unit", "seconds")]
+        bindings = []
+        for key, (source, label, kind) in WELLNESS_FIELDS.items():
+            options = mapping_fields(field_sets[source], kind)
+            selected = configured.get(key)
+            stage = key in {"deep", "light", "rem"}
+            counter = "nonnegative" if stage else "timestamps" if kind == "text" else "samples"
+            unit = stage_unit if stage else {"hrv": "毫秒", "resting_hr": "bpm"}.get(
+                key, "ISO 日期时间" if kind == "text" else "Suunto 原值")
+            valid = sum(row[counter] for row in field_sets[source] if row["name"] == selected
+                        and (kind != "number" or row["type"] in {"integer", "real"}))
+            bindings.append({"key": key, "label": label, "options": options, "selected": selected,
+                             "unit": unit, "valid": valid, "samples": samples[source]})
         return TEMPLATES.TemplateResponse(
             request=request, name="dashboard.html",
             context={"title": "设置", "saved": saved, "preferences_saved": preferences_saved,

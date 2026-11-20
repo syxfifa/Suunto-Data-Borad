@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "coverage_status.html" import coverage_status %}
 {% macro amount(value) -%}
 {{ '—' if value is none else value|int if value == value|int else value }}
 {%- endmacro %}
@@ -7,7 +8,7 @@
   <h1>睡眠与训练</h1>
   <p class="meta">最近成功同步 {% if last_sync %}<time datetime="{{ last_sync }}">{{ last_sync[:16]|replace('T', ' ') }}</time> · 北京时间{% else %}—{% endif %}</p>
 </div>
-<div class="aurora-review">
+<div class="aurora-review" id="aurora-review">
   <section class="aurora-calendar" aria-labelledby="review-calendar">
     <div class="section-heading">
       <h2 id="review-calendar">选择对照日期</h2>
@@ -45,16 +46,15 @@
     <section class="aurora-training" aria-labelledby="aurora-training-title">
       <div class="section-heading">
         <h2 id="aurora-training-title">当日训练</h2>
-        {% if selected.n %}<a href="/activities?start={{ selected.date }}&amp;end={{ selected.date }}">{{ selected.n }} 次活动</a>{% endif %}
+        {% if selected.n %}<a href="{{ selected_link }}">{{ selected.n }} 次活动</a>{% endif %}
       </div>
       <dl class="metrics aurora-metrics">
         {% for name, value, unit in [('距离', selected.km, 'km'), ('时长', selected.minutes, '分钟'), ('训练负荷', selected.tss, 'TSS')] %}
         <div><dt>{{ name }}</dt><dd>{{ amount(value) }}{% if value is not none %} <small>{{ unit }}</small>{% endif %}</dd></div>
         {% endfor %}
       </dl>
-      {% if not selected.n %}
-      <p class="meta">{{ '对应日期已查询，无运动记录。' if selected.covered else '暂未确认此日期的运动数据覆盖。' }}</p>
-      {% endif %}
+      <p class="meta">{{ coverage_status(selected, [selected.km, selected.minutes, selected.tss]) }}
+      {% if selected.confirmed_until and not selected.covered %} · 最近确认至 {{ selected.confirmed_until[:16]|replace('T', ' ') }}{% endif %}</p>
     </section>
   </div>
   <div class="aurora-pair aurora-charts">
@@ -70,13 +70,14 @@
         <canvas role="img" aria-label="{{ pair[0].title }}"></canvas>
       </div>
       <p class="empty-state chart-empty" hidden>本周暂无此指标记录。</p>
+      {% include "chart_values.html" %}
       <script type="application/json" class="chart-data">{{ pair|tojson }}</script>
     </section>
     {% endfor %}
   </div>
 </div>
 <script src="/static/chart.umd.min.js" defer></script>
-<script src="/static/charts.js?v=0.5.0" defer></script>
+<script src="/static/charts.js?v=0.7.0" defer></script>
 <section class="panel overview-summary">
   <div class="section-heading">
     <h2>本周与本月</h2>
@@ -85,11 +86,13 @@
   <div class="overview-layout">
     <div class="table-scroll" role="region" aria-label="本周与本月运动统计" tabindex="0">
       <table class="overview-table">
-        <thead><tr><th scope="col">时段</th><th scope="col">次数</th><th scope="col">距离（km）</th><th scope="col">用时（分钟）</th></tr></thead>
+        <thead><tr><th scope="col">时段</th><th scope="col">次数</th><th scope="col">距离（km）</th><th scope="col">用时（分钟）</th><th scope="col">数据覆盖</th></tr></thead>
         <tbody>
           {% for name, item in [('本周', week), ('上周同期', prior), ('本月', month)] %}
           <tr {% if loop.first %}class="current-period"{% endif %}>
-            <th scope="row">{{ name }}</th><td>{{ item.n }}</td><td>{{ amount(item.km) }}</td><td>{{ amount(item.minutes) }}</td>
+            <th scope="row">{{ name }}</th><td>{{ amount(item.n) }}</td><td>{{ amount(item.km) }}</td><td>{{ amount(item.minutes) }}</td>
+            <td>{{ coverage_status(item, [item.km, item.minutes]) }}{% if item.confirmed_until and not item.covered %}
+              <div>最近确认至 {{ item.confirmed_until[:16]|replace('T', ' ') }}</div>{% endif %}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -115,7 +118,7 @@
     </div>
     {% endif %}
   </div>
-  <p class="meta">以上为本地数据。</p>
+  <p class="meta">上周同期按相同星期和时刻截止，时间均为北京时间。</p>
 </section>
 <section class="overview-history">
   <h2>活动概览</h2>
@@ -125,11 +128,12 @@
     <article class="panel period-summary">
       <h3>近 {{ item.days }} 天</h3>
       <dl class="metrics">
-        <div><dt>活动次数</dt><dd>{{ item.n }}</dd></div>
+        <div><dt>活动次数</dt><dd>{{ amount(item.n) }}</dd></div>
         <div><dt>总距离（km）</dt><dd>{{ '%.1f'|format(item.km) if item.km is not none else '—' }}</dd></div>
-        <div><dt>总时长（小时）</dt><dd>{{ '%.1f'|format(item.hours) if item.hours is not none else '—' }}</dd></div>
+        <div><dt>总时长（小时）</dt><dd>{{ '%.1f'|format(item.minutes / 60) if item.minutes is not none else '—' }}</dd></div>
       </dl>
-      {% if not item.covered %}<p class="meta">部分日期尚未确认覆盖。</p>{% endif %}
+      <p class="meta">{{ coverage_status(item, [item.km, item.minutes]) }}
+      {% if item.confirmed_until and not item.covered %} · 最近确认至 {{ item.confirmed_until[:16]|replace('T', ' ') }}{% endif %}</p>
     </article>
     {% endfor %}
   </div>

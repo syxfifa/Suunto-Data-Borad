@@ -40,20 +40,31 @@ def sport_counts(rows):
     return Counter(sport_name(item) for _, item in rows).most_common()
 
 
-def period_totals(rows):
+def period_totals(rows, covered):
     vals = [numeric(row.get("tss")) for _, row in rows]
+    known = bool(rows) or covered
     return {
-        "n": len(rows),
-        "km": observed_total([numeric(row.get("totalDistance")) for _, row in rows], 1000),
-        "minutes": observed_total([numeric(row.get("totalTimeSeconds")) for _, row in rows], 60),
-        "climb": observed_total([numeric(summary(row).get("ascent")) for _, row in rows], 1),
-        "tss": round(sum(v for v in vals if v is not None), 1) if any(v is not None for v in vals) else None,
+        "n": len(rows) if known else None,
+        "km": observed_total([numeric(row.get("totalDistance")) for _, row in rows], 1000) if known else None,
+        "minutes": observed_total([numeric(row.get("totalTimeSeconds")) for _, row in rows], 60) if known else None,
+        "climb": observed_total([numeric(summary(row).get("ascent")) for _, row in rows], 1) if known else None,
+        "tss": observed_total(vals, 1) if known else None,
         "tss_count": sum(v is not None for v in vals),
+        "covered": covered,
     }
 
 
 def observed_total(values, divisor):
     return round(sum(values) / divisor, 2) if all(value is not None for value in values) else None
+
+
+def period_summary(rows, begin, end, intervals):
+    covered = covers(intervals, begin, end)
+    start, finish = begin.isoformat(), end.isoformat()
+    confirmed_until = max((min(finish, item["end_at"]) for item in intervals
+                           if item["start_at"] < finish and item["end_at"] > start), default=None)
+    included = [(at, row) for at, row in rows if start <= at < finish]
+    return {**period_totals(included, covered), "confirmed_until": confirmed_until}
 
 
 def aurora_week(first, selected, today, workouts, sleep, recovery, intervals, fields):
@@ -82,7 +93,7 @@ def aurora_week(first, selected, today, workouts, sleep, recovery, intervals, fi
         key = day.isoformat()
         rows = grouped[key]
         covered = day < today and covers(intervals, midnight(day), midnight(day + timedelta(days=1)))
-        totals = period_totals(rows)
+        totals = period_totals(rows, covered)
         sleep_hours = round(sum(durations[key]) / 3600, 1) if durations[key] else None
         resource = morning.get(key)
         label = "晨间身体资源"
@@ -93,9 +104,7 @@ def aurora_week(first, selected, today, workouts, sleep, recovery, intervals, fi
             "date": day, "n": totals["n"], "covered": covered,
             "future": day > today, "picked": day == selected, "sleep": sleep_hours,
             "resource": round(resource * 100) if resource is not None else None,
-            "resource_label": label, "km": totals["km"] if rows or covered else None,
-            "minutes": totals["minutes"] if rows or covered else None,
-            "tss": totals["tss"] if rows and totals["tss_count"] == totals["n"] else 0 if covered and not rows else None,
+            "resource_label": label, "km": totals["km"], "minutes": totals["minutes"], "tss": totals["tss"],
         })
     labels = [day.strftime("%m/%d") for day in days]
     def make_series(name, field, unit, *, activity=False):
@@ -104,6 +113,8 @@ def aurora_week(first, selected, today, workouts, sleep, recovery, intervals, fi
         result["selected"] = (selected - first).days
         if activity:
             result["ranges"] = [(day.isoformat(), day.isoformat()) for day in days]
+            result["covered"] = [item["covered"] for item in snapshots]
+            result["counts"] = [item["n"] for item in snapshots]
         return result
 
     return snapshots, [
@@ -112,13 +123,21 @@ def aurora_week(first, selected, today, workouts, sleep, recovery, intervals, fi
     ]
 
 
-def grouped_totals(rows, monthly=False):
-    buckets = defaultdict(list)
-    for at, row in rows:
-        day = date.fromisoformat(at[:10])
-        key = day.strftime("%Y-%m") if monthly else (day - timedelta(days=day.weekday())).isoformat()
-        buckets[key].append((at, row))
-    return [{"period": key, **period_totals(bucket)} for key, bucket in sorted(buckets.items(), reverse=True)]
+def grouped_totals(rows, first, last, coverage, monthly=False):
+    periods = []
+    start = first
+    while start <= last:
+        if monthly:
+            label = start.strftime("%Y-%m")
+            boundary = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        else:
+            label = (start - timedelta(days=start.weekday())).isoformat()
+            boundary = start + timedelta(days=7 - start.weekday())
+        end = min(boundary, last + timedelta(days=1))
+        periods.append({"period": label, "start": start.isoformat(), "end": (end - timedelta(days=1)).isoformat(),
+                        **period_summary(rows, midnight(start), midnight(end), coverage)})
+        start = end
+    return list(reversed(periods))
 
 
 def acwr_series(rows, first, last, coverage):
@@ -234,7 +253,7 @@ def line(title, labels, groups, aggregate=mean):
                                          for day in labels] for label, source in groups.items()})
 
 
-def wellness(sleep, recovery, training, days, fields, stage_unit):
+def wellness(sleep, recovery, training, days, fields, stage_unit, *, training_coverage=()):
     labels = [day.isoformat() for day in days]
     sessions = [item for item in sleep_sessions(sleep, fields) if item["day"] in labels]
     totals, stage_values = defaultdict(list), {}
@@ -317,6 +336,10 @@ def wellness(sleep, recovery, training, days, fields, stage_unit):
     for at, row in training:
         tss[at[:10]].append(numeric(row.get("tss")))
     known_tss = {d: values for d, values in tss.items() if all(v is not None for v in values)}
+    for day in days:
+        label = day.isoformat()
+        if label not in tss and covers(training_coverage, midnight(day), midnight(day + timedelta(days=1))):
+            known_tss[label] = [0]
     charts.append(line("同期训练负荷（TSS）", labels, {"TSS": known_tss}, sum))
     latest = max((d for d in same_day if d in labels), default=None)
     if latest:

@@ -14,13 +14,20 @@
       <summary>睡眠与恢复字段</summary>
       <p>下拉项来自本地真实记录。请先确认字段含义和单位；无可用字段时保持未配置。</p>
       <div class="controls">
-        {% for field, label, observed in bindings %}
-        {% set selected = prefs.get('wellness_fields', {}).get(field) %}
-        <label>{{ label }}<select name="{{ field }}">
+        {% for binding in bindings %}
+        <div>
+        <label>{{ binding.label }}<select name="{{ binding.key }}" {% if binding.selected %}aria-describedby="binding-{{ binding.key }}"{% endif %}>
           <option value="">未配置</option>
-          {% if selected and selected not in observed %}<option selected>{{ selected }}</option>{% endif %}
-          {% for item in observed %}<option {% if item == selected %}selected{% endif %}>{{ item }}</option>{% endfor %}
+          {% if binding.selected and binding.selected not in binding.options %}<option selected>{{ binding.selected }}</option>{% endif %}
+          {% for item in binding.options %}<option {% if item == binding.selected %}selected{% endif %}>{{ item }}</option>{% endfor %}
         </select></label>
+        {% if binding.selected %}
+        <p class="meta" id="binding-{{ binding.key }}">
+          <code>entryData.{{ binding.selected }}</code> · {{ binding.unit }} · 近 90 天有效样本
+          {{ binding.valid }}/{{ binding.samples }}{% if binding.samples %}（{{ (binding.valid * 100 / binding.samples)|round(1) }}%）{% endif %}
+        </p>
+        {% endif %}
+        </div>
         {% endfor %}
         <label>睡眠阶段时长单位<select name="sleep_stage_unit">
           {% for key, label in [('seconds', '秒'), ('minutes', '分钟'), ('ms', '毫秒')] %}

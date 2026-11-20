@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "coverage_status.html" import coverage_status %}
 {% macro local_time(value) -%}
   {% if value %}<time datetime="{{ value }}" title="{{ value }}">{{ value[:19]|replace('T', ' ') }}</time>{% else %}—{% endif %}
 {%- endmacro %}
@@ -70,6 +71,7 @@
 {% endif %}
 {% if filters %}
 <section class="filter-panel" aria-label="筛选运动活动">
+{% if review_return %}<a href="{{ review_return }}">返回复盘图表</a>{% endif %}
 {% if activity_span.first %}
 <p class="meta">本地活动日期范围（北京时间）{{ activity_span.first[:10] }} 至 {{ activity_span.last[:10] }}。可输入日期或选取建议。</p>
 {% else %}
@@ -77,6 +79,7 @@
 {% endif %}
 <datalist id="activity-days">{% for item in available_days %}<option value="{{ item.day }}"></option>{% endfor %}</datalist>
 <form method="get" action="/activities" class="activity-filters">
+  {% if review_return %}<input type="hidden" name="return_to" value="{{ review_return }}">{% endif %}
   <div class="activity-fields">
   <label>开始日期<input name="start" type="text" list="activity-days" placeholder="YYYY-MM-DD" maxlength="10" autocomplete="off" value="{{ start or '' }}"></label>
   <label>结束日期<input name="end" type="text" list="activity-days" placeholder="YYYY-MM-DD" maxlength="10" autocomplete="off" value="{{ end or '' }}"></label>
@@ -97,8 +100,8 @@
   </details>
 </form>
 <div class="quick-filters controls" aria-label="快捷日期">
-  {% for label, first in presets %}<a class="button secondary" href="/activities?start={{ first }}&amp;end={{ today }}&amp;{{ search_query }}">{{ label }}</a>{% endfor %}
-  <a class="button secondary" href="/activities?start=&amp;end=">全部日期</a>
+  {% for label, first in presets %}<a class="button secondary" href="/activities?start={{ first }}&amp;end={{ today }}&amp;{{ search_query }}{% if review_return %}&amp;return_to={{ review_return|urlencode }}{% endif %}">{{ label }}</a>{% endfor %}
+  <a class="button secondary" href="/activities?start=&amp;end={% if review_return %}&amp;return_to={{ review_return|urlencode }}{% endif %}">全部日期</a>
 </div>
 </section>
 {% if result_count is defined %}
@@ -110,8 +113,9 @@
 {% endif %}
 {% if charts is defined %}
 <script src="/static/chart.umd.min.js" defer></script>
-<script src="/static/charts.js?v=0.5.0" defer></script>
+<script src="/static/charts.js?v=0.7.0" defer></script>
 {% if show_period %}
+  <div id="training-charts">
   {% set chart_items = charts %}
   {% set chart_layout = 'primary-charts' %}
   {% include "chart_grid.html" %}
@@ -122,23 +126,32 @@
       {% include "chart_grid.html" %}
     {% endwith %}
   </details>
+  </div>
 {% else %}
   {% with chart_items = charts %}{% include "chart_grid.html" %}{% endwith %}
 {% endif %}
 {% endif %}
 {% if show_period %}
+<div id="training-reports">
 {% for title, totals in [('周报', weeks), ('月报', monthly_totals)] %}
 <section class="table-wrap">
   <h2>{{ title }}</h2>
-  <p>仅汇总所选范围内的本地记录。TSS 栏括号为有 TSS 的活动数 / 活动总数。</p>
+  <p>点击时段查看活动。TSS 栏括号为有 TSS 的活动数 / 活动总数。</p>
   {% if totals %}
   <div class="table-scroll" role="region" tabindex="0" aria-label="{{ title }}">
-<table><thead><tr>{% for h in ('时间', '次数', '距离（km）', '时长（分钟）', '爬升（m）', 'TSS') %}<th scope="col">{{ h }}</th>{% endfor %}</tr></thead>
-  <tbody>{% for item in totals %}<tr><th>{{ item.period }}</th><td>{{ item.n }}</td>{% for v in (item.km, item.minutes, item.climb) %}<td>{{ v if v is not none else '—' }}</td>{% endfor %}<td>{{ item.tss if item.tss is not none else '—' }}（{{ item.tss_count }}/{{ item.n }}）</td></tr>{% endfor %}</tbody></table>
+<table><thead><tr>{% for h in ('时间', '次数', '距离（km）', '时长（分钟）', '爬升（m）', 'TSS', '数据覆盖') %}<th scope="col">{{ h }}</th>{% endfor %}</tr></thead>
+  <tbody>{% for item in totals %}<tr><th scope="row"><a href="{{ item.link }}">{{ item.period }}</a>
+    <div>{{ item.start }} 至 {{ item.end }}</div></th><td>{{ item.n if item.n is not none else '—' }}</td>
+    {% for v in (item.km, item.minutes, item.climb) %}<td>{{ v if v is not none else '—' }}</td>{% endfor %}
+    <td>{{ item.tss if item.tss is not none else '—' }}{% if item.n %}（{{ item.tss_count }}/{{ item.n }}）{% endif %}</td>
+    <td>{{ coverage_status(item, [item.km, item.minutes, item.climb, item.tss]) }}
+      {% if item.confirmed_until and not item.covered %}<div>最近确认至 {{ local_time(item.confirmed_until) }}</div>{% endif %}</td>
+  </tr>{% endfor %}</tbody></table>
 </div>
   {% else %}<p>所选范围暂无本地活动。</p>{% endif %}
 </section>
 {% endfor %}
+</div>
 {% endif %}
 {% if sleep_rows %}
 <section class="table-wrap">
@@ -151,9 +164,9 @@
 </section>
 {% endif %}
 {% if route_maps is defined and route_maps|select|list %}
-<div class="controls"><button type="button" id="route-overview">预览匹配路线的位置</button></div>
-<script src="/static/route-map.js?v=0.5.0" defer></script>
-<section id="route-map" hidden>
+<div class="controls"><button type="button" id="route-overview" aria-controls="route-map">预览本页路线的位置</button></div>
+<script src="/static/route-map.js?v=0.7.0" defer></script>
+<section id="route-map" tabindex="-1" hidden>
   <h2>路线位置预览</h2>
   <p id="route-point" role="status"></p>
   <canvas width="680" height="280" role="img" aria-label="Suunto 路线位置点相对示意图"></canvas>
@@ -163,6 +176,7 @@
     <label>坐标<input id="route-coordinates" readonly></label><button type="button" id="copy-coordinates">复制坐标</button>
   </div>
   <p>可拖动查看位置点。{% if route_basemap %}打开底图会向 OpenStreetMap 发送所选点的坐标。{% endif %}</p>
+  <button type="button" class="secondary" id="route-map-close">返回路线列表</button>
   {% if route_basemap %}<a id="route-map-link" class="button" target="_blank" rel="noopener noreferrer" hidden>在 OpenStreetMap 打开底图</a>{% endif %}
 </section>
 {% endif %}
@@ -176,26 +190,26 @@
       {% if activity_keys is defined %}<th scope="col" role="columnheader">运动详情</th>{% endif %}
       {% if route_meta is defined %}<th scope="col">路线详情</th>{% endif %}
     </tr></thead>
-    <tbody {% if activity_keys is defined %}role="rowgroup"{% endif %}>{% for row in rows %}<tr {% if activity_keys is defined %}role="row"{% endif %}>
+    <tbody {% if activity_keys is defined %}role="rowgroup"{% endif %}>{% for row in rows %}<tr {% if activity_keys is defined %}role="row" id="activity-{{ loop.index0 }}"{% endif %}>
+      {% set meta = route_meta[loop.index0] if route_meta is defined else none %}
       {% for cell in row %}<td {% if activity_keys is defined %}role="cell"{% endif %}>
         {% if activity_keys is defined and loop.index > 2 %}<span class="cell-label" aria-hidden="true">{{ headings[loop.index0] }}</span>{% endif %}
         {% if activity_keys is defined and loop.first and cell %}
         <time datetime="{{ cell }}">{{ cell[:16]|replace('T', ' ') }}</time>
-      {% else %}{{ cell if cell is not none and cell != '' else '—' }}{% endif %}</td>{% endfor %}
+      {% else %}{{ cell if cell is not none and cell != '' else '—' }}{% endif %}
+      {% if meta and loop.first %}<div class="meta">最近更新 {{ local_time(meta.modified) }}</div>{% endif %}</td>{% endfor %}
       {% if activity_keys is defined %}
-      <td role="cell" class="activity-detail"><a href="/workout?id={{ activity_keys[loop.index0]|urlencode }}">查看详情</a></td>
+      <td role="cell" class="activity-detail"><a href="{{ detail_links[loop.index0] }}">查看详情</a></td>
       {% endif %}
       {% if route_maps is defined %}
       <td class="route-points" data-route="{{ row[0] or '' }}">
         {% for point in route_maps[loop.index0] %}
-        <button type="button" class="map-point" data-lat="{{ point.lat }}" data-lon="{{ point.lon }}"
+        <button type="button" class="map-point" aria-controls="route-map" data-lat="{{ point.lat }}" data-lon="{{ point.lon }}"
                 data-alt="{{ point.alt if point.alt is not none else '' }}">{{ point.label }}</button>
         {% else %}暂无位置点{% endfor %}
       </td>
-      {% set meta = route_meta[loop.index0] %}
       <td><details><summary>详情</summary>
         <p>可见性 {{ meta.visibility or '—' }} · 手表 {{ '已启用' if meta.watch is sameas true else '未启用' if meta.watch is sameas false else '—' }}</p>
-        <p>更新 {{ meta.modified or '—' }}</p>
         <ul>{% for p in route_maps[loop.index0] %}<li>{{ p.label }} {{ p.lat }}, {{ p.lon }}{% if p.alt is not none %} · {{ p.alt }} m{% endif %}</li>{% endfor %}</ul>
         {% if route_detail_available and route_maps[loop.index0]|length < 3 %}
         <form method="post" action="/route-details"><input type="hidden" name="key" value="{{ meta.id }}"><button>补齐位置点</button></form>
@@ -207,9 +221,16 @@
 </div>
   {% if pages is defined and pages > 1 %}
   <nav class="pagination" aria-label="活动分页">
-    {% if page > 1 %}<a href="/activities?start={{ start or '' }}&amp;end={{ end or '' }}&amp;page={{ page-1 }}&amp;{{ search_query }}">上一页</a>{% endif %}
+    {% if page > 1 %}<a href="/activities?start={{ start or '' }}&amp;end={{ end or '' }}&amp;page={{ page-1 }}&amp;{{ search_query }}{% if review_return %}&amp;return_to={{ review_return|urlencode }}{% endif %}">上一页</a>{% endif %}
     <span>第 {{ page }} / {{ pages }} 页</span>
-    {% if page < pages %}<a href="/activities?start={{ start or '' }}&amp;end={{ end or '' }}&amp;page={{ page+1 }}&amp;{{ search_query }}">下一页</a>{% endif %}
+    {% if page < pages %}<a href="/activities?start={{ start or '' }}&amp;end={{ end or '' }}&amp;page={{ page+1 }}&amp;{{ search_query }}{% if review_return %}&amp;return_to={{ review_return|urlencode }}{% endif %}">下一页</a>{% endif %}
+  </nav>
+  {% endif %}
+  {% if route_pages is defined and route_pages > 1 %}
+  <nav class="pagination" aria-label="路线分页">
+    {% if route_page > 1 %}<a href="/routes?page={{ route_page-1 }}&amp;{{ route_query }}">上一页</a>{% endif %}
+    <span>第 {{ route_page }} / {{ route_pages }} 页</span>
+    {% if route_page < route_pages %}<a href="/routes?page={{ route_page+1 }}&amp;{{ route_query }}">下一页</a>{% endif %}
   </nav>
   {% endif %}
   {% else %}

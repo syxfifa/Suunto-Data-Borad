@@ -1,5 +1,6 @@
 {% if workout is defined %}
 <section>
+  {% if workout_return %}<a href="{{ workout_return }}">返回筛选后的活动列表</a>{% endif %}
   <p>{{ workout.activityName or '未标注运动类型' }} · {{ workout_at or '—' }}</p>
   {% if workout.description %}<p>{{ workout.description }}</p>{% endif %}
   <dl>{% for label, value in metrics.items() %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
@@ -40,7 +41,9 @@
 {% endif %}
 {% if wellness_days is defined %}
 <div class="controls">{% for n in (7, 28, 90) %}<a href="/sleep-recovery?days={{ n }}">近 {{ n }} 天</a>{% endfor %}</div>
-<p>有效睡眠记录 {{ sleep_count }} 天。晨间身体资源取 05:00–10:00 首条读数。压力图统计有效样本占比。</p>
+<p>有有效睡眠时长的夜晚 {{ sleep_count }} 晚，MCP 原始睡眠样本 {{ sleep_samples }} 条。
+  {% if latest_sleep %}最近有效睡眠日期 {{ latest_sleep }}。{% endif %}</p>
+<p>晨间身体资源取北京时间 05:00–10:00 的首条有效读数，日均使用当天所有有效读数。压力图按有效样本计数。</p>
 <p>可在<a href="/settings#preferences">设置</a>中为已采到的字段配置睡眠阶段、HRV 和静息心率。</p>
 {% if latest_metrics %}
 <section><h2>最近读数</h2><ul>
@@ -61,7 +64,7 @@
   <p>步数有效 {{ daily_stats.days }} 天，缺失 {{ daily_stats.missing }} 天。
      日均 {{ daily_stats.average if daily_stats.average is not none else '—' }} 步。
      {% if step_goal %}目标 {{ step_goal }} 步，达标 {{ daily_stats.goal_days }} / {{ daily_stats.days }} 天。{% endif %}</p>
-  <p>仅统计所选来源。周/月柱标签为有效天数 / 所选日期中的天数。</p>
+  <p>当前来源：{{ provider or '暂无可用来源' }}。周/月柱标签为有效天数 / 所选日期中的天数。</p>
 </section>
 {% endif %}
 {% if route_filter is defined %}
@@ -70,9 +73,10 @@
   <label>运动类型<select name="sport"><option value="">全部</option>{% for name in route_sports %}<option {% if name == route_filter.sport %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
   <label>最短距离（km）<input type="number" name="km" min="0" step="any" value="{{ route_filter.km if route_filter.km is not none else '' }}"></label>
   <label>更新日期起<input type="date" name="updated" value="{{ route_filter.updated }}"></label>
+  <label>更新日期止<input type="date" name="updated_to" value="{{ route_filter.updated_to }}"></label>
   <label>手表状态<select name="watch"><option value="">全部</option><option value="on" {% if route_filter.watch == 'on' %}selected{% endif %}>已启用</option><option value="off" {% if route_filter.watch == 'off' %}selected{% endif %}>未启用</option></select></label>
   <label>可见性<select name="visibility"><option value="">全部</option><option value="PUBLIC" {% if route_filter.visibility == 'PUBLIC' %}selected{% endif %}>公开</option><option value="PRIVATE" {% if route_filter.visibility == 'PRIVATE' %}selected{% endif %}>私有</option></select></label>
   <button>筛选路线</button>
 </form>
-<p>共 {{ rows|length }} 条路线{% if route_summary %} · {% for name, count in route_summary %}{{ name }} {{ count }} 条{{ '、' if not loop.last else '' }}{% endfor %}{% endif %}</p>
+<p>共 {{ route_count }} 条路线{% if route_summary %} · {% for name, count in route_summary %}{{ name }} {{ count }} 条{{ '、' if not loop.last else '' }}{% endfor %}{% endif %}</p>
 {% endif %}

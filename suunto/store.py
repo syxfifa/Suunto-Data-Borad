@@ -89,6 +89,9 @@ CREATE TABLE IF NOT EXISTS source_success (
 CREATE TABLE IF NOT EXISTS removed_routes (
     record_key TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS route_absences (
+    record_key TEXT PRIMARY KEY
+);
 """
 
 
@@ -195,12 +198,18 @@ class Store:
             db.executemany("INSERT OR REPLACE INTO workout_details VALUES (?, ?, ?, ?)", details)
             if source == "routes":
                 db.executemany("DELETE FROM removed_routes WHERE record_key=?", ((key,) for key, _, _ in rows))
+                db.executemany("DELETE FROM route_absences WHERE record_key=?", ((key,) for key, _, _ in rows))
             if active_routes is not None:
                 db.execute("""
                     INSERT OR IGNORE INTO removed_routes
-                    SELECT record_key FROM records WHERE source='routes'
+                    SELECT record_key FROM route_absences
                     """)
                 db.executemany("DELETE FROM removed_routes WHERE record_key=?", ((key,) for key in active_routes))
+                db.execute("""
+                    INSERT OR IGNORE INTO route_absences
+                    SELECT record_key FROM records WHERE source='routes'
+                    """)
+                db.executemany("DELETE FROM route_absences WHERE record_key=?", ((key,) for key in active_routes))
 
     def coverage(self, source):
         return self.query("SELECT start_at, end_at FROM coverage WHERE source=? ORDER BY start_at", (source,))
@@ -294,10 +303,14 @@ class Store:
 
     def observed_entry_fields(self, source, since):
         return self.query("""
-            SELECT DISTINCT field.key AS name, field.type AS type FROM records
+            SELECT field.key AS name, field.type AS type, count(*) AS samples,
+                   sum(CASE WHEN field.type IN ('integer', 'real') AND field.value>=0 THEN 1 ELSE 0 END) AS nonnegative,
+                   sum(CASE WHEN field.type='text' AND field.value GLOB '????-??-??*'
+                            AND datetime(field.value) IS NOT NULL THEN 1 ELSE 0 END) AS timestamps
+            FROM records
             JOIN json_each(records.payload, '$.entryData') AS field
             WHERE records.source=? AND records.occurred_at>=? AND field.type IN ('text', 'integer', 'real')
-            ORDER BY name
+            GROUP BY field.key, field.type ORDER BY name
             """, (source, since))
 
     def status(self):

@@ -16,7 +16,7 @@ from .store import Store
 COMPONENTS = {"database": "suunto.sqlite", "settings": "config.json", "token": "token.json"}
 KNOWN_TABLES = {"records", "cursors", "sync_runs", "sync_errors", "coverage", "backfill",
                 "sync_failures", "sync_windows", "sync_queue", "source_success",
-                "workout_details", "removed_routes"}
+                "workout_details", "removed_routes", "route_absences"}
 
 
 @contextmanager

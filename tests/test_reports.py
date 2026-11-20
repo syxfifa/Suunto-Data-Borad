@@ -3,16 +3,31 @@ import json
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock
+from urllib.parse import urlencode
 
 from fastapi.testclient import TestClient
 
-from suunto.reports import acwr_series, aurora_week, daily_report, dates, intensity_charts, midnight, wellness
+from suunto.reports import acwr_series, aurora_week, daily_report, dates, intensity_charts, midnight, period_summary, wellness
 from suunto.store import Store
 from suunto.sync import Synchronizer, TZ
 from suunto.web import create_app
 
 
 class ReportsTest(unittest.TestCase):
+    def test_period_distinguishes_verified_zero_missing_fields_and_unsynced_time(self):
+        first = midnight(date(2026, 1, 1))
+        second = first + timedelta(days=1)
+        third = second + timedelta(days=1)
+        coverage = [{"start_at": first.isoformat(), "end_at": second.isoformat()}]
+        self.assertEqual(period_summary([], first, second, coverage)["n"], 0)
+        pending = period_summary([], first, third, coverage)
+        self.assertEqual((pending["n"], pending["km"], pending["confirmed_until"]), (None, None, second.isoformat()))
+        rows = [((first + timedelta(hours=7)).isoformat(), {"totalDistance": 5000, "tss": 20}),
+                ((first + timedelta(hours=8)).isoformat(), {"totalTimeSeconds": 1800}),
+                (second.isoformat(), {"totalDistance": 10000, "tss": 50})]
+        partial = period_summary(rows, first, second, coverage)
+        self.assertEqual((partial["n"], partial["km"], partial["tss"], partial["tss_count"]), (2, None, None, 1))
+
     def test_aurora_week_uses_observed_resources_and_preserves_missing_days(self):
         first, chosen, today = date(2026, 11, 16), date(2026, 11, 18), date(2026, 11, 19)
         coverage = [{"start_at": midnight(first).isoformat(), "end_at": midnight(chosen).isoformat()}]
@@ -94,6 +109,13 @@ class ReportsTest(unittest.TestCase):
                 self.assertIn("运动对比", browser.get("/compare?sport=Running&first=a&second=b").text)
                 self.assertIn("请选择两条不同的同类型活动", browser.get("/compare?sport=Running&first=a&second=c").text)
                 self.assertIn("急慢性负荷比", browser.get("/training?sport=Running&period=week").text)
+                back = "/training?period=week&sport=Running#training-charts"
+                activity = browser.get("/activities", params={"sport": "Running", "return_to": back}).text
+                self.assertIn('href="/training?period=week&amp;sport=Running#training-charts"', activity)
+                detail_back = "/activities?sport=Running&page=2#activity-0"
+                detail = browser.get("/workout?" + urlencode({"id": "a", "return_to": detail_back})).text
+                self.assertIn('href="/activities?sport=Running&amp;page=2#activity-0"', detail)
+                self.assertNotIn("返回复盘图表", browser.get("/activities?return_to=//external.example/").text)
                 self.assertNotIn('id="route-map-link"', browser.get("/routes?watch=on").text)
                 self.assertNotIn("Demo route", browser.get("/routes?watch=off").text)
                 self.assertEqual(browser.post("/preferences", data={"hrv": "unobserved"}, follow_redirects=False).status_code, 422)
@@ -103,6 +125,27 @@ class ReportsTest(unittest.TestCase):
                 self.assertIn('id="route-map-link"', browser.get("/routes?watch=on&km=").text)
                 browser.post("/settings", data={"minutes": 15})
                 self.assertIn('id="route-map-link"', browser.get("/routes").text)
+
+    def test_routes_page_filters_before_paginating(self):
+        with TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.initialize()
+            at = "2026-01-02T00:00:00+08:00"
+            run = store.start("test", at)
+            store.commit(run, "routes", [
+                (f"route-{i:02}", at, {"routeId": f"route-{i:02}", "description": f"骑行 {i:02}",
+                                      "modified": at, "startPoint": {"latitude": 30, "longitude": 120}})
+                for i in range(26)])
+            with TestClient(create_app(directory)) as browser:
+                page = browser.get("/routes", params={"q": "骑行", "updated_to": "2026-01-02", "page": 2}).text
+                self.assertIn("共 26 条路线", page)
+                self.assertIn("第 2 / 2 页", page)
+                self.assertIn("骑行 00", page)
+                self.assertNotIn("骑行 25", page)
+                self.assertIn("最近更新", page)
+                self.assertIn("updated_to=2026-01-02", page)
+                self.assertIn("30, 120", page)
+                self.assertNotIn("骑行 00", browser.get("/routes?updated_to=2026-01-01").text)
 
     def test_route_detail_uses_live_tool_and_retains_points_on_list_refresh(self):
         with TemporaryDirectory() as directory:

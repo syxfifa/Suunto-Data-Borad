@@ -35,11 +35,8 @@ function renderChart(canvas, series) {
         series.aurora ? {duration: 420, easing: "easeOutQuart"} : undefined,
       color: axis,
       onClick: (_, bars) => {
-        const range = series.ranges?.[bars[0]?.index];
-        if (range) {
-          const params = new URLSearchParams({start: range[0], end: range[1], sport: series.sport || ""});
-          location.assign("/activities?" + params);
-        }
+        const link = series.links?.[bars[0]?.index];
+        if (link) location.assign(link);
       },
       plugins: {legend: {display: datasets.length > 1, labels: {boxWidth: 12}}},
       scales: {
@@ -54,17 +51,72 @@ function renderChart(canvas, series) {
   });
 }
 
+function drawValues(container, series) {
+  const table = document.createElement("table");
+  const header = table.createTHead().insertRow();
+  const fields = Object.entries(series.columns);
+  const heading = (row, label, scope) => {
+    const cell = document.createElement("th");
+    cell.scope = scope;
+    cell.textContent = label;
+    row.append(cell);
+    return cell;
+  };
+  container.setAttribute("aria-label", series.title);
+  for (const label of ["日期或类别", ...fields.map(([name]) => name)]) heading(header, label, "col");
+  if (series.covered) heading(header, "数据状态", "col");
+  const rows = table.createTBody();
+  for (const [index, label] of series.labels.entries()) {
+    const row = rows.insertRow();
+    const name = heading(row, label, "row");
+    const href = series.links?.[index];
+    if (href) {
+      const link = document.createElement("a");
+      link.href = href;
+      link.textContent = label;
+      name.replaceChildren(link);
+    }
+    let missing = false;
+    for (const [, values] of fields) {
+      const value = values[index];
+      missing ||= value == null;
+      row.insertCell().textContent = value ?? "—";
+    }
+    if (series.covered) {
+      const status = [];
+      if (!series.covered[index]) status.push(href ? "同步未完成" : "日期未到");
+      if (series.covered[index] && !series.counts[index]) status.push("已确认无活动");
+      if (series.counts[index] && missing) status.push("部分活动缺少指标");
+      if (!status.length) status.push("已确认覆盖");
+      row.insertCell().textContent = status.join(" · ");
+    }
+  }
+  container.replaceChildren(table);
+}
+
 for (const element of document.querySelectorAll(".chart-data")) {
   const data = JSON.parse(element.textContent);
   const panel = element.parentElement;
   const canvas = panel.querySelector("canvas");
   const selector = panel.querySelector(".chart-metric");
+  const values = panel.querySelector(".chart-values");
+  const tableRegion = values.querySelector(".table-scroll");
+  let visibleSeries = selector ? data[Number(selector.value)] : data;
   let chart;
 
+  values.hidden = false;
+  values.addEventListener("toggle", () => {
+    if (values.open) drawValues(tableRegion, visibleSeries);
+  });
+
   function show(series) {
+    visibleSeries = series;
+    if (values.open) drawValues(tableRegion, series);
     chart?.destroy();
     chart = null;
-    const available = Object.values(series.columns).some((values) => values.some(Number.isFinite));
+    const available = typeof Chart !== "undefined" && Object.values(series.columns).some(
+      (column) => column.some(Number.isFinite),
+    );
     canvas.parentElement.hidden = !available;
     panel.querySelector(".chart-empty").hidden = available;
     canvas.setAttribute("aria-label", series.title);

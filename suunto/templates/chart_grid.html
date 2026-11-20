@@ -5,6 +5,7 @@
     {% if chart.labels %}
     <div class="plot"><canvas role="img" aria-label="{{ chart.title }}"></canvas></div>
     <p class="empty-state chart-empty" hidden>这段时间暂无数据。</p>
+    {% include "chart_values.html" %}
     <script type="application/json" class="chart-data">{{ chart|tojson }}</script>
     {% else %}
     <p class="empty-state">这段时间暂无数据。</p>

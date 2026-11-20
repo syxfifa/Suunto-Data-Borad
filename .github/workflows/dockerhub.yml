@@ -83,15 +83,17 @@ jobs:
           override="$RUNNER_TEMP/suunto-ci-compose.yml"
           export COMPOSE_FILE="docker-compose.yml:$override"
           export COMPOSE_PROJECT_NAME="suunto-fresh-ci"
-          printf 'services:\n  app:\n    image: "%s"\n  storage-init:\n    image: "%s"\n' "$SUUNTO_IMAGE" "$SUUNTO_IMAGE" > "$override"
+          printf 'services:\n  app:\n    image: "%s"\n' "$SUUNTO_IMAGE" > "$override"
           docker compose config --quiet
+          test "$(docker compose config --services)" = app
           docker compose up -d --no-build --wait --wait-timeout 90
           curl --fail --silent --show-error --data "minutes=15" http://127.0.0.1:7383/settings
           docker compose exec -T --user 10001:10001 app python - <<'PY'
           from pathlib import Path
           from suunto.store import SCHEMA_VERSION, Store
-          assert next(line for line in Path("/proc/1/status").read_text().splitlines()
-                      if line.startswith("Uid:")).split()[1:] == ["10001"] * 4
+          status = dict(line.split(":", 1) for line in Path("/proc/1/status").read_text().splitlines() if ":" in line)
+          assert status["Uid"].split() == status["Gid"].split() == ["10001"] * 4
+          assert int(status["CapEff"], 16) == int(status["CapPrm"], 16) == 0
           store = Store("/data")
           assert store.query("PRAGMA user_version")[0]["user_version"] == SCHEMA_VERSION
           at = "2026-01-01T08:00:00+08:00"
@@ -102,12 +104,13 @@ jobs:
             --format '{{.Name}}:{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}:{{.Source}}{{end}}{{end}}' \
             | grep -Fx "/suunto-data-borad:bind:$(pwd -P)/suunto-storage"
           docker compose down
-          docker compose run --rm --no-deps --entrypoint sh storage-init -ec \
+          docker compose run --rm --no-deps --entrypoint sh app -ec \
             'chown 0:0 /data /data/.maintenance.lock /data/suunto.sqlite /data/config.json'
           docker compose up -d --no-build --wait --wait-timeout 90
           curl --fail --silent --show-error http://127.0.0.1:7383/healthz
           probe="$(docker compose exec -T --user 10001:10001 app python -m suunto probe)" || test "$?" -eq 1
           printf '%s\n' "$probe" | python -c 'import json, sys; assert json.load(sys.stdin)["status"] == "authorization_required"'
+          docker compose exec -T --user 10001:10001 app python -c 'from suunto.store import Store; assert Store("/data").record("workouts", "fixture-activity")["totalDistance"] == 1000'
           docker compose exec -T --user 10001:10001 app python -c 'import json; from pathlib import Path; assert json.loads(Path("/data/config.json").read_bytes())["sync_interval_minutes"] == 15'
           umask 077
           snapshot="$RUNNER_TEMP/suunto-backup-ci.zip"
@@ -115,9 +118,8 @@ jobs:
           docker compose exec -T --user 10001:10001 app python -m suunto verify < "$snapshot"
           docker compose down
           restored="$RUNNER_TEMP/suunto-restore-data"
-          printf 'services:\n  app:\n    image: "%s"\n    volumes:\n      - "%s:/data"\n  storage-init:\n    image: "%s"\n    volumes:\n      - "%s:/data"\n' \
-            "$SUUNTO_IMAGE" "$restored" "$SUUNTO_IMAGE" "$restored" > "$override"
-          docker compose -p suunto-restore-ci run --rm --no-deps -T storage-init
+          printf 'services:\n  app:\n    image: "%s"\n    volumes:\n      - "%s:/data"\n' \
+            "$SUUNTO_IMAGE" "$restored" > "$override"
           docker compose -p suunto-restore-ci run --rm --no-deps -T app python -m suunto restore < "$snapshot"
           docker compose -p suunto-restore-ci run --rm --no-deps -T app python -m suunto restore --component settings < "$snapshot"
           docker compose -p suunto-restore-ci up -d --no-build --wait --wait-timeout 90
@@ -135,8 +137,8 @@ jobs:
         run: |
           if [[ -f "$RUNNER_TEMP/suunto-ci-compose.yml" ]]; then
             export COMPOSE_FILE="docker-compose.yml:$RUNNER_TEMP/suunto-ci-compose.yml"
-            docker compose -p suunto-fresh-ci logs --no-color app storage-init
-            docker compose -p suunto-restore-ci logs --no-color app storage-init
+            docker compose -p suunto-fresh-ci logs --no-color app
+            docker compose -p suunto-restore-ci logs --no-color app
           fi
       - name: Check whether publishing is enabled
         id: release

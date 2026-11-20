@@ -1,4 +1,4 @@
-"""Initialize the mounted data directory for the non-root dashboard."""
+"""Prepare the mounted data directory, then launch the dashboard without root."""
 
 import os
 import stat
@@ -34,12 +34,35 @@ def prepare_data():
         os.close(directory)
 
 
+def drop_privileges():
+    os.setgroups([])
+    os.setgid(APP_GID)
+    os.setuid(APP_UID)
+
+
 def main():
+    command = sys.argv[1:]
+    if command == ["--healthcheck"]:
+        drop_privileges()
+        from urllib.request import urlopen
+
+        with urlopen("http://127.0.0.1:7383/healthz", timeout=3):
+            return
+
+    # Older Compose files use a one-shot service without setuid/setgid capabilities.
+    if command == ["python", "-m", "suunto.container_start"]:
+        command = []
+
     try:
         prepare_data()
     except OSError as exc:
         sys.exit(f"Cannot initialize /data for UID {APP_UID}: {exc}. "
                  "Use a writable local NAS folder that supports Linux ownership.")
+
+    if command:
+        os.umask(0o077)
+        drop_privileges()
+        os.execvp(command[0], command)
 
 
 if __name__ == "__main__":

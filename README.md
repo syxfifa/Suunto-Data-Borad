@@ -1,6 +1,6 @@
 # Suunto Data Borad 使用手册
 
-当前版本 **V1.0.3**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。健康检查由镜像提供。
+当前版本 **V1.0.4**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。健康检查由镜像提供。
 
 ## 第一次部署
 
@@ -14,9 +14,9 @@ docker compose ps
 
 从同一内网打开 **`http://NAS内网IP:7383`**。容器显示 `healthy` 后，进入 **设置 → 连接 Suunto**，在同一浏览器完成登录和授权。确认后会自动返回看板并安排首次同步，通常从近 28 天开始。
 
-Compose 的 `7383:7383` 左侧是 NAS 端口，右侧是容器端口。`./suunto-storage:/data` 将项目目录内的文件夹挂载到容器。Docker 在首次部署时创建缺失目录。一次性的 `storage-init` 负责初始化该目录及看板文件的权限，成功退出后，`app` 以 UID/GID `10001:10001` 启动。看到 `storage-init` 显示 `Exited (0)` 属于正常状态。通过 `docker compose exec app ls -lah /data` 可以查看文件。
+Compose 的 `7383:7383` 左侧是 NAS 端口，右侧是容器端口。`./suunto-storage:/data` 将项目目录内的文件夹挂载到容器。Docker 在首次部署时创建缺失目录。镜像启动时自动初始化目录和看板文件的权限，随后以 UID/GID `10001:10001` 运行看板。通过 `docker compose exec --user 10001:10001 app ls -lah /data` 可以查看文件。
 
-更新时保留原项目目录和 `./suunto-storage`。重建容器时会继续读取该目录。已在其他路径或命名卷中保存的数据会留在原位置，安装到空目录时看板会从空库开始。此项目的 Git 和构建上下文均忽略 `suunto-storage`。
+更新时保留原项目目录和 `./suunto-storage`。重建容器时会继续读取该目录。从旧的双服务版升级时，替换 Compose 文件后执行 `docker compose pull` 和 `docker compose up -d --remove-orphans`，清理这个 Compose 项目遗留的 `storage-init` 容器。已在其他路径或命名卷中保存的数据会留在原位置，安装到空目录时看板会从空库开始。此项目的 Git 和构建上下文均忽略 `suunto-storage`。
 
 | 文件 | 内容 |
 | --- | --- |
@@ -59,7 +59,6 @@ docker compose exec -T --user 10001:10001 app python -m suunto verify < "$archiv
 
 ```sh
 docker compose stop app
-docker compose run --rm --no-deps -T storage-init
 docker compose run --rm --no-deps -T app python -m suunto restore --component database --replace --same-account < "$archive"
 docker compose run --rm --no-deps -T app python -m suunto restore --component settings --replace < "$archive"
 docker compose up -d

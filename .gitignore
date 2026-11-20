@@ -1,5 +1,6 @@
 /data/
 /suunto-data/
+/suunto-storage/
 /.deps/
 __pycache__/
 token.json

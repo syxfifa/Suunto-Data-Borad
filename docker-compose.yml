@@ -1,18 +1,30 @@
 services:
+  storage-init:
+    image: "jjsyx123/suunto-data-borad:latest"
+    user: "0:0"
+    command: ["python", "-m", "suunto.container_start"]
+    restart: "no"
+    read_only: true
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ./suunto-storage:/data
   app:
     image: "jjsyx123/suunto-data-borad:latest"
     container_name: suunto-data-borad
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     ports:
       - "7383:7383"
     volumes:
-      - suunto-storage:/data
+      - ./suunto-storage:/data
     healthcheck:
       test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:7383/healthz', timeout=3).close()"]
       interval: 15s
       timeout: 5s
       retries: 4
       start_period: 10s
-
-volumes:
-  suunto-storage:

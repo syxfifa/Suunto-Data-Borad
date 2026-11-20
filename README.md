@@ -1,22 +1,22 @@
 # Suunto Data Borad 使用手册
 
-当前版本 **V1.0.1**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Docker 管理的 **suunto-storage** 命名卷中。
+当前版本 **V1.0.2**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。
 
 ## 第一次部署
 
 将 [docker-compose.yml](docker-compose.yml) 粘贴到 NAS 的 Compose 项目界面并部署，或保存到已安装 Docker Compose v2 的 Linux 主机并在文件所在目录执行：
 
 ```sh
-docker compose pull app
+docker compose pull
 docker compose up -d
 docker compose ps
 ```
 
 从同一内网打开 **`http://NAS内网IP:7383`**。容器显示 `healthy` 后，进入 **设置 → 连接 Suunto**，在同一浏览器完成登录和授权。确认后会自动返回看板并安排首次同步，通常从近 28 天开始。
 
-Compose 的 `7383:7383` 左侧是 NAS 端口，右侧是容器端口。Docker 自动创建命名卷并挂载到容器内的 `/data`。项目目录中无需创建同名文件夹或修改权限。通过 `docker compose exec app ls -lah /data` 可以查看卷内文件。
+Compose 的 `7383:7383` 左侧是 NAS 端口，右侧是容器端口。`./suunto-storage:/data` 将项目目录内的文件夹挂载到容器。Docker 在首次部署时创建缺失目录。一次性的 `storage-init` 负责初始化该目录及看板文件的权限，成功退出后，`app` 以 UID/GID `10001:10001` 启动。看到 `storage-init` 显示 `Exited (0)` 属于正常状态。通过 `docker compose exec app ls -lah /data` 可以查看文件。
 
-更新时沿用同一 Compose 项目和命名卷。保留卷时，重建容器后仍可使用原数据。`docker compose down -v` 会删除项目的命名卷。如果原部署用的是 `./suunto-data` 文件夹，直接改用新卷会从空库开始，原文件仍在原处。
+更新时保留原项目目录和 `./suunto-storage`。重建容器时会继续读取该目录。已在其他路径或命名卷中保存的数据会留在原位置，安装到空目录时看板会从空库开始。此项目的 Git 和构建上下文均忽略 `suunto-storage`。
 
 | 文件 | 内容 |
 | --- | --- |
@@ -44,21 +44,22 @@ Compose 的 `7383:7383` 左侧是 NAS 端口，右侧是容器端口。Docker �
 - **手动同步**。打开 **设置 → 同步 → 立即同步**。自动同步默认每 30 分钟，间隔可在设置页调整。
 - **补历史**。打开 **设置 → 历史补采**，选近 90 天、近一年或自定义日期。可以暂停后继续。待修复日期和失败日志也在设置中查看。
 - **导出 CSV**。在 **设置 → 同步 → 自定义导出** 选择数据来源、日期和格式。运动活动页可以导出当前筛选的全部结果。分享模式会省略坐标、名称、设备来源、编号和原始 JSON。
-- **维护**。在 **设置 → 维护** 查看版本、授权、SQLite 占用或下载脱敏诊断。通过可信 HTTPS 访问时，可启用看板密码。多实例需使用不同的 Compose 项目名、容器名和 NAS 主机端口，以隔离各实例的数据卷。
+- **维护**。在 **设置 → 维护** 查看版本、授权、SQLite 占用或下载脱敏诊断。通过可信 HTTPS 访问时，可启用看板密码。多实例分别使用不同的项目目录、容器名和 NAS 主机端口。
 
 在 NAS 项目目录执行备份。默认包括数据库和已有设置，确需备份授权时在 `backup` 后加 `--include-token`。归档应存放在私有目录。
 
 ```sh
 umask 077
 archive="$HOME/suunto-backup-$(date +%F-%H%M%S).zip"
-docker compose exec -T app python -m suunto backup > "$archive"
-docker compose exec -T app python -m suunto verify < "$archive"
+docker compose exec -T --user 10001:10001 app python -m suunto backup > "$archive"
+docker compose exec -T --user 10001:10001 app python -m suunto verify < "$archive"
 ```
 
-恢复前备份当前数据，确认目标 Compose 项目和数据卷。在项目目录先停止 app，用已校验的归档恢复数据库和设置。确认归档与目标卷属于同一 Suunto 账号。
+恢复前备份当前数据，确认目标 Compose 项目和数据目录。在项目目录先停止 app，用已校验的归档恢复数据库和设置。确认归档与目标数据属于同一 Suunto 账号。
 
 ```sh
 docker compose stop app
+docker compose run --rm --no-deps -T storage-init
 docker compose run --rm --no-deps -T app python -m suunto restore --component database --replace --same-account < "$archive"
 docker compose run --rm --no-deps -T app python -m suunto restore --component settings --replace < "$archive"
 docker compose up -d
@@ -66,8 +67,8 @@ docker compose up -d
 
 ## 排查与发布
 
-- **打不开看板**。检查 `docker compose ps`、`docker compose logs --tail 100 app`，以及 TCP `7383` 或容器名 `suunto-data-borad` 是否被其他服务占用。若日志提示无法写入 `/data`，核对项目是否实际使用 `suunto-storage:/data`。
+- **打不开看板**。检查 `docker compose ps`、`docker compose logs --tail 100 app`，以及 TCP `7383` 或容器名 `suunto-data-borad` 是否被其他服务占用。若日志提示 `Cannot initialize /data`，确认数据目录是 NAS 本机的可写文件夹，并支持 Linux 文件所有权。某些网络共享会禁止容器设置所有者。
 - **授权失效**。从当前看板地址进入设置，重新点「连接 Suunto」。反代需通过 `FORWARDED_ALLOW_IPS` 将实际代理地址配置为可信来源。
 - **限流或数据缺失**。在设置页查看连接状态、数据覆盖和重试时间。可选指标以已同步到的字段为准。
-- **更新镜像**。默认使用 `jjsyx123/suunto-data-borad:latest`。执行 `docker compose pull app` 和 `docker compose up -d` 后，在维护页核对版本。
-- **开发验证**。容器内可执行 `docker compose exec app python -m unittest discover -s tests -v`。GitHub Actions 在 `main` 验证双架构、浏览器授权、两端端口、备份恢复。镜像发布使用仓库 Secret `DOCKERHUB_TOKEN`。
+- **更新镜像**。默认使用 `jjsyx123/suunto-data-borad:latest`。执行 `docker compose pull` 和 `docker compose up -d` 后，在维护页核对版本。
+- **开发验证**。容器内可执行 `docker compose exec --user 10001:10001 app python -m unittest discover -s tests -v`。GitHub Actions 在 `main` 验证双架构、浏览器授权、自动初始化、备份恢复。镜像发布使用仓库 Secret `DOCKERHUB_TOKEN`。

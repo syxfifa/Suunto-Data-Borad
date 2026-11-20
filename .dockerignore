@@ -1,5 +1,6 @@
 data
 suunto-data
+suunto-storage
 .deps
 .git
 **/__pycache__

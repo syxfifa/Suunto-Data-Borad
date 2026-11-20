@@ -1,5 +1,10 @@
 # Suunto Data Borad 变更记录
 
+## V1.0.2
+
+- 默认挂载 `./suunto-storage:/data`。独立的 `storage-init` 初始化数据目录后退出，主看板始终以 UID/GID 10001 运行。
+- CI 验证全新目录与已有文件的权限初始化、容器重建和隔离恢复。
+
 ## V1.0.1
 
 - Compose 默认拉取 `latest`，容器名固定为 `suunto-data-borad`，使用 Docker 命名卷 `suunto-storage`，部署时无需调整 NAS 文件夹权限。

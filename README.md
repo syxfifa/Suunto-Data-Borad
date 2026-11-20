@@ -108,7 +108,7 @@ docker compose exec -T app python -m suunto verify < "$archive"
 
 归档默认包含数据库和已存在的 `config.json`。仅使用 `backup --include-token` 才会备份 OAuth 凭据。ZIP 本身没有加密。看板密码哈希保存在独立的 `access.json`，不会打包。归档、个人配置和导出文件应留在私有目录。
 
-自 `0.8.0` 起，备份清单包含应用版本、SQLite `user_version`、UTC 创建时间及组件大小和 SHA-256。校验与恢复都会检查组件完整性，也接受升级前生成的旧 ZIP。数据库在新版首次启动时从未标记版本迁移到结构版本 1。恢复新版归档请用支持该清单的镜像。
+自 `0.8.1` 起，备份清单包含应用版本、SQLite `user_version`、UTC 创建时间及组件大小和 SHA-256。校验与恢复都会检查组件完整性，也接受升级前生成的旧 ZIP。数据库在新版首次启动时从未标记版本迁移到结构版本 1。恢复新版归档请用支持该清单的镜像。
 
 从 `0.3.x` 首次升级时，旧容器没有备份命令。定义上面的 `archive` 变量后，先拉新镜像，用同一 Compose 项目下的新镜像读取原卷。验证成功后再重建服务。
 
@@ -172,7 +172,7 @@ docker compose exec app python -m unittest discover -s tests -v
 2. 工作流的 Docker Hub 用户名为 `jjsyx123`。在 GitHub 仓库的 Settings → Secrets and variables → Actions 添加具有镜像写权限的 `DOCKERHUB_TOKEN`。
 3. 推送到 `main` 后，工作流会构建 AMD64 和 ARM64 镜像，在两种架构运行测试。Chromium 用模拟服务验证 IP、不同域名与端口、HTTPS 反代授权和日期筛选。Compose 使用 `0.7.0` 镜像生成旧数据卷，再验证原地升级和全新卷恢复。验收通过后发布 `latest`、12 位提交哈希和版本标签。缺少令牌时，工作流只构建和测试。
 
-现有 Compose 使用 `jjsyx123/suunto-data-borad:latest`，手动拉取会跟随新发布。希望固定部署版本时，在 NAS 的 Compose 文件中使用 `image: "jjsyx123/suunto-data-borad:0.8.0"`。需要升级时改成下一版本标签再拉取，回退时改回已验证的标签。私有镜像需先在 NAS 的终端运行 `docker login`。
+现有 Compose 使用 `jjsyx123/suunto-data-borad:latest`，手动拉取会跟随新发布。希望固定部署版本时，在 NAS 的 Compose 文件中使用 `image: "jjsyx123/suunto-data-borad:0.8.1"`。需要升级时改成下一版本标签再拉取，回退时改回已验证的标签。私有镜像需先在 NAS 的终端运行 `docker login`。
 
 ## 版本管理
 

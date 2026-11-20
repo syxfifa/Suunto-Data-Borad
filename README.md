@@ -1,6 +1,6 @@
 # Suunto Data Borad 使用手册
 
-当前版本 **V1.0.2**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。
+当前版本 **V1.0.3**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。健康检查由镜像提供。
 
 ## 第一次部署
 

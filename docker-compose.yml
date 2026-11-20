@@ -3,7 +3,7 @@ services:
     image: "jjsyx123/suunto-data-borad:latest"
     user: "0:0"
     command: ["python", "-m", "suunto.container_start"]
-    restart: "no"
+    healthcheck: {disable: true}
     read_only: true
     network_mode: none
     cap_drop: [ALL]
@@ -22,9 +22,3 @@ services:
       - "7383:7383"
     volumes:
       - ./suunto-storage:/data
-    healthcheck:
-      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:7383/healthz', timeout=3).close()"]
-      interval: 15s
-      timeout: 5s
-      retries: 4
-      start_period: 10s

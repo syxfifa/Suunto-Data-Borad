@@ -1,5 +1,9 @@
 # Suunto Data Borad 变更记录
 
+## V1.0.3
+
+- 镜像内置 HTTP 健康检查，精简 Compose 配置。初始化服务成功退出后启动非 root 看板。
+
 ## V1.0.2
 
 - 默认挂载 `./suunto-storage:/data`。独立的 `storage-init` 初始化数据目录后退出，主看板始终以 UID/GID 10001 运行。

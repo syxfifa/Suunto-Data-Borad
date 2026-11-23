@@ -216,8 +216,7 @@ jobs:
               [.artifact.type, .artifact.name, .artifact.version, .vulnerability.id, .vulnerability.fix.state] | @tsv' \
               "$RUNNER_TEMP/suunto-release/grype-$arch.json" | sort -u
           done
-          # Report OS advisories separately. Block releases with a fixed high/critical Python finding.
-          jq -e -s 'all(.[].matches[]; (.artifact.type != "python" or .vulnerability.fix.state != "fixed" or
+          jq -e -s 'all(.[].matches[]; (.vulnerability.fix.state != "fixed" or
             (.vulnerability.severity != "High" and .vulnerability.severity != "Critical")))' "$RUNNER_TEMP"/suunto-release/grype-*.json
       - name: Check whether publishing is enabled
         id: release

@@ -1,5 +1,10 @@
 # Suunto Data Borad 变更记录
 
+## V1.0.10
+
+- 更新镜像内的 Debian 基础包，验证 glibc 与 zlib 已安装包含安全修复的版本。
+- 发布检查阻止已有修复版本的高危或严重基础系统及 Python 依赖漏洞。
+
 ## V1.0.9
 
 - 更新 FastAPI、Starlette、Uvicorn 和表单解析依赖。校验 HTTP Host，按 ASGI 路由路径判断鉴权例外。

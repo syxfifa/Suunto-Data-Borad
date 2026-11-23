@@ -27,6 +27,13 @@ def add_review_links(series, sport, back, today):
                          for start, end in item["ranges"]]
 
 
+def report_date_links(request, current, choices, **filters):
+    if request.query_params.get("chart_view") == "table":
+        filters["chart_view"] = "table"
+    return [(f"近 {days} 天", request.url.path + "?" + urlencode({**filters, "days": days}), days == current)
+            for days in choices]
+
+
 def report_router(store, config, dashboard, mcp_state, retry_after):
     router = APIRouter()
 
@@ -58,8 +65,9 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
                    "28": ("近 28 天", day - timedelta(days=27))}
         overview = overview if overview in periods else "week"
         label, summary_start = periods[overview]
-        review_query = urlencode({"overview": overview})
-        back = "/?" + urlencode({"day": chosen, "overview": overview}) + "#aurora-review"
+        view_args = {"chart_view": "table"} if request.query_params.get("chart_view") == "table" else {}
+        review_query = urlencode({"overview": overview, **view_args})
+        back = "/?" + urlencode({"day": chosen, "overview": overview, **view_args}) + "#aurora-review"
         add_review_links(review_charts[1], "", back, today.date())
         selected = snapshots[(chosen - review_start).days]
         selected_end = min(today, midnight(chosen + timedelta(days=1)))
@@ -72,7 +80,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
             previous_end = today - timedelta(days=7)
             previous_rows = records(store, "workouts", previous_start, previous_end)
             prior = period_summary(previous_rows, previous_start, previous_end, intervals)
-        period_links = [(key, name, "/?" + urlencode({"day": chosen, "overview": key}) + "#overview-summary")
+        period_links = [(name, "/?" + urlencode({"day": chosen, "overview": key, **view_args}) + "#overview-summary", key == overview)
                         for key, (name, _) in periods.items()]
         stats = store.home_sync_status()
         connection = mcp_state()
@@ -121,15 +129,19 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
         history = [(at, row) for at, row in context_rows if not selected or sport_name(row) == selected]
         current = [(at, row) for at, row in history if at[:10] >= first_day.isoformat()]
         series = workout_chart(current, weekly, first_day, today, coverage, TZ, extended=True)
-        back = "/training?" + urlencode({"period": "week" if weekly else "day", "sport": selected, "days": days, "report": report})
+        view_args = {"chart_view": "table"} if request.query_params.get("chart_view") == "table" else {}
+        back = "/training?" + urlencode({"period": "week" if weekly else "day", "sport": selected,
+                                        "days": days, "report": report, **view_args})
         add_review_links(series, selected, back + "#training-charts", today)
         totals = grouped_totals(current, first_day, today, coverage, monthly=report == "month")
         for item in totals:
             item["link"] = activity_link(item["start"], item["end"], selected, back + "#training-reports")
         report_links = {key: "/training?" + urlencode({"period": period, "days": days,
-                        "sport": selected, "report": key}) + "#training-reports" for key in ("week", "month")}
+                        "sport": selected, "report": key, **view_args}) + "#training-reports" for key in ("week", "month")}
         acwr = acwr_series(history, first_day, today, coverage)
-        return dashboard(request, "训练趋势", show_period=True, weekly=weekly,
+        report_ranges = report_date_links(request, days, (7, 28, 90, 365),
+                                          period="week" if weekly else "day", sport=selected, report=report)
+        return dashboard(request, "训练趋势", show_period=True, weekly=weekly, report_ranges=report_ranges,
                          charts=series[:2] + [series[4]], sport=selected, sports=sports, days=days,
                          advanced_charts=series[2:4] + series[5:] + [acwr],
                          acwr_days=sum(value is not None for value in acwr["columns"]["ACWR"]),
@@ -146,16 +158,19 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
         activity_span = store.query(
             "SELECT min(occurred_at) AS first, max(occurred_at) AS last FROM records WHERE source='workouts'"
         )[0]
-        presets = [(f"近 {days} 天", (today - timedelta(days=days-1)).isoformat()) for days in (7, 28, 90)]
-        presets.append(("本月", today.replace(day=1).isoformat()))
+        presets = [(f"近 {days} 天", today - timedelta(days=days-1)) for days in (7, 28, 90)]
+        presets.extend((("本月", today.replace(day=1)), ("全部日期", None)))
         activity_types = store.query("""
             SELECT DISTINCT coalesce(nullif(json_extract(payload, '$.activityName'), ''), '未标注运动类型') AS sport
             FROM records WHERE source='workouts' ORDER BY sport
         """)
         search_state = {"sport": sport, "q": q, "km": km, "minutes": minutes, "tss": tss, "sort": sort, "order": order}
-        filters = {"filters": True, "activity_span": activity_span,
-                   "presets": presets, "today": today, "activity_types": activity_types, "search": search_state,
-                   "review_return": local_return(return_to, "/", "/training"),
+        review_return = local_return(return_to, "/", "/training")
+        range_filters = {**search_state, "return_to": review_return or ""}
+        filters = {"filters": True, "activity_span": activity_span, "activity_types": activity_types,
+                   "search": search_state, "review_return": review_return,
+                   "activity_ranges": [(name, "/activities?" + urlencode({**range_filters, "start": first or "",
+                                       "end": today if first else ""}), False) for name, first in presets],
                    "search_query": urlencode({key: value for key, value in search_state.items() if value not in ("", None)})}
         start, end = start.strip(), end.strip()
         try:
@@ -170,8 +185,13 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
             km, minutes, tss = lower_bound(km, 100000), lower_bound(minutes, 600000), lower_bound(tss, 100000)
         except ValueError:
             return dashboard(request, "运动活动", **filters, start=start, end=end, message="请输入有效的筛选数值。")
-        if first is None and last is None and not {"start", "end"}.intersection(request.query_params):
+        default_range = first is None and last is None and not {"start", "end"}.intersection(request.query_params)
+        if default_range:
             first = today - timedelta(days=27)
+        if default_range or last == today or first is None and last is None:
+            active_label = next((name for name, preset in presets if preset == first), None)
+            filters["activity_ranges"] = [(name, href, name == active_label)
+                                          for name, href, _ in filters["activity_ranges"]]
         begin = datetime.combine(first, clock_time.min, TZ) if first else None
         finish = datetime.combine(last + timedelta(days=1), clock_time.min, TZ) if last else None
         count, page, pages, rows, keys = workout_page(
@@ -286,7 +306,8 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
             metric_states.append((name, readings.get(title), message))
         groups = [(key, title, [item for item in charts if item["group"] == key])
                   for key, title in (("sleep", "睡眠"), ("recovery", "恢复"), ("metrics", "HRV 与静息心率"))]
-        return dashboard(request, "睡眠与恢复", charts=charts, wellness_groups=groups,
+        report_ranges = report_date_links(request, days, (7, 28, 90))
+        return dashboard(request, "睡眠与恢复", charts=charts, wellness_groups=groups, report_ranges=report_ranges,
                          wellness_days=days, sleep_rows=sleep_rows, metric_states=metric_states, latest_balance=latest_balance,
                          sleep_count=count, sleep_samples=sum(at[:10] >= first for at, _ in sleep),
                          latest_sleep=next((row for row in sleep_rows if row[-1] is not None), None))
@@ -302,16 +323,19 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
         preferred = source if "source" in request.query_params else preferences.get("primary_source")
         charts, _, selected, metrics = daily_report(recent("daily_activity", days),
             dates(today - timedelta(days=days-1), today), preferred if preferred in providers else "", goal, period)
+        selected_source = preferred if preferred in providers else ""
+        report_ranges = report_date_links(request, days, (7, 28, 90, 365), period=period, source=selected_source)
         return dashboard(request, "日常活动", charts=charts, daily_stats=metrics, providers=providers,
+                         report_ranges=report_ranges,
                          provider=selected, daily_period=period, daily_days=days, step_goal=goal,
-                         daily_source=preferred if preferred in providers else "",
+                         daily_source=selected_source,
                          daily_saved={"source": "已保存常用来源。", "goal": "已保存每日步数目标。"}
                          .get(request.query_params.get("saved")))
 
     @router.post("/daily-activity/preferences")
     async def daily_preferences(action: Annotated[str, Form()], days: Annotated[int, Form(ge=7, le=366)],
                                 period: Annotated[str, Form()], source: Annotated[str, Form()] = "",
-                                step_goal: Annotated[str, Form()] = ""):
+                                step_goal: Annotated[str, Form()] = "", chart_view: Annotated[str, Form()] = ""):
         if period not in ("day", "week", "month") or source and source not in store.daily_providers():
             raise HTTPException(422, "请选择有效的日常活动时间范围或数据来源。")
         if action == "source":
@@ -327,7 +351,10 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
         else:
             raise HTTPException(422, "未知的偏好操作。")
         await asyncio.to_thread(config.update, changes)
-        query = urlencode({"days": days, "period": period, "source": source, "saved": action})
+        params = {"days": days, "period": period, "source": source, "saved": action}
+        if chart_view == "table":
+            params["chart_view"] = "table"
+        query = urlencode(params)
         return RedirectResponse("/daily-activity?" + query, status_code=303, headers=NO_CACHE)
 
     return router

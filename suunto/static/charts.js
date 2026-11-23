@@ -119,7 +119,7 @@ function drawValues(container, series) {
     }
     if (series.covered) {
       const status = [];
-      if (!series.covered[index]) status.push(href ? "同步未完成" : "日期未到");
+      if (!series.covered[index]) status.push(href ? "同步未确认完整" : "日期未到");
       if (series.covered[index] && !series.counts[index]) status.push("已确认无活动");
       if (series.missing?.[index] ?? (series.counts[index] && missing)) status.push("部分活动缺少指标");
       if (!status.length) status.push("已确认覆盖");
@@ -163,12 +163,28 @@ for (const element of document.querySelectorAll(".chart-data")) {
       });
       legend.hidden = !legend.childElementCount;
     }
-    const available = typeof Chart !== "undefined" &&
-      (states.length > 0 || Object.values(series.columns).some(column => column.some(Number.isFinite)));
-    canvas.parentElement.hidden = !available;
-    panel.querySelector(".chart-empty").hidden = available;
+    const empty = panel.querySelector(".chart-empty");
+    const failure = panel.querySelector(".chart-failure");
+    const hasData = Object.values(series.columns).some(column => column.some(Number.isFinite));
+    canvas.parentElement.hidden = true;
     canvas.setAttribute("aria-label", series.title);
-    if (available) chart = renderChart(canvas, series);
+    empty.hidden = hasData;
+    failure.hidden = true;
+    if (!hasData) return;
+    if (typeof Chart === "undefined") {
+      failure.hidden = false;
+      values.open = true;
+      return;
+    }
+    canvas.parentElement.hidden = false;
+    try {
+      chart = renderChart(canvas, series);
+    } catch (error) {
+      canvas.parentElement.hidden = true;
+      failure.hidden = false;
+      values.open = true;
+      console.error("Could not render Suunto chart", error);
+    }
   }
 
   if (selector) {

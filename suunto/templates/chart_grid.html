@@ -3,15 +3,7 @@
   <section class="chart-panel">
     {% if chart_heading == 'h3' %}<h3>{{ chart.title }}</h3>{% else %}<h2>{{ chart.title }}</h2>{% endif %}
     {% if chart.hint %}<p class="meta">{{ chart.hint }}</p>{% endif %}
-    {% if chart.labels %}
-    <div class="plot"><canvas role="img" aria-label="{{ chart.title }}"></canvas></div>
-    <p class="empty-state chart-empty" hidden>这段时间暂无数据。</p>
-    {% if chart.covered is defined %}<ul class="chart-coverage controls" aria-label="图表数据状态" hidden></ul>{% endif %}
     {% include "chart_values.html" %}
-    <script type="application/json" class="chart-data">{{ chart|tojson }}</script>
-    {% else %}
-    <p class="empty-state">这段时间暂无数据。</p>
-    {% endif %}
   </section>
   {% endfor %}
 </div>

@@ -1,0 +1,11 @@
+{% macro date_links(choices, label='快捷日期') %}
+<nav class="section-nav report-switch date-links" aria-label="{{ label }}">
+  {% for name, href, active in choices %}
+  <a href="{{ href }}"{% if active %} aria-current="page"{% endif %}>{{ name }}</a>
+  {% endfor %}
+</nav>
+{% endmacro %}
+
+{% macro empty_state(message, action=none) %}
+<p class="empty-state">{{ message }}{% if action %} <a href="{{ action[0] }}">{{ action[1] }}</a>{% endif %}</p>
+{% endmacro %}

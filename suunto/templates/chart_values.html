@@ -1,4 +1,24 @@
-<details class="chart-values" hidden>
-  <summary>查看图表数据</summary>
-  <div class="table-scroll" role="region" tabindex="0"></div>
-</details>
+{% from "chart_table.html" import table %}
+{% from "page_controls.html" import empty_state %}
+{% set table_view = request.query_params.get("chart_view") == "table" %}
+{% set series_items = pair if pair is defined else [chart] %}
+{% if table_view %}
+  {% for series in series_items %}
+    {% if pair is defined %}<h3>{{ series.title }}</h3>{% endif %}
+    {% if series.labels %}{{ table(series) }}{% else %}{{ empty_state('所选时段没有可用的图表数据。', chart_next|default(none)) }}{% endif %}
+  {% endfor %}
+{% elif series_items[0].labels %}
+  <div class="plot" hidden><canvas role="img" aria-label="{{ series_items[0].title }}"></canvas></div>
+  <div class="chart-empty" hidden>{{ empty_state('所选时段没有可用的图表数据。', chart_next|default(none)) }}</div>
+  <div class="chart-failure">
+    {{ empty_state('图表未加载。', (request.url.path ~ '?' ~ dict(request.query_params, chart_view='table')|urlencode, '打开数据表')) }}
+  </div>
+  {% if series_items[0].covered is defined %}<ul class="chart-coverage controls" aria-label="图表数据状态" hidden></ul>{% endif %}
+  <details class="chart-values" hidden>
+    <summary>查看图表数据</summary>
+    <div class="table-scroll" role="region" tabindex="0"></div>
+  </details>
+  <script type="application/json" class="chart-data">{{ (pair if pair is defined else chart)|tojson }}</script>
+{% else %}
+  {{ empty_state('所选时段没有可用的图表数据。', chart_next|default(none)) }}
+{% endif %}

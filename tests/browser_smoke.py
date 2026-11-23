@@ -154,9 +154,15 @@ def exercise(browser, origin, fixture, width):
         })])
         # Exercise the interactive links as well as the manually submitted date filter.
         page.goto(origin + "/training?sport=Running")
-        page.locator(".chart-values summary").first.press("Enter")
+        page.get_by_role("navigation", name="快捷日期").get_by_role("link", name="近 7 天").click()
+        expect(page.get_by_role("navigation", name="快捷日期").get_by_role("link", name="近 7 天")).to_have_attribute("aria-current", "page")
+        assert parse_qs(urlsplit(page.url).query)["sport"] == ["Running"]
+        chart_values = page.locator(".chart-values").first
+        summary = chart_values.locator("summary")
+        expect(summary).to_be_visible()
+        summary.press("Enter")
         day = when.date().isoformat()
-        page.locator(".chart-values[open]").get_by_role("link", name=day, exact=True).click()
+        chart_values.get_by_role("link", name=day, exact=True).click()
         expect(page.get_by_text("共 1 条活动", exact=True)).to_be_visible()
         page.locator("input[name=start]").fill(day)
         page.locator("input[data-date-field=end]").fill(day)
@@ -166,6 +172,12 @@ def exercise(browser, origin, fixture, width):
         expect(page.get_by_role("link", name="返回复盘图表")).to_be_visible()
         if not page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"):
             raise AssertionError(f"Dashboard exceeds {width}px page width")
+        compare_nav = page.get_by_role("navigation", name="主导航").locator('a[href="/compare"]')
+        expect(page.get_by_role("link", name="打开运动对比")).to_be_visible()
+        if width < 624:
+            expect(compare_nav).to_be_hidden()
+        else:
+            expect(compare_nav).to_be_visible()
         filtered = urlsplit(page.url)
         page.get_by_role("link", name="查看详情").click()
         expect(page.get_by_text("48", exact=True)).to_be_hidden()
@@ -211,6 +223,31 @@ def exercise(browser, origin, fixture, width):
         page.get_by_role("link", name="月报", exact=True).click()
         expect(page.get_by_role("heading", name="月报", exact=True)).to_be_visible()
         expect(page.get_by_role("heading", name="周报", exact=True)).to_have_count(0)
+        # Distinguish empty data from script failure, and verify the server-rendered fallback.
+        page.goto(origin + "/daily-activity")
+        expect(page.locator(".chart-empty").first).to_contain_text("没有可用的图表数据")
+        expect(page.locator(".chart-failure").first).to_be_hidden()
+        for script in ("**/static/chart.umd.min.js", "**/static/charts.js?*"):
+            context.route(script, lambda route: route.abort())
+            try:
+                page.goto(origin + "/training?sport=Running&days=7")
+                failure = page.locator(".chart-failure").first
+                expect(failure).to_be_visible()
+                expect(page.locator(".chart-empty").first).to_be_hidden()
+                if script.endswith("chart.umd.min.js"):
+                    expect(page.locator(".chart-values").first.get_by_role("table")).to_be_visible()
+                failure.get_by_role("link", name="打开数据表").click()
+                assert parse_qs(urlsplit(page.url).query)["sport"] == ["Running"]
+                assert parse_qs(urlsplit(page.url).query)["days"] == ["7"]
+                expect(page.locator(".chart-panel").first.get_by_role("table")).to_be_visible()
+                expect(page.locator(".chart-panel").first.get_by_role("link", name=day, exact=True)).to_be_visible()
+                expect(page.locator(".chart-panel").first.get_by_text("已确认无活动")).to_be_visible()
+                page.get_by_role("link", name="返回图表").click()
+                assert "chart_view" not in parse_qs(urlsplit(page.url).query)
+            finally:
+                context.unroute(script)
+        page.goto(origin + "/?chart_view=table")
+        expect(page.locator(".aurora-chart").last.get_by_role("table").first).to_be_visible()
         page.goto(origin + "/?day=" + day)
         expect(page.get_by_role("heading", name=f"复盘日期 {day}")).to_be_visible()
         page.get_by_role("link", name="近 28 天", exact=True).click()
@@ -336,6 +373,8 @@ def exercise_amap(context, page, origin, store, older, newer, width):
     expect(settings.get_by_text("高德地图设置已保存。")).to_be_visible()
     page.goto(origin + "/routes?q=missing")
     expect(page.locator("#amap-preview")).to_have_count(0)
+    expect(page.get_by_text("没有符合筛选条件的路线。", exact=False)).to_be_visible()
+    expect(page.get_by_role("link", name="清除筛选")).to_have_attribute("href", "/routes")
     assert not requests
     page.goto(origin + "/routes")
     preview = page.locator("#amap-preview")
@@ -394,7 +433,7 @@ def main():
                                 exercise(browser, origin, fixture, width)
                         else:
                             exercise(browser, f"http://{host}:{port}", fixture, width)
-                    print(f"{host} · {width}px · OAuth, P0/P1 dashboard flows and AMap preview passed")
+                    print(f"{host} · {width}px · OAuth, P0/P1/P2 dashboard flows and AMap preview passed")
                 finally:
                     fixture.doCleanups()
         finally:

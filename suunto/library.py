@@ -175,6 +175,8 @@ def library_router(store, amap_config, discovery, render):
                       route_sports=sports, route_summary=distribution, route_filter=route_filter, route_query=query,
                       route_page=page, route_pages=pages, route_count=count,
                       amap_preview=preview,
+                      empty_message="没有符合筛选条件的路线。" if query else "当前没有已同步的保存路线。",
+                      empty_action=("/routes", "清除筛选") if query else ("/settings#sync", "查看同步状态"),
                       route_detail_available=any(t["name"] == "get_route_summary" for t in discovery["tools"]))
 
     return router

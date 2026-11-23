@@ -1,3 +1,4 @@
+{% from "page_controls.html" import date_links %}
 {% if workout is defined %}
 <section>
   {% if workout_return %}<a href="{{ workout_return }}">{{ '返回运动对比' if workout_return.startswith('/compare?') else '返回筛选后的活动列表' }}</a>{% endif %}
@@ -62,9 +63,7 @@
 </section>
 {% endif %}
 {% if wellness_days is defined %}
-<nav class="section-nav report-switch" aria-label="睡眠与恢复时间范围">
-  {% for n in (7, 28, 90) %}<a href="/sleep-recovery?days={{ n }}"{% if n == wellness_days %} aria-current="page"{% endif %}>近 {{ n }} 天</a>{% endfor %}
-</nav>
+{{ date_links(report_ranges) }}
 <section class="wellness-latest" aria-labelledby="wellness-latest-title">
   <h2 id="wellness-latest-title">最近有效读数</h2>
   <dl class="wellness-readings">
@@ -88,15 +87,16 @@
 {% if daily_stats is defined %}
 {% if daily_saved %}<p class="notice" role="status">{{ daily_saved }}</p>{% endif %}
 <section>
+  {{ date_links(report_ranges) }}
   <form action="/daily-activity" class="controls">
     {% if providers|length > 1 %}
     <label>数据来源<select name="source"><option value="">自动选择</option>{% for name in providers %}<option {% if name == daily_source %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
     {% endif %}
     <label>查看尺度<select name="period">{% for key, label in [('day', '日'), ('week', '周'), ('month', '月')] %}
       <option value="{{ key }}" {% if key == daily_period %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
-    <label>时间范围<select name="days">{% for n in (7, 28, 90, 365) %}
-      <option value="{{ n }}" {% if n == daily_days %}selected{% endif %}>近 {{ n }} 天</option>{% endfor %}</select></label>
-    <button>查看</button>
+    <input type="hidden" name="days" value="{{ daily_days }}">
+    {% if request.query_params.get('chart_view') == 'table' %}<input type="hidden" name="chart_view" value="table">{% endif %}
+    <button>应用筛选</button>
     {% if providers|length > 1 %}
     <button class="secondary" name="action" value="source" formaction="/daily-activity/preferences" formmethod="post">记住来源设置</button>
     {% endif %}
@@ -109,6 +109,7 @@
     <form action="/daily-activity/preferences" method="post" class="controls">
       <input type="hidden" name="source" value="{{ daily_source }}">
       <input type="hidden" name="days" value="{{ daily_days }}">
+    {% if request.query_params.get('chart_view') == 'table' %}<input type="hidden" name="chart_view" value="table">{% endif %}
       <input type="hidden" name="period" value="{{ daily_period }}">
       <label>每日目标（步，留空清除）<input name="step_goal" type="number" min="1" max="1000000" value="{{ step_goal or '' }}"></label>
       <button name="action" value="goal">保存目标</button>
@@ -122,7 +123,7 @@
   <label>路线名称<input name="q" value="{{ route_filter.q }}"></label>
   <label>运动类型<select name="sport"><option value="">全部</option>{% for name in route_sports %}<option {% if name == route_filter.sport %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
   <label>最短距离（km）<input type="number" name="km" min="0" step="any" value="{{ route_filter.km if route_filter.km is not none else '' }}"></label>
-  <button>筛选路线</button>
+  <button>应用筛选</button>
   </div>
   <details{% if route_filter.updated or route_filter.updated_to or route_filter.watch or route_filter.visibility %} open{% endif %}>
   <summary>高级筛选</summary>

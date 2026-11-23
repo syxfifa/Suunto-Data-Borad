@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title or '首页' }} · Suunto 内网看板</title>
-  <link rel="stylesheet" href="/static/dashboard.css?v=1.0.13">
+  <link rel="stylesheet" href="/static/dashboard.css?v=1.0.14">
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主内容</a>
@@ -18,7 +18,11 @@
       {% for href, label in [('/', '概览'), ('/training', '训练趋势'), ('/activities', '运动活动'),
         ('/compare', '运动对比'), ('/sleep-recovery', '睡眠与恢复'), ('/daily-activity', '日常活动'),
         ('/routes', '保存路线'), ('/settings', '设置')] %}
-      <a href="{{ href }}" {% if aliases.get(current, current) == href %}aria-current="page"{% endif %}>{{ label }}</a>
+      {% if current == '/compare' and href == '/activities' %}
+      <a class="nav-activities-mobile" href="{{ href }}" aria-current="true">{{ label }}</a>
+      {% endif %}
+      <a href="{{ href }}"{% if href == '/compare' or (current == '/compare' and href == '/activities') %} class="nav-desktop-link"{% endif %}
+         {% if aliases.get(current, current) == href %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
   </header>

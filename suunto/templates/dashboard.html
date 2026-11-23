@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "coverage_status.html" import coverage_status %}
+{% from "page_controls.html" import date_links, empty_state %}
 {% macro local_time(value) -%}
   {% if value %}<time datetime="{{ value }}" title="{{ value }}">{{ value[:19]|replace('T', ' ') }}</time>{% else %}—{% endif %}
 {%- endmacro %}
@@ -65,12 +66,14 @@
 {% endif %}
 {% if show_period %}
 <section class="filter-panel" aria-label="训练趋势筛选">
+{{ date_links(report_ranges) }}
 <form action="/training" class="controls">
   <input type="hidden" name="report" value="{{ report }}">
+  {% if request.query_params.get('chart_view') == 'table' %}<input type="hidden" name="chart_view" value="table">{% endif %}
   <label>统计方式<select name="period"><option value="day">按日</option><option value="week" {% if weekly %}selected{% endif %}>按周</option></select></label>
-  <label>范围<select name="days">{% for n in (28, 90, 365) %}<option value="{{ n }}" {% if n == days %}selected{% endif %}>近 {{ n }} 天</option>{% endfor %}</select></label>
+  <input type="hidden" name="days" value="{{ days }}">
   <label>运动类型<select name="sport"><option value="">全部类型</option>{% for name in sports %}<option {% if name == sport %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
-  <button>查看</button>
+  <button>应用筛选</button>
 </form>
 <p class="meta">确认无训练的时段记为 0。底部标记提示同步覆盖和指标缺失，可在「查看图表数据」展开逐日或逐周状态。点击柱形可查看对应活动。</p>
 <dl class="workout-key-metrics" aria-label="所选时段汇总">
@@ -92,10 +95,8 @@
 {% else %}
 <p>本地还没有活动记录。可在<a href="/settings">设置</a>查看同步状态。</p>
 {% endif %}
-<div class="quick-filters controls" aria-label="快捷日期">
-  {% for label, first in presets %}<a class="button secondary" href="/activities?start={{ first }}&amp;end={{ today }}&amp;{{ search_query }}{% if review_return %}&amp;return_to={{ review_return|urlencode }}{% endif %}">{{ label }}</a>{% endfor %}
-  <a class="button secondary" href="/activities?start=&amp;end=&amp;{{ search_query }}{% if review_return %}&amp;return_to={{ review_return|urlencode }}{% endif %}">全部日期</a>
-</div>
+{{ date_links(activity_ranges) }}
+<p class="meta"><a href="/compare">打开运动对比</a></p>
 <script src="/static/activity-filters.js?v=1.0.12" defer></script>
 <form method="get" action="/activities" class="activity-filters">
   {% if review_return %}<input type="hidden" name="return_to" value="{{ review_return }}">{% endif %}
@@ -147,14 +148,19 @@
 {% endif %}
 {% endif %}
 {% if charts is defined %}
+{% set chart_next = ("/settings#sync", "查看同步状态") %}
+{% if request.query_params.get('chart_view') != 'table' %}
 <script src="/static/chart.umd.min.js" defer></script>
-<script src="/static/charts.js?v=1.0.12" defer></script>
+<script src="/static/charts.js?v=1.0.14" defer></script>
+{% else %}
+<p class="meta">当前为数据表视图。 <a href="{{ request.url.path }}?{{ request.query_params.items()|rejectattr('0', 'equalto', 'chart_view')|list|urlencode }}">返回图表</a></p>
+{% endif %}
 {% if show_period %}
   <div id="training-charts">
   {% set chart_items = charts %}
   {% set chart_layout = 'primary-charts' %}
   {% include "chart_grid.html" %}
-  <details class="advanced-charts panel">
+  <details class="advanced-charts panel"{% if request.query_params.get("chart_view") == "table" %} open{% endif %}>
     <summary>进阶分析</summary>
     <p class="meta">连续活动最长 {{ streak }} 天。ACWR = 近 7 天 TSS ÷（近 28 天 TSS ÷ 4），当前 {{ acwr_days }} / {{ days }} 天可计算。28 天须完整覆盖，每条活动须有 TSS，且分母须大于零。</p>
     {% with chart_items = advanced_charts, chart_layout = 'secondary-charts' %}
@@ -168,8 +174,8 @@
       <h2 id="wellness-{{ key }}">{{ label }}</h2>
       {% if group %}
         {% with chart_items = group, chart_heading = 'h3' %}{% include "chart_grid.html" %}{% endwith %}
-      {% else %}<p class="empty-state">所选时段没有有效读数。</p>{% endif %}
-      {% if key == 'metrics' %}<p class="meta"><a href="/settings?edit_preferences=true#preferences">配置已采到的睡眠与恢复字段</a></p>{% endif %}
+      {% else %}{{ empty_state("所选时段没有有效读数。", ("/settings?edit_preferences=true#preferences", "配置已采到的睡眠与恢复字段")) }}{% endif %}
+      {% if key == 'metrics' and group %}<p class="meta"><a href="/settings?edit_preferences=true#preferences">配置已采到的睡眠与恢复字段</a></p>{% endif %}
     </div>
   {% endfor %}
 {% else %}
@@ -280,7 +286,7 @@
   </nav>
   {% endif %}
   {% else %}
-  <p class="empty-state">{{ empty_message or '暂无符合条件的记录。' }}{% if empty_action %} <a href="{{ empty_action[0] }}">{{ empty_action[1] }}</a>{% endif %}</p>
+  {{ empty_state(empty_message or "没有符合筛选条件的记录。", empty_action|default(none)) }}
   {% endif %}
 </section>
 {% endif %}

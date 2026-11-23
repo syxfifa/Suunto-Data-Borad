@@ -1,0 +1,28 @@
+{% macro table(series) %}
+<div class="table-scroll" role="region" aria-label="{{ series.title }}" tabindex="0">
+  <table>
+    <thead><tr><th scope="col">日期或类别</th>
+      {% for label in series.columns %}<th scope="col">{{ label }}</th>{% endfor %}
+      {% if series.covered is defined %}<th scope="col">数据状态</th>{% endif %}
+    </tr></thead>
+    <tbody>
+    {% for label in series.labels %}
+      {% set i = loop.index0 %}
+      {% set href = series.links[i] if series.links is defined else none %}
+      <tr><th scope="row">{% if href %}<a href="{{ href }}">{{ label }}</a>{% else %}{{ label }}{% endif %}</th>
+        {% for values in series.columns.values() %}<td>{{ values[i] if values[i] is not none else '—' }}</td>{% endfor %}
+        {% if series.covered is defined %}
+        {% set missing = series.missing[i] if series.missing is defined else
+          (series.counts[i] and (series.columns.values()|map(attribute=i)|select('none')|list)) %}
+        <td>{% if not series.covered[i] %}{{ '同步未确认完整' if href else '日期未到' }}
+          {% if missing %} · 部分活动缺少指标{% endif %}
+          {% elif not series.counts[i] %}已确认无活动
+          {% elif missing %}部分活动缺少指标
+          {% else %}已确认覆盖{% endif %}</td>
+        {% endif %}
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endmacro %}

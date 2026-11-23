@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "coverage_status.html" import coverage_status %}
+{% from "page_controls.html" import date_links %}
 {% macro amount(value) -%}
 {{ '—' if value is none else value|int if value == value|int else value }}
 {%- endmacro %}
@@ -68,32 +69,28 @@
     <section class="chart-panel aurora-chart" aria-labelledby="review-chart-{{ loop.index }}">
       <div class="section-heading">
         <h2 id="review-chart-{{ loop.index }}">{{ '一周恢复' if loop.first else '一周训练' }}</h2>
-        <select class="chart-metric" aria-label="{{ '恢复图表指标' if loop.first else '训练图表指标' }}" hidden>
+        {% if request.query_params.get('chart_view') != 'table' %}<select class="chart-metric" aria-label="{{ '恢复图表指标' if loop.first else '训练图表指标' }}" hidden>
           {% for series in pair %}<option value="{{ loop.index0 }}">{{ series.title }}</option>{% endfor %}
-        </select>
+        </select>{% endif %}
       </div>
-      <div class="plot">
-        <canvas role="img" aria-label="{{ pair[0].title }}"></canvas>
-      </div>
-      <p class="empty-state chart-empty" hidden>本周暂无此指标记录。</p>
+      {% set chart_next = ("/sleep-recovery", "查看睡眠与恢复") if loop.first else ("/training", "查看训练趋势") %}
       {% include "chart_values.html" %}
-      <script type="application/json" class="chart-data">{{ pair|tojson }}</script>
     </section>
     {% endfor %}
   </div>
 </div>
+{% if request.query_params.get('chart_view') != 'table' %}
 <script src="/static/chart.umd.min.js" defer></script>
-<script src="/static/charts.js?v=1.0.12" defer></script>
+<script src="/static/charts.js?v=1.0.14" defer></script>
+{% else %}
+<p class="meta">当前为数据表视图。 <a href="{{ request.url.path }}?{{ request.query_params.items()|rejectattr('0', 'equalto', 'chart_view')|list|urlencode }}">返回图表</a></p>
+{% endif %}
 <section id="overview-summary">
   <div class="section-heading">
     <h2>活动汇总 · {{ period_label }}</h2>
     <a href="/training?period=week">查看训练趋势</a>
   </div>
-  <nav class="section-nav report-switch" aria-label="活动汇总时间范围">
-    {% for key, label, href in period_links %}
-    <a href="{{ href }}"{% if overview == key %} aria-current="page"{% endif %}>{{ label }}</a>
-    {% endfor %}
-  </nav>
+  {{ date_links(period_links, "活动汇总时间范围") }}
   <p class="meta">{{ period_start }} 至 {{ period_end[:16]|replace('T', ' ') }} · 北京时间</p>
   <dl class="metrics">
     {% for label, value in [('活动次数', period.n), ('距离（km）', period.km), ('时长（分钟）', period.minutes)] %}

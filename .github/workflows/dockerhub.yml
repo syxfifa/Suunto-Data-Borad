@@ -3,6 +3,9 @@ name: Build Suunto Data Borad
 "on":
   push:
     branches: [main]
+    paths-ignore: ['**/*.md']
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -23,9 +26,10 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Check release version
         env:
-          BEFORE_SHA: ${{ github.event.before }}
+          BEFORE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           version="$(cat VERSION)"
           if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
@@ -34,6 +38,9 @@ jobs:
           fi
           if [[ -n "$BEFORE_SHA" ]] && git cat-file -e "$BEFORE_SHA:VERSION" 2>/dev/null; then
             previous="$(git show "$BEFORE_SHA:VERSION")"
+            if [[ "$previous" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$previous" != "$version" ]]; then
+              echo "PREVIOUS_VERSION=$previous" >> "$GITHUB_ENV"
+            fi
             if [[ "$version" != "$previous" && "$(printf '%s\n' "$previous" "$version" | sort -V | tail -1)" != "$version" ]]; then
               echo "::error file=VERSION::A release version cannot decrease."
               exit 1
@@ -78,6 +85,8 @@ jobs:
           python -m pip install -r requirements.txt playwright==1.57.0
           python -m playwright install --with-deps chromium
           PYTHONPATH=. python tests/browser_smoke.py
+      - name: Benchmark synthetic data during a SQLite write
+        run: PYTHONPATH=. python tests/benchmark_queries.py
       - name: Verify Compose startup and volume persistence
         run: |
           override="$RUNNER_TEMP/suunto-ci-compose.yml"
@@ -135,7 +144,7 @@ jobs:
           PY
       - name: Verify upgrade from the previous release with persisted data
         run: |
-          previous="docker.io/${DOCKERHUB_USERNAME,,}/suunto-data-borad:1.0.6"
+          previous="docker.io/${DOCKERHUB_USERNAME,,}/suunto-data-borad:${PREVIOUS_VERSION:-1.0.7}"
           data="$(mktemp -d "$RUNNER_TEMP/suunto-upgrade-XXXXXX")"
           old="suunto-upgrade-old-${GITHUB_RUN_ID}"
           candidate="suunto-upgrade-new-${GITHUB_RUN_ID}"
@@ -187,9 +196,24 @@ jobs:
             docker compose -p suunto-fresh-ci logs --no-color app
             docker compose -p suunto-restore-ci logs --no-color app
           fi
+      - name: Set up image vulnerability scanner
+        id: grype
+        uses: anchore/scan-action/download-grype@v7.4.2
+      - name: Scan both tested image architectures
+        env:
+          GRYPE: ${{ steps.grype.outputs.cmd }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/suunto-release"
+          for arch in amd64 arm64; do
+            archive="$RUNNER_TEMP/suunto-$arch.tar"
+            docker image save --platform "linux/$arch" -o "$archive" "$SUUNTO_IMAGE"
+            "$GRYPE" "docker-archive:$archive" -o json > "$RUNNER_TEMP/suunto-release/grype-$arch.json"
+            jq -r --arg arch "$arch" '"\($arch): \([.matches[] | select(.vulnerability.severity == "Critical" or .vulnerability.severity == "High")] | length) high/critical findings"' \
+              "$RUNNER_TEMP/suunto-release/grype-$arch.json" >> "$GITHUB_STEP_SUMMARY"
+          done
       - name: Check whether publishing is enabled
         id: release
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
@@ -209,13 +233,29 @@ jobs:
         run: |
           repo="docker.io/${DOCKERHUB_USERNAME,,}/suunto-data-borad"
           short_sha="${GITHUB_SHA:0:12}"
-          docker tag "$SUUNTO_IMAGE" "$repo:$short_sha"
-          docker tag "$SUUNTO_IMAGE" "$repo:latest"
-          if docker buildx imagetools inspect "$repo:$RELEASE_VERSION" >/dev/null 2>&1; then
-            echo "Version $RELEASE_VERSION is already available."
+          if digest="$(docker buildx imagetools inspect "$repo:$RELEASE_VERSION" --format '{{.Manifest.Digest}}' 2>/dev/null)"; then
+            revision="$(docker buildx imagetools inspect "$repo@$digest" --format '{{json (index .Image "linux/amd64")}}' | jq -er '.config.Labels["org.opencontainers.image.revision"]')"
+            if [[ "$revision" != "$GITHUB_SHA" ]]; then
+              echo "Version $RELEASE_VERSION already belongs to another commit. Skipping publication."
+              exit 0
+            fi
           else
-            docker tag "$SUUNTO_IMAGE" "$repo:$RELEASE_VERSION"
-            docker push "$repo:$RELEASE_VERSION"
+            docker tag "$SUUNTO_IMAGE" "$repo:$short_sha"
+            docker push "$repo:$short_sha"
+            digest="$(docker buildx imagetools inspect "$repo:$short_sha" --format '{{.Manifest.Digest}}')"
           fi
-          docker push "$repo:$short_sha"
-          docker push "$repo:latest"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          docker buildx imagetools create --tag "$repo:$RELEASE_VERSION" --tag "$repo:$short_sha" --tag "$repo:latest" "$repo@$digest"
+          for tag in "$RELEASE_VERSION" "$short_sha" latest; do
+            test "$(docker buildx imagetools inspect "$repo:$tag" --format '{{.Manifest.Digest}}')" = "$digest"
+          done
+          jq -n --arg image "$repo" --arg version "$RELEASE_VERSION" --arg commit "$GITHUB_SHA" --arg digest "$digest" \
+            '{image:$image,version:$version,commit:$commit,digest:$digest}' > "$RUNNER_TEMP/suunto-release/image.json"
+          printf '\nImage %s · commit %s · digest %s\n' "$RELEASE_VERSION" "$GITHUB_SHA" "$digest" >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain image scan and release metadata
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: suunto-release-report
+          path: ${{ runner.temp }}/suunto-release/
+          if-no-files-found: ignore

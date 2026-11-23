@@ -1,6 +1,6 @@
 # Suunto Data Borad 使用手册
 
-当前版本 **V1.0.7**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。健康检查由镜像提供。
+当前版本 **V1.0.8**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。健康检查由镜像提供。
 
 ## 第一次部署
 
@@ -86,7 +86,7 @@ docker compose up -d
 
 ### 固定版本与回滚
 
-想固定版本，可将 Compose 的 `image` 改为 `jjsyx123/suunto-data-borad:1.0.7`，执行 `docker compose pull` 和 `docker compose up -d`。更新前先验证备份。需要回滚本次发布时，把标签换回 `1.0.6`，继续使用同一个 `./suunto-storage`，再执行相同命令。在后续涉及 SQLite 结构升级的版本中，回滚前按对应版本说明判断是否需要恢复升级前的备份。
+想固定版本，可将 Compose 的 `image` 改为 `jjsyx123/suunto-data-borad:1.0.8`，执行 `docker compose pull` 和 `docker compose up -d`。更新前先验证备份。需要回滚本次发布时，把标签换回 `1.0.7`，继续使用同一个 `./suunto-storage`，再执行相同命令。在后续涉及 SQLite 结构升级的版本中，回滚前按对应版本说明判断是否需要恢复升级前的备份。
 
 ## 排查与发布
 
@@ -95,4 +95,5 @@ docker compose up -d
 - **限流或数据缺失**。在设置页查看连接状态、数据覆盖和重试时间。可选指标以已同步到的字段为准。
 - **访问保护**。在维护页查看密码是否启用。共享网络或通过域名开放时，通过可信 HTTPS 启用看板密码，避免他人访问健康数据和导出接口。
 - **更新镜像**。默认使用 `jjsyx123/suunto-data-borad:latest`。执行 `docker compose pull` 和 `docker compose up -d` 后，在维护页核对版本。
-- **开发验证**。容器内可执行 `docker compose exec --user 10001:10001 app python -m unittest discover -s tests -v`。GitHub Actions 在 `main` 验证双架构、浏览器授权、自动初始化、备份恢复。镜像发布使用仓库 Secret `DOCKERHUB_TOKEN`。
+- **开发验证**。容器内可执行 `docker compose exec --user 10001:10001 app python -m unittest discover -s tests -v`。可执行 `docker compose exec --user 10001:10001 app python -m tests.benchmark_queries`，在容器的临时目录用合成数据测量应用启动、SQLite 并行读写和批量导出。
+- **发布追溯**。面向 `main` 的拉取请求会运行测试、升级与恢复验证及双架构漏洞扫描。只有 `main` 的发布流程会使用 `DOCKERHUB_TOKEN` 推送镜像。扫描执行失败会阻止发布，漏洞发现记录在报告中，当前按报告模式运行。成功发布后，版本、提交短 SHA 和 `latest` 必须指向同一镜像摘要。可在 GitHub Actions 的 `suunto-release-report` 下载双架构扫描结果和版本、完整提交 SHA、镜像摘要。

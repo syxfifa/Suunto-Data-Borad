@@ -6,11 +6,16 @@ from hmac import compare_digest
 import json
 from pathlib import Path
 from secrets import token_bytes
+from threading import BoundedSemaphore
 
 from .mcp import save_json
 
 
 USERNAME = "suunto"
+
+
+class AccessBusy(RuntimeError):
+    pass
 
 
 def derive(password, salt):
@@ -20,6 +25,7 @@ def derive(password, salt):
 class Access:
     def __init__(self, directory):
         self.path = Path(directory) / "access.json"
+        self.checks = BoundedSemaphore(2)
 
     def enabled(self):
         return self.path.exists()
@@ -43,6 +49,13 @@ class Access:
                 return False
             data = json.loads(self.path.read_bytes())
             salt, digest = bytes.fromhex(data["salt"]), bytes.fromhex(data["digest"])
-            return len(salt) == 16 and len(digest) == 32 and compare_digest(digest, derive(password, salt))
+            if len(salt) != 16 or len(digest) != 32:
+                return False
+            if not self.checks.acquire(blocking=False):
+                raise AccessBusy
+            try:
+                return compare_digest(digest, derive(password, salt))
+            finally:
+                self.checks.release()
         except (KeyError, TypeError, ValueError, OSError):
             return False

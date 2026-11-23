@@ -63,6 +63,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          pull: true
           platforms: linux/amd64,linux/arm64
           load: true
           tags: ${{ env.SUUNTO_IMAGE }}
@@ -103,6 +104,7 @@ jobs:
           status = dict(line.split(":", 1) for line in Path("/proc/1/status").read_text().splitlines() if ":" in line)
           assert status["Uid"].split() == status["Gid"].split() == ["10001"] * 4
           assert int(status["CapEff"], 16) == int(status["CapPrm"], 16) == 0
+          assert status["NoNewPrivs"].strip() == "1"
           store = Store("/data")
           assert store.query("PRAGMA user_version")[0]["user_version"] == SCHEMA_VERSION
           at = "2026-01-01T08:00:00+08:00"
@@ -210,7 +212,13 @@ jobs:
             "$GRYPE" "docker-archive:$archive" -o json > "$RUNNER_TEMP/suunto-release/grype-$arch.json"
             jq -r --arg arch "$arch" '"\($arch): \([.matches[] | select(.vulnerability.severity == "Critical" or .vulnerability.severity == "High")] | length) high/critical findings"' \
               "$RUNNER_TEMP/suunto-release/grype-$arch.json" >> "$GITHUB_STEP_SUMMARY"
+            jq -r '.matches[] | select(.vulnerability.severity == "Critical" or .vulnerability.severity == "High") |
+              [.artifact.type, .artifact.name, .artifact.version, .vulnerability.id, .vulnerability.fix.state] | @tsv' \
+              "$RUNNER_TEMP/suunto-release/grype-$arch.json" | sort -u
           done
+          # Report OS advisories separately. Block releases with a fixed high/critical Python finding.
+          jq -e -s 'all(.[].matches[]; (.artifact.type != "python" or .vulnerability.fix.state != "fixed" or
+            (.vulnerability.severity != "High" and .vulnerability.severity != "Critical")))' "$RUNNER_TEMP"/suunto-release/grype-*.json
       - name: Check whether publishing is enabled
         id: release
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'

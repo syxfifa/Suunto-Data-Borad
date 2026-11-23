@@ -1,6 +1,7 @@
-fastapi==0.115.12
-uvicorn==0.34.3
+fastapi==0.165.0
+starlette==1.10.0
+uvicorn==0.54.0
 Jinja2==3.1.6
 httpx==0.28.1
-python-multipart==0.0.22
+python-multipart==0.0.34
 tzdata==2025.2

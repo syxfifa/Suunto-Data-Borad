@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from .mcp import AUTHORIZATION_TIMEOUT, Client, MCPError, NeedsAuthorization, READ_TOOLS
-from .access import Access
+from .access import Access, AccessBusy
 from .amap import amap_router
 from . import VERSION
 from .library import library_router
@@ -35,6 +35,7 @@ from .store import Store
 from .sync import SOURCES, Synchronizer, TZ
 from .views import lower_bound
 from .web_shared import HOME_HEADERS, NO_CACHE, SOURCE_LABELS, TEMPLATES, local_transport
+from .web_security import RequestSecurity
 
 
 LOG = logging.getLogger(__name__)
@@ -240,13 +241,18 @@ def create_app(data_dir=None, *, client=None):
 
     @app.middleware("http")
     async def local_access(request, call_next):
-        path = request.url.path
+        path = request.scope["path"]
         if path == "/healthz" or path.startswith("/static/"):
             return await call_next(request)
         if access.enabled():
             if not local_transport(request):
                 return JSONResponse({"detail": "已启用访问控制，请通过 HTTPS 地址访问。"}, 403, headers=NO_CACHE)
-            if not await asyncio.to_thread(access.accepts, request.headers.get("authorization", "")):
+            try:
+                accepted = await asyncio.to_thread(access.accepts, request.headers.get("authorization", ""))
+            except AccessBusy:
+                return JSONResponse({"detail": "密码验证繁忙，请稍后重试。"}, 503,
+                                    headers={**NO_CACHE, "Retry-After": "1"})
+            if not accepted:
                 return JSONResponse({"detail": "请输入本地看板用户名和密码。"}, 401,
                                     headers={**NO_CACHE, "WWW-Authenticate": 'Basic realm="Suunto dashboard", charset="UTF-8"'})
         if request.method == "POST" and path != "/oauth/start":
@@ -257,9 +263,11 @@ def create_app(data_dir=None, *, client=None):
                     same = origin == dashboard_callback(request).removesuffix("/oauth/callback")
                 except MCPError:
                     same = False
-            if request.headers.get("sec-fetch-site") == "cross-site" or not same:
+            if request.headers.get("sec-fetch-site") in ("cross-site", "same-site") or not same:
                 return JSONResponse({"detail": "请从看板页面发起操作。"}, 403, headers=NO_CACHE)
         return await call_next(request)
+
+    app.add_middleware(RequestSecurity)
 
     @app.get("/healthz")
     def health():
@@ -306,7 +314,8 @@ def create_app(data_dir=None, *, client=None):
         try:
             redirect_uri = dashboard_callback(request)
             origin = request.headers.get("origin")
-            if origin and origin != redirect_uri.removesuffix("/oauth/callback"):
+            if (request.headers.get("sec-fetch-site") in ("cross-site", "same-site")
+                    or origin and origin != redirect_uri.removesuffix("/oauth/callback")):
                 raise MCPError("请从看板页面发起授权。")
             if not same_account and account_has_data():
                 raise MCPError("此数据卷已有个人记录，请确认使用原 Suunto 账号；新账号请使用独立数据卷。")

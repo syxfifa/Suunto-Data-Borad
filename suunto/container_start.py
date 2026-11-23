@@ -1,5 +1,6 @@
 """Prepare the mounted data directory, then launch the dashboard without root."""
 
+import ctypes
 import os
 import stat
 import sys
@@ -39,6 +40,10 @@ def drop_privileges():
     os.setgroups([])
     os.setgid(APP_GID)
     os.setuid(APP_UID)
+    # Linux PR_SET_NO_NEW_PRIVS prevents child processes from gaining privileges via exec.
+    if ctypes.CDLL(None, use_errno=True).prctl(38, 1, 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
 
 
 def main():

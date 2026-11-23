@@ -9,36 +9,12 @@
   <p class="meta">最近成功同步 {% if last_sync %}<time datetime="{{ last_sync }}">{{ last_sync[:16]|replace('T', ' ') }}</time> · 北京时间{% else %}—{% endif %}</p>
 </div>
 {% if sync_warning %}<p class="notice" role="status">{{ sync_warning }} <a href="/settings#sync">查看同步状态</a></p>{% endif %}
-<details class="notice">
-  <summary>各数据源最近成功时间</summary>
-  <dl>{% for key in ('workouts', 'sleep', 'recovery', 'daily_activity', 'routes') %}
-    {% set checked = source_success.get(key) %}
-    <div><dt>{{ source_labels[key] }}</dt><dd>{% if checked %}<time datetime="{{ checked }}">{{ checked[:16]|replace('T', ' ') }}</time>{% else %}—{% endif %}</dd></div>
-  {% endfor %}</dl>
-</details>
+
 <div class="aurora-review" id="aurora-review">
-  <section class="aurora-calendar" aria-labelledby="review-calendar">
-    <div class="section-heading">
-      <h2 id="review-calendar">选择对照日期</h2>
-      <nav class="week-nav" aria-label="切换对照周">
-        {% if previous_week %}<a href="/?day={{ previous_week }}">上一周</a>{% endif %}
-        <span>{{ week_from.strftime('%m/%d') }}–{{ week_to.strftime('%m/%d') }}</span>
-        {% if next_week %}<a href="/?day={{ next_week }}">下一周</a>{% endif %}
-      </nav>
-    </div>
-    <div class="aurora-days">
-      {% for item in review_days %}
-      {% set weekday = ['一','二','三','四','五','六','日'][loop.index0] %}
-      {% if item.future %}
-      <span class="future-day" aria-label="{{ item.date }}，尚未到达"><span>周{{ weekday }}</span><strong>{{ item.date.day }}</strong></span>
-      {% else %}
-      <a href="/?day={{ item.date }}" aria-label="{{ item.date }}，周{{ weekday }}" {% if item.picked %}aria-current="date"{% endif %}>
-        <span>周{{ weekday }}</span><strong>{{ item.date.day }}</strong>
-      </a>
-      {% endif %}
-      {% endfor %}
-    </div>
-  </section>
+  <div class="section-heading review-date">
+    <h2>复盘日期 <time datetime="{{ chosen_day }}">{{ chosen_day }}</time></h2>
+    {% if chosen_day != today %}<a href="/?{{ review_query }}#aurora-review">回到今天</a>{% endif %}
+  </div>
   <div class="aurora-pair aurora-snapshot">
     <section class="aurora-recovery" aria-labelledby="aurora-recovery-title">
       <h2 id="aurora-recovery-title">昨夜与晨间</h2>
@@ -65,6 +41,28 @@
       {% if selected.confirmed_until and not selected.covered %} · 最近确认至 {{ selected.confirmed_until[:16]|replace('T', ' ') }}{% endif %}</p>
     </section>
   </div>
+  <section class="aurora-calendar" aria-labelledby="review-calendar">
+    <div class="section-heading">
+      <h2 id="review-calendar">选择对照日期</h2>
+      <nav class="week-nav" aria-label="切换对照周">
+        {% if previous_week %}<a href="/?day={{ previous_week }}&amp;{{ review_query }}#aurora-review">上一周</a>{% endif %}
+        <span>{{ week_from.strftime('%m/%d') }}–{{ week_to.strftime('%m/%d') }}</span>
+        {% if next_week %}<a href="/?day={{ next_week }}&amp;{{ review_query }}#aurora-review">下一周</a>{% endif %}
+      </nav>
+    </div>
+    <div class="aurora-days">
+      {% for item in review_days %}
+      {% set weekday = ['一','二','三','四','五','六','日'][loop.index0] %}
+      {% if item.future %}
+      <span class="future-day" aria-label="{{ item.date }}，尚未到达"><span>周{{ weekday }}</span><strong>{{ item.date.day }}</strong></span>
+      {% else %}
+      <a href="/?day={{ item.date }}&amp;{{ review_query }}#aurora-review" aria-label="{{ item.date }}，周{{ weekday }}" {% if item.picked %}aria-current="date"{% endif %}>
+        <span>周{{ weekday }}</span><strong>{{ item.date.day }}</strong>
+      </a>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </section>
   <div class="aurora-pair aurora-charts">
     {% for pair in review_charts %}
     <section class="chart-panel aurora-chart" aria-labelledby="review-chart-{{ loop.index }}">
@@ -85,66 +83,46 @@
   </div>
 </div>
 <script src="/static/chart.umd.min.js" defer></script>
-<script src="/static/charts.js?v=0.7.0" defer></script>
-<section class="panel overview-summary">
+<script src="/static/charts.js?v=1.0.12" defer></script>
+<section id="overview-summary">
   <div class="section-heading">
-    <h2>本周与本月</h2>
-    <a href="/training?period=week">查看训练周报</a>
+    <h2>活动汇总 · {{ period_label }}</h2>
+    <a href="/training?period=week">查看训练趋势</a>
   </div>
-  <div class="overview-layout">
-    <div class="table-scroll" role="region" aria-label="本周与本月运动统计" tabindex="0">
-      <table class="overview-table">
-        <thead><tr><th scope="col">时段</th><th scope="col">次数</th><th scope="col">距离（km）</th><th scope="col">用时（分钟）</th><th scope="col">数据覆盖</th></tr></thead>
-        <tbody>
-          {% for name, item in [('本周', week), ('上周同期', prior), ('本月', month)] %}
-          <tr {% if loop.first %}class="current-period"{% endif %}>
-            <th scope="row">{{ name }}</th><td>{{ amount(item.n) }}</td><td>{{ amount(item.km) }}</td><td>{{ amount(item.minutes) }}</td>
-            <td>{{ coverage_status(item, [item.km, item.minutes]) }}{% if item.confirmed_until and not item.covered %}
-              <div>最近确认至 {{ item.confirmed_until[:16]|replace('T', ' ') }}</div>{% endif %}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% if weekly_goal or sports %}
-    <div class="overview-context">
-      {% if weekly_goal %}
-      <div class="goal">
-        <h3>每周距离目标</h3>
-        <p><strong>{{ amount(week.km) }}</strong> / {{ weekly_goal }} km</p>
-        {% if week.km is not none %}
-        <meter min="0" max="{{ weekly_goal }}" value="{{ [week.km, weekly_goal]|min }}" aria-label="每周距离目标进度"></meter>
-        {% endif %}
-      </div>
-      {% endif %}
-      {% if sports %}
-      <div>
-        <h3>本周运动类型</h3>
-        <ul class="sport-list">{% for name, count in sports %}<li><span>{{ name }}</span><span>{{ count }} / {{ week.n }} 次</span></li>{% endfor %}</ul>
-      </div>
-      {% endif %}
-    </div>
-    {% endif %}
-  </div>
-  <p class="meta">上周同期按相同星期和时刻截止，时间均为北京时间。</p>
-</section>
-<section class="overview-history">
-  <h2>活动概览</h2>
-  {% if overview %}
-  <div class="period-grid">
-    {% for item in overview %}
-    <article class="panel period-summary">
-      <h3>近 {{ item.days }} 天</h3>
-      <dl class="metrics">
-        <div><dt>活动次数</dt><dd>{{ amount(item.n) }}</dd></div>
-        <div><dt>总距离（km）</dt><dd>{{ '%.1f'|format(item.km) if item.km is not none else '—' }}</dd></div>
-        <div><dt>总时长（小时）</dt><dd>{{ '%.1f'|format(item.minutes / 60) if item.minutes is not none else '—' }}</dd></div>
-      </dl>
-      <p class="meta">{{ coverage_status(item, [item.km, item.minutes]) }}
-      {% if item.confirmed_until and not item.covered %} · 最近确认至 {{ item.confirmed_until[:16]|replace('T', ' ') }}{% endif %}</p>
-    </article>
+  <nav class="section-nav report-switch" aria-label="活动汇总时间范围">
+    {% for key, label, href in period_links %}
+    <a href="{{ href }}"{% if overview == key %} aria-current="page"{% endif %}>{{ label }}</a>
     {% endfor %}
+  </nav>
+  <p class="meta">{{ period_start }} 至 {{ period_end[:16]|replace('T', ' ') }} · 北京时间</p>
+  <dl class="metrics">
+    {% for label, value in [('活动次数', period.n), ('距离（km）', period.km), ('时长（分钟）', period.minutes)] %}
+    <div><dt>{{ label }}</dt><dd>{{ amount(value) }}</dd></div>
+    {% endfor %}
+  </dl>
+  <p class="meta">{{ coverage_status(period, [period.km, period.minutes]) }}
+    {% if period.confirmed_until and not period.covered %} · 最近确认至 {{ period.confirmed_until[:16]|replace('T', ' ') }}{% endif %}
+  </p>
+  {% if weekly_goal and overview == "week" %}
+  <div class="goal">
+    <h3>每周距离目标</h3>
+    <p><strong>{{ amount(period.km) }}</strong> / {{ weekly_goal }} km</p>
+    {% if period.km is not none %}<meter min="0" max="{{ weekly_goal }}" value="{{ [period.km, weekly_goal]|min }}" aria-label="每周距离目标进度"></meter>{% endif %}
   </div>
-  {% else %}<p class="empty-state">暂无已入库活动。可在<a href="/settings">设置</a>中连接 Suunto 或运行同步。</p>{% endif %}
+  {% endif %}
+  {% if prior or sports %}
+  <details>
+    <summary>查看运动分布{% if prior %}与上周同期{% endif %}</summary>
+    {% if prior %}<p>上周同期 {{ amount(prior.n) }} 次 · {{ amount(prior.km) }} km · {{ amount(prior.minutes) }} 分钟。{{ coverage_status(prior, [prior.km, prior.minutes]) }}</p>{% endif %}
+    {% if sports %}<ul class="sport-list">{% for name, count in sports %}<li><span>{{ name }}</span><span>{{ count }} 次</span></li>{% endfor %}</ul>{% endif %}
+  </details>
+  {% endif %}
 </section>
+<details class="notice">
+  <summary>各数据源最近成功时间</summary>
+  <dl>{% for key in ('workouts', 'sleep', 'recovery', 'daily_activity', 'routes') %}
+    {% set checked = source_success.get(key) %}
+    <div><dt>{{ source_labels[key] }}</dt><dd>{% if checked %}<time datetime="{{ checked }}">{{ checked[:16]|replace('T', ' ') }}</time>{% else %}—{% endif %}</dd></div>
+  {% endfor %}</dl>
+</details>
 {% endblock %}

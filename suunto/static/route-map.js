@@ -1,4 +1,29 @@
 const routeMap = document.querySelector("#route-map");
+const mapHome = document.querySelector("#route-map-home");
+const overviewSlot = document.querySelector("#route-map-overview-slot");
+const compact = matchMedia("(max-width: 59.99rem)");
+const inlineRow = document.createElement("tr");
+inlineRow.className = "route-inline-map";
+inlineRow.setAttribute("role", "row");
+const inlineCell = inlineRow.insertCell();
+inlineCell.colSpan = document.querySelector(".route-results thead tr").cells.length;
+inlineCell.setAttribute("role", "cell");
+
+function placeMap(trigger) {
+  const row = trigger?.closest("tr");
+  if (compact.matches && row) {
+    if (row.nextElementSibling !== inlineRow) row.after(inlineRow);
+    if (routeMap.parentElement !== inlineCell) inlineCell.append(routeMap);
+  } else {
+    const slot = compact.matches ? overviewSlot : mapHome;
+    if (routeMap.parentElement !== slot) slot.append(routeMap);
+    inlineRow.remove();
+  }
+}
+
+compact.addEventListener("change", () => {
+  if (!routeMap.hidden) placeMap(mapTrigger);
+});
 const canvas = routeMap.querySelector("canvas");
 const ctx = canvas.getContext("2d");
 const mapTheme = getComputedStyle(document.documentElement);
@@ -97,10 +122,11 @@ function show(points, selected, label, individual, trigger, navigate = true) {
   offsetX = offsetY = 0;
   drawPoints(pointsShown, pointShown);
   mapTrigger = trigger;
+  placeMap(trigger);
   routeMap.hidden = false;
   if (navigate) {
     routeMap.focus({preventScroll: true});
-    routeMap.scrollIntoView({block: "start"});
+    if (compact.matches || !trigger?.closest("tr")) routeMap.scrollIntoView({block: "nearest"});
   }
 }
 
@@ -116,10 +142,13 @@ for (const group of document.querySelectorAll(".route-points")) {
     alt: button.dataset.alt,
     label: button.textContent.trim(),
   }));
-  if (data) {
+  if (points.length) {
     const button = group.closest("tr").querySelector(".route-select");
     const route = {points, button, label: button.textContent.trim()};
     selectableRoutes.push(route);
+    for (const point of points) {
+      point.button?.addEventListener("click", () => selectRoute(route, true, point, point.button));
+    }
     button.addEventListener("click", () => selectRoute(route));
   }
   if (points.length) {
@@ -132,11 +161,6 @@ for (const group of document.querySelectorAll(".route-points")) {
       overviewPoints.set(cell, {...point, count: 1});
     }
     routeCount += 1;
-  }
-  for (const point of points) {
-    point.button?.addEventListener("click", () => {
-      show(points, point, [group.dataset.route, point.label].filter(Boolean).join(" · "), true, point.button);
-    });
   }
 }
 
@@ -164,29 +188,27 @@ async function loadBasemap() {
 }
 
 function clearSelection() {
-  if (!amap) return;
   previewId += 1;
   showBasemap(false);
   routeSelection?.button.setAttribute("aria-pressed", "false");
   routeSelection = undefined;
   pointChoice.hidden = true;
-  amapStatus.textContent = "";
-  amapRetry.hidden = true;
+  if (amap) {
+    amapStatus.textContent = "";
+    amapRetry.hidden = true;
+  }
 }
 
-function selectRoute(route, navigate = true) {
-  if (routeSelection === route) {
-    routeMap.focus({preventScroll: true});
-    routeMap.scrollIntoView({block: "start"});
-    return;
-  }
+function selectRoute(route, navigate = true, point = route.points[0], trigger = route.button) {
+  const changed = routeSelection !== route;
   routeSelection?.button.setAttribute("aria-pressed", "false");
   routeSelection = route;
   route.button.setAttribute("aria-pressed", "true");
   pointChoice.hidden = false;
-  pointSelect.replaceChildren(...route.points.map((point, index) => new Option(point.label, index)));
-  show(route.points, route.points[0], route.label, true, route.button, navigate);
-  loadBasemap();
+  pointSelect.replaceChildren(...route.points.map((item, index) => new Option(item.label, index)));
+  pointSelect.value = route.points.indexOf(point);
+  show(route.points, point, `${route.label} · ${point.label}`, true, trigger, navigate);
+  if (amap && changed) loadBasemap();
 }
 
 document.querySelector("#route-overview").addEventListener("click", (event) => {
@@ -198,16 +220,17 @@ document.querySelector("#route-overview").addEventListener("click", (event) => {
 document.querySelector("#route-map-close").addEventListener("click", () => {
   clearSelection();
   routeMap.hidden = true;
+  placeMap();
   mapTrigger?.focus();
+});
+pointSelect.addEventListener("change", () => {
+  const point = routeSelection.points[Number(pointSelect.value)];
+  showCoordinates(point, `${routeSelection.label} · ${point.label}`, true);
+  pointShown = point;
+  drawPoints(pointsShown, pointShown);
 });
 if (amap && selectableRoutes.length) {
   amapRetry.addEventListener("click", loadBasemap);
-  pointSelect.addEventListener("change", () => {
-    const point = routeSelection.points[Number(pointSelect.value)];
-    showCoordinates(point, routeSelection.label, true);
-    pointShown = point;
-    drawPoints(pointsShown, pointShown);
-  });
   selectRoute(selectableRoutes[0], false);
 }
 for (const control of document.querySelectorAll("[data-map-zoom]")) {

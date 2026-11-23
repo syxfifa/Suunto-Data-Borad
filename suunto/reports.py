@@ -293,6 +293,8 @@ def wellness(sleep, recovery, training, days, fields, stage_unit, *, training_co
         charts.append(line("入睡时刻（凌晨记作次日小时）", labels, {"入睡": bedtime}, median))
     if wake:
         charts.append(line("醒来时刻（小时）", labels, {"醒来": wake}, median))
+    for item in charts:
+        item["group"] = "sleep"
     balance, morning = defaultdict(list), defaultdict(list)
     same_day = defaultdict(dict)
     stress = {label: defaultdict(list) for label in ("休息或恢复", "活动", "静止", "压力")}
@@ -313,6 +315,8 @@ def wellness(sleep, recovery, training, days, fields, stage_unit, *, training_co
             group[day] = [states.count(i) / len(states) * 100]
     charts.append(line("身体资源（%）", labels, {"日均": balance, "晨间首读": morning}))
     charts.append({**line("压力状态（有效样本占比 %）", labels, stress), "kind": "bar", "stacked": True})
+    charts[-2].update(group="recovery", hint="晨间首读取北京时间 05:00–10:00 的首条有效读数，日均使用当天所有有效读数。")
+    charts[-1].update(group="recovery", hint="按有效样本计算各状态占比。")
     latest_metrics = []
     for key, title in (("hrv", "HRV（ms）"), ("resting_hr", "静息心率（bpm）")):
         values = values_by_day(recovery, fields.get(key))
@@ -323,6 +327,7 @@ def wellness(sleep, recovery, training, days, fields, stage_unit, *, training_co
                 baseline[day] = [median(prior)]
         if values:
             charts.append(line(title, labels, {"日中位数": values, "14 日个人基线": baseline}, median))
+            charts[-1].update(group="metrics", hint="按日取中位数。14 日个人基线至少需要此前 3 天有效读数。")
             for at, row in reversed(recovery):
                 value = numeric(row["entryData"].get(fields.get(key)))
                 if at[:10] in labels and value is not None:
@@ -338,14 +343,16 @@ def wellness(sleep, recovery, training, days, fields, stage_unit, *, training_co
         if label not in tss and covers(training_coverage, midnight(day), midnight(day + timedelta(days=1))):
             known_tss[label] = [0]
     charts.append(line("同期训练负荷（TSS）", labels, {"TSS": known_tss}, sum))
+    charts[-1]["group"] = "recovery"
     latest = max((d for d in same_day if d in labels), default=None)
     if latest:
         points = same_day[latest]
         charts.append(chart(f"{latest} 日内身体资源（%）", sorted(points),
                             {"身体资源": [points[k] for k in sorted(points)]}))
+        charts[-1]["group"] = "recovery"
     rows = [[item["day"], item["start"], item["end"],
              item["data"].get(fields.get("sleep_kind")),
-             round(item["duration"]/3600, 2) if item["duration"] is not None else None]
+             round(item["duration"]/3600, 2) if item["duration"] is not None and item["duration"] >= 0 else None]
             for item in reversed(sessions)]
     return charts, rows, len(totals), latest_metrics
 
@@ -359,7 +366,7 @@ def daily_report(entries, days, source, goal, period):
                 and value is not None and value >= 0):
             actual[row["Source"]][row["Name"]][stamp[:10]] = value
     providers = sorted(actual)
-    source = source if source in actual else max(providers, key=lambda key: (
+    source = source or max(providers, key=lambda key: (
         len(actual[key]["stepcount"]), len(actual[key]["energyconsumption"])), default="")
     steps = actual[source]["stepcount"] if source else {}
     groups = defaultdict(list)
@@ -376,6 +383,8 @@ def daily_report(entries, days, source, goal, period):
         display_labels = [f"{key} ({sum(d in values for d in group)}/{len(group)})" if period != "day" else key
                           for key, group in groups.items()]
         charts.append(chart(title, display_labels, {name: series}, "bar"))
+        if period != "day":
+            charts[-1]["hint"] = "标签括号为有效天数 / 这一柱所涵盖的天数。数值只汇总有记录的日期。"
     valid = [steps[day] for day in labels if day in steps]
     return charts, providers, source, {"days": len(valid), "missing": len(labels)-len(valid),
                                         "average": round(mean(valid)) if valid else None,

@@ -1,7 +1,8 @@
 <div class="chart-grid {% if chart_layout is defined %}{{ chart_layout }}{% endif %}">
   {% for chart in chart_items %}
   <section class="chart-panel">
-    <h2>{{ chart.title }}</h2>
+    {% if chart_heading == 'h3' %}<h3>{{ chart.title }}</h3>{% else %}<h2>{{ chart.title }}</h2>{% endif %}
+    {% if chart.hint %}<p class="meta">{{ chart.hint }}</p>{% endif %}
     {% if chart.labels %}
     <div class="plot"><canvas role="img" aria-label="{{ chart.title }}"></canvas></div>
     <p class="empty-state chart-empty" hidden>这段时间暂无数据。</p>

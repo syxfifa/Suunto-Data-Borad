@@ -549,7 +549,7 @@ def create_app(data_dir=None, *, client=None):
                      "settings_minutes": config.load(), "discovery": discovery, "sync_status": status,
                      "sources": sources, "source_labels": SOURCE_LABELS, "prefs": prefs, "bindings": bindings,
                      "access_protected": access.enabled(), "connection": mcp_state(),
-                     "daily_sources": daily_sources(), "account_has_data": account_has_data()},
+                     "account_has_data": account_has_data()},
             headers=NO_CACHE if request.url.path == "/oauth/callback" else HOME_HEADERS,
         )
 
@@ -577,16 +577,16 @@ def create_app(data_dir=None, *, client=None):
     @app.post("/preferences")
     async def save_preferences(request: Request,
                                weekly_km: Annotated[str, Form()] = "",
-                               step_goal: Annotated[str, Form()] = "",
-                               primary_source: Annotated[str, Form()] = "",
+                               step_goal: Annotated[str | None, Form()] = None,
+                               primary_source: Annotated[str | None, Form()] = None,
                                sleep_stage_unit: Annotated[str, Form()] = "seconds"):
         if sleep_stage_unit not in ("seconds", "minutes", "ms"):
             raise HTTPException(422, "睡眠阶段单位无效。")
-        if primary_source and primary_source not in daily_sources():
+        if primary_source and primary_source not in store.daily_providers():
             raise HTTPException(422, "请选择已有的日常活动来源。")
         try:
             distance_goal = lower_bound(weekly_km, 10000)
-            steps = int(step_goal) if step_goal.strip() else None
+            steps = int(step_goal) if step_goal and step_goal.strip() else None
             if distance_goal == 0 or steps is not None and not 0 < steps <= 1000000:
                 raise ValueError
         except ValueError:
@@ -604,21 +604,17 @@ def create_app(data_dir=None, *, client=None):
         stages = [fields[key] for key in ("deep", "light", "rem") if key in fields]
         if len(stages) != len(set(stages)) or fields.get("bedtime") and fields.get("bedtime") == fields.get("wake"):
             raise HTTPException(422, "睡眠阶段及入睡、醒来时间必须使用各自不同的字段。")
-        await asyncio.to_thread(config.update, {"weekly_km": distance_goal, "step_goal": steps,
-                                "primary_source": primary_source,
-                                "sleep_stage_unit": sleep_stage_unit,
-                                "wellness_fields": fields})
+        changes = {"weekly_km": distance_goal, "sleep_stage_unit": sleep_stage_unit, "wellness_fields": fields}
+        if step_goal is not None:
+            changes["step_goal"] = steps
+        if primary_source is not None:
+            changes["primary_source"] = primary_source
+        await asyncio.to_thread(config.update, changes)
         return RedirectResponse("/settings?preferences_saved=true#preferences", status_code=303, headers=NO_CACHE)
 
     def wellness_fields():
         cutoff = midnight(datetime.now(TZ).date() - timedelta(days=89)).isoformat()
         return {source: store.observed_entry_fields(source, cutoff) for source in ("sleep", "recovery")}
-
-    def daily_sources():
-        return [row["provider"] for row in store.query("""
-            SELECT DISTINCT json_extract(payload, '$.Source') AS provider FROM records
-            WHERE source='daily_activity' AND json_type(payload, '$.Source')='text' ORDER BY provider
-        """)]
 
     app.include_router(report_router(store, config, dashboard, mcp_state, retry_after))
     app.include_router(maintenance_router(store, config, access, mcp_state, prune_logs))

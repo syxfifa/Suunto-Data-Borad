@@ -1,18 +1,20 @@
-"""Read-only overview and training report routes."""
+"""Overview, training reports and day-to-day display preferences."""
 
+import asyncio
 from datetime import date, datetime, time as clock_time, timedelta
 import json
 from typing import Annotated
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse
 
 from .reports import (acwr_series, aurora_week, daily_report, dates, grouped_totals,
                       intensity_charts, longest_streak, midnight, period_summary,
                       sport_counts, sport_name, wellness)
 from .sync import TZ
-from .views import covers, local_return, lower_bound, records, summary, workout_chart, workout_metrics, workout_page
-from .web_shared import HOME_HEADERS, SOURCE_LABELS, TEMPLATES
+from .views import covers, local_return, lower_bound, numeric, records, summary, workout_chart, workout_metrics, workout_page
+from .web_shared import HOME_HEADERS, NO_CACHE, SOURCE_LABELS, TEMPLATES
 
 
 def activity_link(start, end, sport="", return_to=""):
@@ -29,7 +31,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
     router = APIRouter()
 
     @router.get("/")
-    def index(request: Request, day: date | None = None):
+    def index(request: Request, day: date | None = None, overview: str = "week"):
         today = datetime.now(TZ)
         chosen = day or today.date()
         earliest = date(1900, 1, 1)
@@ -48,19 +50,30 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
             records(store, "recovery", midnight(review_start), query_end),
             intervals, preferences.get("wellness_fields", {}),
         )
-        back = "/?" + urlencode({"day": chosen}) + "#aurora-review"
+        day = today.date()
+        week_start = day - timedelta(days=day.weekday())
+        periods = {"week": ("本周", week_start),
+                   "month": ("本月", day.replace(day=1)),
+                   "7": ("近 7 天", day - timedelta(days=6)),
+                   "28": ("近 28 天", day - timedelta(days=27))}
+        overview = overview if overview in periods else "week"
+        label, summary_start = periods[overview]
+        review_query = urlencode({"overview": overview})
+        back = "/?" + urlencode({"day": chosen, "overview": overview}) + "#aurora-review"
         add_review_links(review_charts[1], "", back, today.date())
         selected = snapshots[(chosen - review_start).days]
         selected_end = min(today, midnight(chosen + timedelta(days=1)))
         selected["confirmed_until"] = period_summary([], midnight(chosen), selected_end, intervals)["confirmed_until"]
-        day = today.date()
-        week_start = day - timedelta(days=day.weekday())
-        month_start = day.replace(day=1)
-        previous_start = week_start - timedelta(days=7)
-        data = records(store, "workouts", midnight(min(month_start, day - timedelta(days=27))), today)
-        week_rows = [(at, row) for at, row in data if at[:10] >= week_start.isoformat()]
-        overview = [{"days": days, **period_summary(data, midnight(day - timedelta(days=days-1)), today, intervals)}
-                    for days in (7, 28)]
+        data = records(store, "workouts", midnight(summary_start), today)
+        period = period_summary(data, midnight(summary_start), today, intervals)
+        prior = None
+        if overview == "week":
+            previous_start = midnight(week_start - timedelta(days=7))
+            previous_end = today - timedelta(days=7)
+            previous_rows = records(store, "workouts", previous_start, previous_end)
+            prior = period_summary(previous_rows, previous_start, previous_end, intervals)
+        period_links = [(key, name, "/?" + urlencode({"day": chosen, "overview": key}) + "#overview-summary")
+                        for key, (name, _) in periods.items()]
         stats = store.home_sync_status()
         connection = mcp_state()
         retry = retry_after()
@@ -74,11 +87,11 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
             warning = {"partial": "最近一轮同步只更新了部分数据。", "failed": "最近一轮同步失败。"}.get(stats["latest_status"])
         return TEMPLATES.TemplateResponse(
             request=request, name="discovery.html",
-            context={"overview": overview, "week": period_summary(data, midnight(week_start), today, intervals),
-                     "prior": period_summary(data, midnight(previous_start), today - timedelta(days=7), intervals),
-                     "month": period_summary(data, midnight(month_start), today, intervals),
+            context={"overview": overview, "period": period, "period_label": label, "period_start": summary_start,
+                     "period_end": today.isoformat(timespec="minutes"), "period_links": period_links,
+                     "prior": prior, "review_query": review_query, "chosen_day": chosen,
                      "selected_link": activity_link(chosen, chosen, return_to=back), "today": day,
-                     "sports": sport_counts(week_rows), "last_sync": stats["last_success_at"],
+                     "sports": sport_counts(data), "last_sync": stats["last_success_at"],
                      "sync_warning": warning, "source_success": stats["source_success"], "source_labels": SOURCE_LABELS,
                      "weekly_goal": preferences.get("weekly_km"), "review_days": snapshots,
                      "selected": selected, "week_from": review_start,
@@ -245,13 +258,38 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
         fields = preferences.get("wellness_fields", {})
         unit = preferences.get("sleep_stage_unit", "seconds")
         sleep = recent("sleep", days+1)
-        charts, sleep_rows, count, latest_metrics = wellness(sleep, recent("recovery", days),
+        recovery = recent("recovery", days)
+        charts, sleep_rows, count, latest_metrics = wellness(sleep, recovery,
             recent("workouts", days), span, fields, unit, training_coverage=store.coverage("workouts"))
         first = span[0].isoformat()
-        return dashboard(request, "睡眠与恢复", charts=charts, wellness_days=days, sleep_rows=sleep_rows,
+        latest_balance = next(((at, round(value * 100, 2)) for at, row in reversed(recovery)
+                               if (value := numeric(row["entryData"].get("Balance"))) is not None
+                               and 0 <= value <= 1), None)
+        metric_states = []
+        observed = store.observed_entry_fields("recovery", midnight(today - timedelta(days=89)).isoformat())
+        candidates = {row["name"] for row in observed
+                      if row["type"] in ("integer", "real") and row["name"] not in {"Balance", "StressState"}}
+        readings = {item[0]: item for item in latest_metrics}
+        for key, name, title in (("hrv", "HRV", "HRV（ms）"), ("resting_hr", "静息心率", "静息心率（bpm）")):
+            field = fields.get(key)
+            if not field:
+                message = "尚未配置字段" if candidates else "尚未采到可供配置的数值字段"
+            elif field not in candidates and not any(field in row["entryData"] for _, row in recovery):
+                message = "近期未采到已配置字段"
+            elif title not in readings:
+                message = "所选时段没有有效样本"
+            else:
+                graph = next(item for item in charts if item["title"] == title)
+                baseline = graph["columns"]["14 日个人基线"]
+                reading_day = readings[title][2][:10]
+                message = "基线样本不足" if baseline[graph["labels"].index(reading_day)] is None else ""
+            metric_states.append((name, readings.get(title), message))
+        groups = [(key, title, [item for item in charts if item["group"] == key])
+                  for key, title in (("sleep", "睡眠"), ("recovery", "恢复"), ("metrics", "HRV 与静息心率"))]
+        return dashboard(request, "睡眠与恢复", charts=charts, wellness_groups=groups,
+                         wellness_days=days, sleep_rows=sleep_rows, metric_states=metric_states, latest_balance=latest_balance,
                          sleep_count=count, sleep_samples=sum(at[:10] >= first for at, _ in sleep),
-                         latest_sleep=next((row[0] for row in sleep_rows if row[-1] is not None), None),
-                         latest_metrics=latest_metrics)
+                         latest_sleep=next((row for row in sleep_rows if row[-1] is not None), None))
 
     @router.get("/daily-activity")
     def daily_activity(request: Request, source: str = "", period: str = "day",
@@ -260,9 +298,36 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
         preferences = config.read()
         goal = preferences.get("step_goal")
         period = period if period in ("day", "week", "month") else "day"
-        charts, providers, selected, metrics = daily_report(recent("daily_activity", days),
-            dates(today - timedelta(days=days-1), today), source or preferences.get("primary_source"), goal, period)
+        providers = store.daily_providers()
+        preferred = source if "source" in request.query_params else preferences.get("primary_source")
+        charts, _, selected, metrics = daily_report(recent("daily_activity", days),
+            dates(today - timedelta(days=days-1), today), preferred if preferred in providers else "", goal, period)
         return dashboard(request, "日常活动", charts=charts, daily_stats=metrics, providers=providers,
-                         provider=selected, daily_period=period, daily_days=days, step_goal=goal)
+                         provider=selected, daily_period=period, daily_days=days, step_goal=goal,
+                         daily_source=preferred if preferred in providers else "",
+                         daily_saved={"source": "已保存常用来源。", "goal": "已保存每日步数目标。"}
+                         .get(request.query_params.get("saved")))
+
+    @router.post("/daily-activity/preferences")
+    async def daily_preferences(action: Annotated[str, Form()], days: Annotated[int, Form(ge=7, le=366)],
+                                period: Annotated[str, Form()], source: Annotated[str, Form()] = "",
+                                step_goal: Annotated[str, Form()] = ""):
+        if period not in ("day", "week", "month") or source and source not in store.daily_providers():
+            raise HTTPException(422, "请选择有效的日常活动时间范围或数据来源。")
+        if action == "source":
+            changes = {"primary_source": source}
+        elif action == "goal":
+            try:
+                goal = int(step_goal) if step_goal.strip() else None
+                if goal is not None and not 1 <= goal <= 1000000:
+                    raise ValueError
+            except ValueError as exc:
+                raise HTTPException(422, "请填写 1 至 1000000 步，或留空清除目标。") from exc
+            changes = {"step_goal": goal}
+        else:
+            raise HTTPException(422, "未知的偏好操作。")
+        await asyncio.to_thread(config.update, changes)
+        query = urlencode({"days": days, "period": period, "source": source, "saved": action})
+        return RedirectResponse("/daily-activity?" + query, status_code=303, headers=NO_CACHE)
 
     return router

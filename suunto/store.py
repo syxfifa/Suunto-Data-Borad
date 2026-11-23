@@ -316,6 +316,13 @@ class Store:
         found = self.query("SELECT payload FROM records WHERE source=? AND record_key=?", (source, key))
         return json.loads(found[0]["payload"]) if found else None
 
+    def daily_providers(self):
+        return [row["provider"] for row in self.query("""
+            SELECT DISTINCT json_extract(payload, '$.Source') AS provider FROM records
+            WHERE source='daily_activity' AND json_type(payload, '$.Source')='text'
+            ORDER BY provider
+        """)]
+
     def observed_entry_fields(self, source, since):
         return self.query("""
             SELECT field.key AS name, field.type AS type, count(*) AS samples,

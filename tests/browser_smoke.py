@@ -211,6 +211,57 @@ def exercise(browser, origin, fixture, width):
         page.get_by_role("link", name="月报", exact=True).click()
         expect(page.get_by_role("heading", name="月报", exact=True)).to_be_visible()
         expect(page.get_by_role("heading", name="周报", exact=True)).to_have_count(0)
+        page.goto(origin + "/?day=" + day)
+        expect(page.get_by_role("heading", name=f"复盘日期 {day}")).to_be_visible()
+        page.get_by_role("link", name="近 28 天", exact=True).click()
+        expect(page.get_by_role("heading", name="活动汇总 · 近 28 天")).to_be_visible()
+        assert parse_qs(urlsplit(page.url).query)["day"] == [day]
+        page.get_by_role("link", name="回到今天").click()
+        expect(page.get_by_role("heading", name=f"复盘日期 {now.date()}")).to_be_visible()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+
+        store.commit(run, "sleep", [("sleep-test", when.isoformat(), {
+            "entryData": {"SleepId": 1, "Duration": 25200},
+        })])
+        store.commit(run, "recovery", [("recovery-test", when.isoformat(), {
+            "entryData": {"Balance": .75, "StressState": 4, "HRV": 52},
+        })])
+        page.goto(origin + "/sleep-recovery")
+        readings = page.locator(".wellness-latest")
+        expect(readings).to_contain_text("7.0 小时")
+        expect(readings).to_contain_text("尚未配置字段")
+        expect(page.get_by_role("heading", name="HRV 与静息心率")).to_be_visible()
+        page.get_by_role("link", name="配置已采到的睡眠与恢复字段").click()
+        page.get_by_label("HRV（毫秒）").select_option("HRV")
+        page.get_by_role("button", name="保存偏好").click()
+        page.goto(origin + "/sleep-recovery")
+        expect(readings).to_contain_text("52 ms")
+        expect(readings).to_contain_text("基线样本不足")
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+
+        store.commit(run, "daily_activity", [("daily-primary", when.isoformat(), {
+            "Name": "stepcount", "Aggregation": "sum", "Source": "手表", "Sample": {"Value": 8900},
+        })])
+        page.goto(origin + "/daily-activity")
+        expect(page.get_by_label("数据来源")).to_have_count(0)
+        expect(page.get_by_text("当前来源：手表。")).to_be_visible()
+        store.commit(run, "daily_activity", [("daily-secondary", when.isoformat(), {
+            "Name": "stepcount", "Aggregation": "sum", "Source": "手机", "Sample": {"Value": 7200},
+        })])
+        page.reload()
+        page.get_by_label("数据来源").select_option("手机")
+        page.get_by_label("查看尺度").select_option("week")
+        page.get_by_role("button", name="记住来源设置").click()
+        expect(page.get_by_text("已保存常用来源。")).to_be_visible()
+        expect(page.get_by_text("标签括号为有效天数", exact=False).first).to_be_visible()
+        page.get_by_text("设置每日步数目标", exact=True).click()
+        page.get_by_label("每日目标（步，留空清除）").fill("7000")
+        page.get_by_role("button", name="保存目标").click()
+        expect(page.get_by_text("每日目标 7000 步，达标 1 / 1 个有效日。")).to_be_visible()
+        page.goto(origin + "/daily-activity")
+        expect(page.get_by_label("数据来源")).to_have_value("手机")
+        expect(page.get_by_text("每日目标 7000 步", exact=False)).to_be_visible()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
         exercise_amap(context, page, origin, store, when.isoformat(), now.isoformat(), width)
 
 
@@ -263,6 +314,12 @@ def exercise_amap(context, page, origin, store, older, newer, width):
     page.goto(origin + "/routes")
     expect(page.locator("#route-map")).to_be_hidden()
     assert not requests
+    page.get_by_role("button", name="公园环线").click()
+    expect(page.locator("#route-coordinates")).not_to_have_value("")
+    expect(page.get_by_role("link", name="在 OpenStreetMap 打开底图")).to_be_visible()
+    assert not requests
+    page.get_by_role("button", name="返回路线列表").click()
+    expect(page.locator("#route-map")).to_be_hidden()
     page.goto(origin + "/settings")
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Settings overflow at {width}px"
     expect(page.locator("#sync-details")).not_to_have_attribute("open", "")
@@ -287,6 +344,10 @@ def exercise_amap(context, page, origin, store, older, newer, width):
     other = page.locator('.route-select[aria-pressed="false"]')
     assert first == "公园环线"
     expect(preview).to_have_attribute("data-markers", "起点,终点")
+    if width < 960:
+        expect(page.locator(".route-inline-map #amap-preview")).to_be_visible()
+    else:
+        expect(page.locator("#route-map-home #amap-preview")).to_be_visible()
     page.get_by_role("button", name="放大地图").click()
     expect(preview).to_have_attribute("data-zoom", "in")
     other.click()
@@ -333,7 +394,7 @@ def main():
                                 exercise(browser, origin, fixture, width)
                         else:
                             exercise(browser, f"http://{host}:{port}", fixture, width)
-                    print(f"{host} · {width}px · OAuth, date filters and AMap preview passed")
+                    print(f"{host} · {width}px · OAuth, P0/P1 dashboard flows and AMap preview passed")
                 finally:
                     fixture.doCleanups()
         finally:

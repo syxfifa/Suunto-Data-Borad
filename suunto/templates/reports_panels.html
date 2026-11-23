@@ -62,43 +62,77 @@
 </section>
 {% endif %}
 {% if wellness_days is defined %}
-<div class="controls">{% for n in (7, 28, 90) %}<a href="/sleep-recovery?days={{ n }}">近 {{ n }} 天</a>{% endfor %}</div>
-<p>有有效睡眠时长的夜晚 {{ sleep_count }} 晚，MCP 原始睡眠样本 {{ sleep_samples }} 条。
-  {% if latest_sleep %}最近有效睡眠日期 {{ latest_sleep }}。{% endif %}</p>
-<p>晨间身体资源取北京时间 05:00–10:00 的首条有效读数，日均使用当天所有有效读数。压力图按有效样本计数。</p>
-<p>可在<a href="/settings#preferences">设置</a>中为已采到的字段配置睡眠阶段、HRV 和静息心率。</p>
-{% if latest_metrics %}
-<section><h2>最近读数</h2><p>HRV 图使用日中位数，14 日基线至少需要 3 天有效读数，CSV 保留每条有效读数。</p><ul>
-  {% for label, value, at, days, samples in latest_metrics %}<li>{{ label }} {{ value }} · {{ at }} · 有效 {{ samples }} 条 / {{ days }} 天</li>{% endfor %}
-</ul></section>
-{% endif %}
+<nav class="section-nav report-switch" aria-label="睡眠与恢复时间范围">
+  {% for n in (7, 28, 90) %}<a href="/sleep-recovery?days={{ n }}"{% if n == wellness_days %} aria-current="page"{% endif %}>近 {{ n }} 天</a>{% endfor %}
+</nav>
+<section class="wellness-latest" aria-labelledby="wellness-latest-title">
+  <h2 id="wellness-latest-title">最近有效读数</h2>
+  <dl class="wellness-readings">
+    <div><dt>睡眠时长</dt>
+      <dd>{% if latest_sleep %}{{ latest_sleep[-1] }} 小时 <small>{{ latest_sleep[0] }}</small>{% else %}— <small>所选时段没有有效睡眠时长</small>{% endif %}</dd>
+    </div>
+    <div><dt>身体资源</dt>
+      <dd>{% if latest_balance %}{{ latest_balance[1] }}% <small>{{ latest_balance[0][:16]|replace('T', ' ') }}</small>{% else %}— <small>所选时段没有有效读数</small>{% endif %}</dd>
+    </div>
+    {% for name, reading, status in metric_states %}
+    <div><dt>{{ name }}</dt>
+      <dd>{% if reading %}{{ reading[1] }} {{ 'ms' if name == 'HRV' else 'bpm' }} <small>{{ reading[2][:16]|replace('T', ' ') }}</small>{% else %}—{% endif %}
+        {% if status %}<small>{{ status }}</small>{% endif %}
+      </dd>
+    </div>
+    {% endfor %}
+  </dl>
+  <p class="meta">所选时段有 {{ sleep_count }} 晚有效睡眠，原始睡眠样本 {{ sleep_samples }} 条。时间为北京时间。</p>
+</section>
 {% endif %}
 {% if daily_stats is defined %}
+{% if daily_saved %}<p class="notice" role="status">{{ daily_saved }}</p>{% endif %}
 <section>
   <form action="/daily-activity" class="controls">
-    <label>数据来源<select name="source">{% for name in providers %}<option {% if name == provider %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
+    {% if providers|length > 1 %}
+    <label>数据来源<select name="source"><option value="">自动选择</option>{% for name in providers %}<option {% if name == daily_source %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
+    {% endif %}
     <label>查看尺度<select name="period">{% for key, label in [('day', '日'), ('week', '周'), ('month', '月')] %}
       <option value="{{ key }}" {% if key == daily_period %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
     <label>时间范围<select name="days">{% for n in (7, 28, 90, 365) %}
       <option value="{{ n }}" {% if n == daily_days %}selected{% endif %}>近 {{ n }} 天</option>{% endfor %}</select></label>
     <button>查看</button>
+    {% if providers|length > 1 %}
+    <button class="secondary" name="action" value="source" formaction="/daily-activity/preferences" formmethod="post">记住来源设置</button>
+    {% endif %}
   </form>
-  <p>步数有效 {{ daily_stats.days }} 天，缺失 {{ daily_stats.missing }} 天。
-     日均 {{ daily_stats.average if daily_stats.average is not none else '—' }} 步。
-     {% if step_goal %}目标 {{ step_goal }} 步，达标 {{ daily_stats.goal_days }} / {{ daily_stats.days }} 天。{% endif %}</p>
-  <p>当前来源：{{ provider or '暂无可用来源' }}。周/月柱标签为有效天数 / 所选日期中的天数。</p>
+  <p>当前来源：{{ provider or (providers[0] if providers|length == 1 else '暂无可用来源') }}。</p>
+  <p>步数有效 {{ daily_stats.days }} 天，缺失 {{ daily_stats.missing }} 天。日均 {{ daily_stats.average if daily_stats.average is not none else '—' }} 步。</p>
+  {% if step_goal %}<p>每日目标 {{ step_goal }} 步，达标 {{ daily_stats.goal_days }} / {{ daily_stats.days }} 个有效日。</p>{% endif %}
+  <details>
+    <summary>{{ '修改每日步数目标' if step_goal else '设置每日步数目标' }}</summary>
+    <form action="/daily-activity/preferences" method="post" class="controls">
+      <input type="hidden" name="source" value="{{ daily_source }}">
+      <input type="hidden" name="days" value="{{ daily_days }}">
+      <input type="hidden" name="period" value="{{ daily_period }}">
+      <label>每日目标（步，留空清除）<input name="step_goal" type="number" min="1" max="1000000" value="{{ step_goal or '' }}"></label>
+      <button name="action" value="goal">保存目标</button>
+    </form>
+  </details>
 </section>
 {% endif %}
 {% if route_filter is defined %}
-<form action="/routes" class="controls">
+<form action="/routes" class="route-filters">
+  <div class="controls">
   <label>路线名称<input name="q" value="{{ route_filter.q }}"></label>
   <label>运动类型<select name="sport"><option value="">全部</option>{% for name in route_sports %}<option {% if name == route_filter.sport %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
   <label>最短距离（km）<input type="number" name="km" min="0" step="any" value="{{ route_filter.km if route_filter.km is not none else '' }}"></label>
+  <button>筛选路线</button>
+  </div>
+  <details{% if route_filter.updated or route_filter.updated_to or route_filter.watch or route_filter.visibility %} open{% endif %}>
+  <summary>高级筛选</summary>
+  <div class="controls">
   <label>更新日期起<input type="date" name="updated" value="{{ route_filter.updated }}"></label>
   <label>更新日期止<input type="date" name="updated_to" value="{{ route_filter.updated_to }}"></label>
   <label>手表状态<select name="watch"><option value="">全部</option><option value="on" {% if route_filter.watch == 'on' %}selected{% endif %}>已启用</option><option value="off" {% if route_filter.watch == 'off' %}selected{% endif %}>未启用</option></select></label>
   <label>可见性<select name="visibility"><option value="">全部</option><option value="PUBLIC" {% if route_filter.visibility == 'PUBLIC' %}selected{% endif %}>公开</option><option value="PRIVATE" {% if route_filter.visibility == 'PRIVATE' %}selected{% endif %}>私有</option></select></label>
-  <button>筛选路线</button>
+  </div>
+  </details>
 </form>
 <p>共 {{ route_count }} 条路线{% if route_summary %} · {% for name, count in route_summary %}{{ name }} {{ count }} 条{{ '、' if not loop.last else '' }}{% endfor %}{% endif %}</p>
 {% endif %}

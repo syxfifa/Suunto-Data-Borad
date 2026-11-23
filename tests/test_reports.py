@@ -137,10 +137,14 @@ class ReportsTest(unittest.TestCase):
                 detail = browser.get("/workout?" + urlencode({"id": "a", "return_to": detail_back})).text
                 self.assertIn('href="/activities?sport=Running&amp;page=2#activity-0"', detail)
                 self.assertNotIn("返回复盘图表", browser.get("/activities?return_to=//external.example/").text)
-                self.assertNotIn('id="route-map-link"', browser.get("/routes?watch=on").text)
+                self.assertIn('id="route-map-link"', browser.get("/routes?watch=on").text)
+                settings = browser.get("/settings").text
+                self.assertNotIn('name="route_basemap"', settings)
+                self.assertNotIn('href="/export.csv"', settings)
+                self.assertNotIn('action="/maintenance/retention"', browser.get("/maintenance").text)
                 self.assertNotIn("Demo route", browser.get("/routes?watch=off").text)
                 self.assertEqual(browser.post("/preferences", data={"hrv": "unobserved"}, follow_redirects=False).status_code, 422)
-                result = browser.post("/preferences", data={"route_basemap": "true", "weekly_km": "",
+                result = browser.post("/preferences", data={"weekly_km": "",
                                       "step_goal": ""}, follow_redirects=False)
                 self.assertEqual(result.status_code, 303)
                 self.assertIn('id="route-map-link"', browser.get("/routes?watch=on&km=").text)

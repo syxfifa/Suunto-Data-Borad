@@ -9,42 +9,50 @@
 {% include "reports_panels.html" %}
 {% if settings_minutes is defined %}
 <nav class="section-nav" aria-label="设置页分区">
-  <a href="#suunto">连接与授权</a><a href="#sync">同步</a><a href="#backfill">历史补采</a><a href="#preferences">显示偏好</a><a href="#amap-settings">高德地图预览</a><a href="/maintenance#access">访问控制</a>
+  <a href="#suunto">连接与同步</a><a href="#backfill">历史补采</a><a href="#amap-settings">高德地图</a><a href="/export">导出数据</a><a href="/maintenance">维护</a>
 </nav>
 {% if saved %}<p class="notice" role="status">已保存同步间隔。</p>{% endif %}
 <p>看板密码{{ '已启用' if access_protected else '未启用' }}。{% if not access_protected %}
 能访问当前端口的设备可查看训练与健康数据，请在 NAS 防火墙限制来源。{% endif %}
 <a href="/maintenance#access">管理访问控制</a></p>
 <div class="settings-grid" id="suunto">
-    <section class="authorization">
-      <h2>Suunto 授权</h2>
-      {% if oauth_error %}<p role="alert">{{ oauth_error }}</p>{% endif %}
-      <p>完成 Suunto 授权后，浏览器会返回当前看板并开始同步。</p>
-      {% if request.url.path == '/oauth/callback' %}
-      <a class="button secondary" href="/settings">返回设置重新连接 Suunto</a>
-      {% else %}
-      <form method="post" action="/oauth/start">
-        {% if account_has_data %}
-        <p id="account-isolation">此卷已有个人数据。连接其他账号会混入历史记录。换账号请使用独立的 Compose 项目和数据卷。</p>
-        <p><label><input type="checkbox" name="same_account" value="true" aria-describedby="account-isolation" required>确认继续使用此数据卷原来的 Suunto 账号</label></p>
-        {% endif %}
-        <button>连接 Suunto</button>
-      </form>
+<section id="sync" class="authorization">
+  <h2>Suunto 连接与同步</h2>
+  {% if oauth_error %}<p role="alert">{{ oauth_error }}</p>{% endif %}
+  {% if connection == 'authorization_required' or oauth_error or request.url.path == '/oauth/callback' %}
+    <p>完成 Suunto 授权后，浏览器会返回当前看板并开始同步。</p>
+    {% if request.url.path == '/oauth/callback' %}
+    <a class="button secondary" href="/settings">返回设置重新连接 Suunto</a>
+    {% else %}
+    <form method="post" action="/oauth/start">
+      {% if account_has_data %}
+      <p id="account-isolation">此数据卷已有个人数据。换账号请使用独立的 Compose 项目和数据卷。</p>
+      <p><label><input type="checkbox" name="same_account" value="true" aria-describedby="account-isolation" required>确认继续使用此数据卷原来的 Suunto 账号</label></p>
       {% endif %}
-    </section>
-    <section>
-      <h2>MCP 连接状态</h2>
-      {% if discovery.status == 'ready' %}<p>已读取 {{ discovery.tools|length }} 个工具。</p>
-      {% elif discovery.status == 'probing' %}<p>正在探测。稍后刷新页面。</p>
-      {% else %}<p>{{ discovery.message or '等待授权。' }}</p>{% endif %}
-      {% if discovery.checked_at %}<p class="meta">探测时间 <time datetime="{{ discovery.checked_at }}">{{ discovery.checked_at[:16]|replace('T', ' ') }}</time></p>{% endif %}
-      {% if discovery.tools %}
-      <details class="tool-list"><summary>查看可用工具</summary>
-      <ul>{% for tool in discovery.tools %}<li><code>{{ tool.name }}</code></li>{% endfor %}</ul>
-      </details>
+      <button>连接 Suunto</button>
+    </form>
+    {% endif %}
+  {% else %}
+    {% if connection == 'ready' %}<p>Suunto 已连接。</p>
+    {% elif connection == 'probing' %}<p>正在检查 Suunto 连接。</p>
+    {% else %}<p role="status">{{ discovery.message or 'Suunto 连接异常。' }}</p>{% endif %}
+    <p>上次完整同步 {{ local_time(sync_status.last_success_at) }}</p>
+    {% if sync_status.running %}
+    <p role="status">同步任务进行中{% if sync_status.current_source %} · {{ source_labels.get(sync_status.current_source, sync_status.current_source) }}{% endif %}。刷新本页可查看进度。</p>
+    {% endif %}
+    {% if sync_status.incremental_pending and sync_status.task == "backfill" %}
+    <p role="status">增量同步已排队，将在当前补采窗口结束后优先执行。</p>
+    {% endif %}
+    {% if sync_status.retry_after %}<p>Suunto 正在限流。约 {{ sync_status.retry_after }} 秒后可重试。</p>{% endif %}
+    <div class="controls">
+      <form method="post" action="/sync"><button{% if sync_status.retry_after %} disabled{% endif %}>立即同步</button></form>
+      {% if connection == 'error' %}
+      <form method="post" action="/probe"><button class="secondary"{% if sync_status.retry_after %} disabled{% endif %}>重新探测</button></form>
+      <a href="/maintenance">管理 Suunto 账号</a>
       {% endif %}
-      <form method="post" action="/probe"><button class="secondary">重新探测</button></form>
-    </section>
+    </div>
+  {% endif %}
+</section>
 <section class="sync-interval">
   <h2>同步频率</h2>
   <form method="post" action="/settings" class="controls">
@@ -186,10 +194,10 @@
       <label>坐标<input id="route-coordinates" readonly></label><button type="button" id="copy-coordinates">复制坐标</button>
     </div>
   </div>
-  {% if not amap_preview %}<p>可拖动查看位置点。{% if route_basemap %}打开底图会向 OpenStreetMap 发送所选点的坐标。{% endif %}</p>{% endif %}
+  {% if not amap_preview %}<p>可拖动查看位置点。在 OpenStreetMap 打开底图会发送所选点的坐标。</p>{% endif %}
   <div class="controls">
     <button type="button" class="secondary" id="route-map-close">返回路线列表</button>
-    {% if route_basemap and not amap_preview %}<a id="route-map-link" class="button" target="_blank" rel="noopener noreferrer" hidden>在 OpenStreetMap 打开底图</a>{% endif %}
+    {% if not amap_preview %}<a id="route-map-link" class="button" target="_blank" rel="noopener noreferrer" hidden>在 OpenStreetMap 打开底图</a>{% endif %}
   </div>
 </section>
 {% endif %}
@@ -256,23 +264,15 @@
 </section>
 {% endif %}
 {% if sync_status %}
-<section id="sync">
-  <h2>同步</h2>
-  <p>上次完整同步 {{ local_time(sync_status.last_success_at) }}</p>
-  {% if sync_status.running %}
-  <p role="status">同步任务进行中{% if sync_status.current_source %} · {{ source_labels.get(sync_status.current_source, sync_status.current_source) }}{% endif %}。刷新本页可查看进度。</p>
-  {% endif %}
-  {% if sync_status.incremental_pending and sync_status.task == "backfill" %}
-  <p role="status">增量同步已排队，将在当前补采窗口结束后优先执行。</p>
-  {% endif %}
-  {% if sync_status.retry_after %}<p>Suunto 正在限流。约 {{ sync_status.retry_after }} 秒后可重试。</p>{% endif %}
-  <div class="controls">
-    <form method="post" action="/sync"><button>立即同步</button></form>
-    <form method="post" action="/workout-details"><button class="secondary">补齐缺失的运动详情</button></form>
-    <a href="/export.csv" class="button secondary">下载全部 CSV</a>
-    <a href="/export" class="button secondary">自定义导出</a>
-  </div>
-</section>
+<details id="sync-details" class="settings-details">
+<summary>同步详情与诊断{% if sync_status.window_failures %}（{{ sync_status.window_failures|length }} 个待修复窗口）{% endif %}</summary>
+{% if discovery.checked_at %}<p class="meta">最近探测 {{ local_time(discovery.checked_at) }}</p>{% endif %}
+{% if discovery.tools %}<p>MCP 可用工具（{{ discovery.tools|length }}）</p>
+<ul>{% for tool in discovery.tools %}<li><code>{{ tool.name }}</code></li>{% endfor %}</ul>
+{% endif %}
+{% if connection == 'ready' %}
+<form method="post" action="/workout-details"><button class="secondary">补齐缺失的运动详情</button></form>
+{% endif %}
 <section class="table-wrap">
   <h2>数据覆盖</h2>
   <div class="table-scroll" role="region" tabindex="0" aria-label="数据覆盖">
@@ -317,6 +317,33 @@
   </div>
 </section>
 {% endif %}
+<section class="table-wrap">
+  <h2>同步记录</h2>
+  {% if sync_status.runs %}
+  <div class="table-scroll" role="region" tabindex="0" aria-label="同步记录">
+<table>
+    <thead><tr><th scope="col">开始</th><th scope="col">类型</th><th scope="col">状态</th><th scope="col">处理</th><th scope="col">新增或更新</th></tr></thead>
+    <tbody>{% for run in sync_status.runs %}
+      <tr><td>{{ local_time(run.started_at) }}</td>
+        <td>{{ {'backfill': '历史补采', 'details': '运动详情', 'route_details': '路线详情', 'web': '手动同步', 'scheduled': '定时同步',
+                'oauth': '授权后同步', 'cli': '命令行同步', 'window_retry': '重试单个窗口'}.get(run.trigger, run.trigger) }}</td>
+        <td>{{ {'paused': '已暂停', 'yielded': '让出执行位置', 'interrupted': '已中断', 'running': '进行中', 'partial': '部分完成',
+                'ok': '完成', 'failed': '失败', 'authorization_required': '等待授权'}.get(run.status, run.status) }}</td>
+        <td>{{ run.received }}</td><td>{{ run.changed }}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+</div>
+  {% else %}<p>暂无同步记录。</p>{% endif %}
+</section>
+{% if sync_status.errors %}
+<section>
+  <h2>失败日志</h2>
+  <ul>{% for error in sync_status.errors %}
+    <li>批次 {{ error.run_id }} · {{ error.source }} · {{ error.message }}</li>
+  {% endfor %}</ul>
+</section>
+{% endif %}
+</details>
 <section class="table-wrap" id="backfill">
   <h2>历史补采</h2>
   <p>补采运动、睡眠、恢复和日常活动。日期使用北京时间，包含结束当天。</p>
@@ -348,32 +375,6 @@
     {% if pending %}<button name="mode" value="replace">用此日期替换未完成的任务</button>{% endif %}
   </form>
 </section>
-<section class="table-wrap">
-  <h2>同步记录</h2>
-  {% if sync_status.runs %}
-  <div class="table-scroll" role="region" tabindex="0" aria-label="同步记录">
-<table>
-    <thead><tr><th scope="col">开始</th><th scope="col">类型</th><th scope="col">状态</th><th scope="col">处理</th><th scope="col">新增或更新</th></tr></thead>
-    <tbody>{% for run in sync_status.runs %}
-      <tr><td>{{ local_time(run.started_at) }}</td>
-        <td>{{ {'backfill': '历史补采', 'details': '运动详情', 'route_details': '路线详情', 'web': '手动同步', 'scheduled': '定时同步',
-                'oauth': '授权后同步', 'cli': '命令行同步', 'window_retry': '重试单个窗口'}.get(run.trigger, run.trigger) }}</td>
-        <td>{{ {'paused': '已暂停', 'yielded': '让出执行位置', 'interrupted': '已中断', 'running': '进行中', 'partial': '部分完成',
-                'ok': '完成', 'failed': '失败', 'authorization_required': '等待授权'}.get(run.status, run.status) }}</td>
-        <td>{{ run.received }}</td><td>{{ run.changed }}</td></tr>
-    {% endfor %}</tbody>
-  </table>
-</div>
-  {% else %}<p>暂无同步记录。</p>{% endif %}
-</section>
-{% if sync_status.errors %}
-<section>
-  <h2>失败日志</h2>
-  <ul>{% for error in sync_status.errors %}
-    <li>批次 {{ error.run_id }} · {{ error.source }} · {{ error.message }}</li>
-  {% endfor %}</ul>
-</section>
-{% endif %}
 {% endif %}
 {% if settings_minutes is defined %}{% include "preferences.html" %}{% endif %}
 {% endblock %}

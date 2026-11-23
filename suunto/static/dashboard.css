@@ -169,7 +169,7 @@ details[open] > summary { margin-bottom: .4rem; }
 .quick-filters a { font-size: .86rem; padding-inline: .55rem; }
 .filter-panel > p:first-child { margin-top: 0; }
 .filter-panel:not(form) > p:last-child { margin-bottom: 0; }
-.tool-list { margin-bottom: .55rem; }
+.settings-details { margin-block: 1rem; }
 
 .chart-panel, .settings-grid > section { margin: 0; }
 .settings-grid { margin-bottom: 1rem; }
@@ -223,7 +223,6 @@ code { overflow-wrap: anywhere; }
   .activity-fields { grid-template-columns: repeat(3, minmax(0, 1fr)) auto; }
   .advanced-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .primary-charts .chart-panel:last-child { grid-column: 1 / -1; }
-  .settings-grid .sync-interval { grid-column: 1 / -1; }
 }
 @media (min-width: 66rem) {
   .site-header {
@@ -234,9 +233,8 @@ code { overflow-wrap: anywhere; }
   .site-header nav a { padding-inline: .55rem; font-size: .91rem; }
   .overview-layout:has(.overview-context) { grid-template-columns: minmax(0, 2.25fr) minmax(0, 1fr); gap: 1.25rem; }
   .overview-context { padding-inline-start: 1.25rem; }
-  .settings-grid, .primary-charts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .primary-charts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .primary-charts .chart-panel:last-child { grid-column: auto; }
-  .settings-grid .sync-interval { grid-column: auto; }
 }
 @media (max-width: 42rem) {
   .workout-key-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem .9rem; }

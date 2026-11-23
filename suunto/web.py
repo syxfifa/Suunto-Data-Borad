@@ -494,7 +494,7 @@ def create_app(data_dir=None, *, client=None):
                                          context={"title": title, **context}, headers=HOME_HEADERS)
 
     app.include_router(amap_router(amap_config, TEMPLATES))
-    app.include_router(library_router(store, config, amap_config, discovery, dashboard))
+    app.include_router(library_router(store, amap_config, discovery, dashboard))
 
     @app.get("/sync-status")
     def sync_page():
@@ -548,7 +548,7 @@ def create_app(data_dir=None, *, client=None):
                      "message": message, "oauth_error": oauth_error,
                      "settings_minutes": config.load(), "discovery": discovery, "sync_status": status,
                      "sources": sources, "source_labels": SOURCE_LABELS, "prefs": prefs, "bindings": bindings,
-                     "access_protected": access.enabled(),
+                     "access_protected": access.enabled(), "connection": mcp_state(),
                      "daily_sources": daily_sources(), "account_has_data": account_has_data()},
             headers=NO_CACHE if request.url.path == "/oauth/callback" else HOME_HEADERS,
         )
@@ -579,7 +579,6 @@ def create_app(data_dir=None, *, client=None):
                                weekly_km: Annotated[str, Form()] = "",
                                step_goal: Annotated[str, Form()] = "",
                                primary_source: Annotated[str, Form()] = "",
-                               route_basemap: Annotated[bool, Form()] = False,
                                sleep_stage_unit: Annotated[str, Form()] = "seconds"):
         if sleep_stage_unit not in ("seconds", "minutes", "ms"):
             raise HTTPException(422, "睡眠阶段单位无效。")
@@ -607,7 +606,7 @@ def create_app(data_dir=None, *, client=None):
             raise HTTPException(422, "睡眠阶段及入睡、醒来时间必须使用各自不同的字段。")
         await asyncio.to_thread(config.update, {"weekly_km": distance_goal, "step_goal": steps,
                                 "primary_source": primary_source,
-                                "route_basemap": route_basemap, "sleep_stage_unit": sleep_stage_unit,
+                                "sleep_stage_unit": sleep_stage_unit,
                                 "wellness_fields": fields})
         return RedirectResponse("/settings?preferences_saved=true#preferences", status_code=303, headers=NO_CACHE)
 

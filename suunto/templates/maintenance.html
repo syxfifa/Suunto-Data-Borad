@@ -22,14 +22,6 @@
   </div>
 </section>
 <section>
-  <h2>日志保留</h2>
-  <form action="/maintenance/retention" method="post" class="controls">
-    <label>保留天数<input type="number" name="days" min="7" max="365" value="{{ log_days }}" required></label>
-    <button>保存</button>
-  </form>
-  <p>只清理较早的同步批次和错误日志，保留运动与健康记录。</p>
-</section>
-<section>
   <h2>Suunto 账号</h2>
   <p>断开会清除这个实例的本地令牌，已有数据仍可查看。重新连接原账号可继续这一套记录；新账号请使用独立的 Compose 项目和数据卷。</p>
   {% if mcp_status != "authorization_required" %}

@@ -136,6 +136,8 @@ def exercise(browser, origin, fixture, width):
             page.locator("#mock-provider").click()
             page.locator("#mock-authorize").click()
             expect(page.get_by_text("Suunto 授权成功", exact=False)).to_be_visible()
+            expect(page.get_by_role("button", name="立即同步")).to_be_visible()
+            expect(page.get_by_role("button", name="连接 Suunto")).to_have_count(0)
         except Exception as exc:
             raise AssertionError(f"OAuth browser fixture failed on {origin}: {navigations}") from exc
         assert fixture.grants == ["authorization_code"]
@@ -229,7 +231,13 @@ def exercise_amap(context, page, origin, store, older, newer, width):
     expect(page.locator("#route-map")).to_be_hidden()
     assert not requests
     page.goto(origin + "/settings")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Settings overflow at {width}px"
+    expect(page.locator("#sync-details")).not_to_have_attribute("open", "")
+    page.locator("#sync-details > summary").press("Enter")
+    expect(page.get_by_role("heading", name="数据覆盖")).to_be_visible()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Sync details overflow at {width}px"
     settings = page.locator("#amap-settings")
+    settings.get_by_text("启用或配置高德地图", exact=True).click()
     settings.get_by_label("自动显示高德地图").check()
     settings.get_by_label("高德 Web 端 Key").fill("a" * 32)
     settings.get_by_label("安全密钥").fill("b" * 32)

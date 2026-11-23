@@ -68,7 +68,7 @@ def maintenance_router(store, config, access, mcp_state, prune_logs):
             context={"title": "维护", "maintenance": True, "message": message, "version": VERSION,
                      "counts": {name: status["counts"].get(name, 0) for name in SOURCES}, "source_labels": SOURCE_LABELS,
                      "size": round(storage_size(data_dir)/1024**2, 2), "mcp_status": mcp_state(),
-                     "last_sync": status["last_success_at"], "log_days": config.retention_days(),
+                     "last_sync": status["last_success_at"],
                      "backup_verified": last_verified_backup(data_dir),
                      "protected": access.enabled(), "secure": local_transport(request)},
             headers=HOME_HEADERS)

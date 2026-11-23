@@ -1,5 +1,5 @@
-<section id="preferences">
-  <h2>目标、地图与可选指标</h2>
+<details id="preferences" class="settings-details"{% if preferences_saved %} open{% endif %}>
+  <summary>目标与数据偏好</summary>
   {% if preferences_saved %}<p class="notice" role="status">显示偏好已保存。</p>{% endif %}
   <form action="/preferences" method="post">
     <div class="controls">
@@ -8,7 +8,6 @@
       <label>日常活动主来源<select name="primary_source"><option value="">自动选择</option>
         {% for item in daily_sources %}<option {% if item == prefs.primary_source %}selected{% endif %}>{{ item }}</option>{% endfor %}
       </select></label>
-      <label><input name="route_basemap" type="checkbox" value="true" {% if prefs.route_basemap %}checked{% endif %}>允许打开 OpenStreetMap 底图</label>
     </div>
     <details>
       <summary>睡眠与恢复字段</summary>
@@ -38,11 +37,13 @@
     </details>
     <button>保存偏好</button>
   </form>
-</section>
+</details>
 <section id="amap-settings">
   <h2>高德地图预览</h2>
   {% if amap_saved %}<p class="notice" role="status">高德地图设置已保存。</p>{% endif %}
   <p id="amap-privacy">启用后，打开「保存路线」会自动加载高德地图，并向高德发送预览位置。凭据保存在本机。</p>
+  <details{% if amap_enabled or amap_saved %} open{% endif %}>
+  <summary>{{ '配置高德地图' if amap_enabled else '启用或配置高德地图' }}</summary>
   <form action="/settings/amap" method="post">
     <div class="controls">
       <label><input type="checkbox" name="enabled" value="true" aria-describedby="amap-privacy" {% if amap_enabled %}checked{% endif %}>自动显示高德地图</label>
@@ -64,4 +65,5 @@
     <p class="meta">使用已保存的配置和公开坐标测试。</p>
   </form>
   {% endif %}
+  </details>
 </section>

@@ -156,7 +156,7 @@ class SyncTest(unittest.TestCase):
             self.assertEqual(browser.post("/settings", data={"minutes": "0"}).status_code, 422)
             response = browser.post("/settings", data={"minutes": "15"})
             self.assertIn("已保存同步间隔", response.text)
-            self.assertIn("MCP 连接状态", response.text)
+            self.assertIn("Suunto 连接与同步", response.text)
             self.assertIn("连接 Suunto", response.text)
             self.assertIn("同步记录", response.text)
             self.assertNotIn("/oauth/start", browser.get("/").text)

@@ -16,7 +16,7 @@ ROUTE_SPORTS = """CASE WHEN json_type(payload, '$.activityNames')='array'
                         THEN json_extract(payload, '$.activityNames') ELSE '[]' END"""
 
 
-def library_router(store, config, amap_config, discovery, render):
+def library_router(store, amap_config, discovery, render):
     router = APIRouter()
 
     @router.get("/compare")
@@ -150,7 +150,6 @@ def library_router(store, config, amap_config, discovery, render):
                       rows=table_rows(entries, "routes"), route_maps=route_map_points(entries), route_meta=metadata,
                       route_sports=sports, route_summary=distribution, route_filter=route_filter, route_query=query,
                       route_page=page, route_pages=pages, route_count=count,
-                      route_basemap=config.read().get("route_basemap", False),
                       amap_preview=preview,
                       route_detail_available=any(t["name"] == "get_route_summary" for t in discovery["tools"]))
 

@@ -1,8 +1,12 @@
 """Measure page latency and SQLite batch writes using disposable synthetic data."""
 
+from concurrent.futures import ThreadPoolExecutor
+from csv import reader
 from datetime import datetime, timedelta
+from io import StringIO
 from statistics import median
 from tempfile import TemporaryDirectory
+from threading import Event
 from time import perf_counter
 
 from fastapi.testclient import TestClient
@@ -36,8 +40,12 @@ def measure(years):
             for i in range(routes)])
         print(f"{years}y {workouts} activities / {routes} routes · SQLite {storage_size(directory)/1024**2:.1f} MiB"
               f" · fixture ingest {(perf_counter() - begin) * 1000:.1f} ms")
+        startup = perf_counter()
         with TestClient(create_app(directory)) as browser:
-            for url in ("/compare?sport=Running&first=w0&second=w2", "/routes", "/routes?q=route&sport=Cycling"):
+            browser.get("/healthz").raise_for_status()
+            print(f"cold app startup and health check {(perf_counter() - startup) * 1000:.1f} ms")
+            urls = ("/compare?sport=Running&first=w0&second=w2", "/routes", "/routes?q=route&sport=Cycling")
+            for url in urls:
                 browser.get(url).raise_for_status()
                 samples = []
                 for _ in range(7):
@@ -46,6 +54,40 @@ def measure(years):
                     result.raise_for_status()
                     samples.append((perf_counter() - begin) * 1000)
                 print(f"{url} · median {median(samples):.1f} ms · HTML {len(result.content)} bytes")
+            concurrent_access(browser, store, when, workouts + routes)
+
+
+def concurrent_access(browser, store, when, expected_rows):
+    wrote, release = Event(), Event()
+
+    def simulate_sync_transaction():
+        with store.connect() as db:
+            db.execute("INSERT INTO records VALUES (?, ?, ?, ?)", ("workouts", "pending", when.isoformat(), "{}"))
+            wrote.set()
+            if not release.wait(30):
+                raise TimeoutError("The read workload did not finish while the writer was active")
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        writer = workers.submit(simulate_sync_transaction)
+        try:
+            if not wrote.wait(10):
+                raise TimeoutError("SQLite writer failed to start")
+            begin = perf_counter()
+            browser.get("/routes").raise_for_status()
+            print(f"routes with active writer {(perf_counter() - begin) * 1000:.1f} ms")
+            begin = perf_counter()
+            exported = browser.get("/export.csv").raise_for_status()
+            elapsed = perf_counter() - begin
+            records = reader(StringIO(exported.content.decode("utf-8-sig")))
+            assert next(records) == ["source", "record_key", "occurred_at", "payload"]
+            keys = [row[1] for row in records]
+            assert len(keys) == expected_rows and "pending" not in keys
+            assert store.record("workouts", "pending") is None
+            print(f"CSV with active writer · {expected_rows} rows · {len(exported.content)/1024**2:.1f} MiB · {elapsed * 1000:.1f} ms")
+        finally:
+            release.set()
+        writer.result()
+    assert store.record("workouts", "pending") == {}
 
 
 if __name__ == "__main__":

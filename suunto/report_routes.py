@@ -94,8 +94,9 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
 
     @router.get("/training")
     def training(request: Request, period: str = "day", sport: str = "",
-                 days: Annotated[int, Query(ge=7, le=366)] = 90):
+                 days: Annotated[int, Query(ge=7, le=366)] = 90, report: str = "week"):
         weekly = period == "week"
+        report = "month" if report == "month" else "week"
         current_time = datetime.now(TZ)
         today = current_time.date()
         first_day = today - timedelta(days=days-1)
@@ -107,18 +108,20 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
         history = [(at, row) for at, row in context_rows if not selected or sport_name(row) == selected]
         current = [(at, row) for at, row in history if at[:10] >= first_day.isoformat()]
         series = workout_chart(current, weekly, first_day, today, coverage, TZ, extended=True)
-        back = "/training?" + urlencode({"period": "week" if weekly else "day", "sport": selected, "days": days})
+        back = "/training?" + urlencode({"period": "week" if weekly else "day", "sport": selected, "days": days, "report": report})
         add_review_links(series, selected, back + "#training-charts", today)
-        months = grouped_totals(current, first_day, today, coverage, monthly=True)
-        weeks = grouped_totals(current, first_day, today, coverage)
-        for item in months + weeks:
+        totals = grouped_totals(current, first_day, today, coverage, monthly=report == "month")
+        for item in totals:
             item["link"] = activity_link(item["start"], item["end"], selected, back + "#training-reports")
+        report_links = {key: "/training?" + urlencode({"period": period, "days": days,
+                        "sport": selected, "report": key}) + "#training-reports" for key in ("week", "month")}
         acwr = acwr_series(history, first_day, today, coverage)
         return dashboard(request, "训练趋势", show_period=True, weekly=weekly,
                          charts=series[:2] + [series[4]], sport=selected, sports=sports, days=days,
                          advanced_charts=series[2:4] + series[5:] + [acwr],
                          acwr_days=sum(value is not None for value in acwr["columns"]["ACWR"]),
-                         monthly_totals=months, weeks=weeks,
+                         report=report, training_totals=totals, report_links=report_links,
+                         range_summary=period_summary(current, midnight(first_day), current_time, coverage),
                          streak=longest_streak(current), training_mix=sport_counts(current))
 
     @router.get("/activities")
@@ -130,10 +133,6 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
         activity_span = store.query(
             "SELECT min(occurred_at) AS first, max(occurred_at) AS last FROM records WHERE source='workouts'"
         )[0]
-        available_days = store.query("""
-            SELECT DISTINCT substr(occurred_at, 1, 10) AS day FROM records
-            WHERE source='workouts' AND occurred_at IS NOT NULL ORDER BY day DESC LIMIT 90
-        """)
         presets = [(f"近 {days} 天", (today - timedelta(days=days-1)).isoformat()) for days in (7, 28, 90)]
         presets.append(("本月", today.replace(day=1).isoformat()))
         activity_types = store.query("""
@@ -141,7 +140,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
             FROM records WHERE source='workouts' ORDER BY sport
         """)
         search_state = {"sport": sport, "q": q, "km": km, "minutes": minutes, "tss": tss, "sort": sort, "order": order}
-        filters = {"filters": True, "activity_span": activity_span, "available_days": available_days,
+        filters = {"filters": True, "activity_span": activity_span,
                    "presets": presets, "today": today, "activity_types": activity_types, "search": search_state,
                    "review_return": local_return(return_to, "/", "/training"),
                    "search_query": urlencode({key: value for key, value in search_state.items() if value not in ("", None)})}
@@ -166,7 +165,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
             store, begin, finish, page, sport=sport, search=q.strip(), sort=sort, order=order,
             minimums={"distance": km * 1000 if km is not None else None,
                       "duration": minutes * 60 if minutes is not None else None, "tss": tss})
-        summary = None
+        summary = empty_action = None
         if count == 0:
             start_at = begin.isoformat() if begin else None
             end_at = finish.isoformat() if finish else None
@@ -178,21 +177,40 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
                 LIMIT 1
                 """, (end_at, end_at, start_at, start_at))
             if match:
-                summary = "这段日期的运动同步遇到问题，请查看设置中的同步状态。"
+                summary = "这段日期的运动同步遇到问题，可以查看同步状态。"
+                empty_action = ("/settings#sync-details", "查看同步详情")
             elif begin and covers(store.coverage("workouts"), begin, finish or datetime.now(TZ)):
                 summary = "这段已查询范围内没有符合筛选条件的活动。"
+                empty_action = ("/activities?start=&end=", "清除筛选")
             else:
-                summary = "本地没有匹配记录，所选范围尚未确认完整。可到设置发起历史补采。"
+                summary = "本地没有匹配记录，所选范围尚未确认完整。可以补采历史。"
+                empty_action = ("/settings#backfill", "查看历史补采")
         export_query = urlencode({"source": "workouts", "start": first or "", "end": last or "",
                                   **{key: search_state[key] for key in ("sport", "q", "km", "minutes", "tss")}})
         current_page = "/activities?" + urlencode({"start": first or "", "end": last or "", "page": page,
                                                  **search_state, "return_to": filters["review_return"] or ""})
+        filter_values = {"start": first or "", "end": last or "", **search_state,
+                         "return_to": filters["review_return"] or ""}
+        labels = {"start": "起始", "end": "截止", "sport": "运动类型", "q": "关键词",
+                  "km": "最短距离 km", "minutes": "最短时长 分钟", "tss": "最低 TSS",
+                  "sort": "排序", "order": "方向"}
+        sort_labels = {"distance": "距离", "duration": "时长", "tss": "TSS", "asc": "从小到大"}
+        active_filters = []
+        for key, label in labels.items():
+            value = filter_values[key]
+            if value and value not in {"sort": ("date",), "order": ("desc",)}.get(key, ()):
+                cleared = {**filter_values, key: ""}
+                if key in ("sort", "order"):
+                    cleared.pop(key)
+                shown = sort_labels.get(value, value) if key in ("sort", "order") else value
+                active_filters.append((label, shown, "/activities?" + urlencode(cleared)))
         details = ["/workout?" + urlencode({"id": key, "return_to": current_page + f"#activity-{index}"})
                    for index, key in enumerate(keys)]
         return dashboard(request, "运动活动", **filters, start=first, end=last, detail_links=details,
                          headings=("北京时间", "运动类型", "距离（km）", "时长（分钟）", "平均心率", "训练效果 PTE"),
                          rows=rows, activity_keys=keys, result_count=count, page=page, pages=pages,
-                         empty_message=summary, export_query=export_query)
+                         empty_message=summary, empty_action=empty_action, active_filters=active_filters,
+                         export_query=export_query)
 
     @router.get("/workout")
     def workout(request: Request, id: str, return_to: str = ""):
@@ -207,7 +225,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
                     "avgPower", "pte", "peakEpoc", "recoveryTime", "zones"}
         optional = {labels.get(key, key): value for key, value in detail.items()
                     if key not in featured and value is not None}
-        back = local_return(return_to, "/activities")
+        back = local_return(return_to, "/activities", "/compare")
         detail_url = "/workout?" + urlencode({"id": id, "return_to": back or ""})
         compare_url = "/compare?" + urlencode({"first": id, "sport": sport_name(row), "return_to": detail_url})
         metrics = workout_metrics(row)

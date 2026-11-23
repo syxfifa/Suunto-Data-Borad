@@ -1,6 +1,6 @@
 # Suunto Data Borad 使用手册
 
-当前版本 **V1.0.11**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。健康检查由镜像提供。
+当前版本 **V1.0.12**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。健康检查由镜像提供。
 
 ## 第一次部署
 
@@ -29,6 +29,8 @@ Compose 的 `7383:7383` 左侧是 NAS 端口，右侧是容器端口。`./suunto
 | `backup-status.json` | 最近一次通过 `verify --record` 记录的备份验证时间 |
 
 ## 看板功能
+
+运动活动支持手输或用日历选择起止日期。结果上方可逐项清除条件。勾选两条同类型活动后可比较，翻页时会保留本浏览器标签页中的勾选。训练趋势可切换周报和月报，图表底部标记提示已确认无活动、同步覆盖和缺少指标。
 
 | 页面 | 怎么用 |
 | --- | --- |
@@ -86,7 +88,7 @@ docker compose up -d
 
 ### 固定版本与回滚
 
-想固定版本，可将 Compose 的 `image` 改为 `jjsyx123/suunto-data-borad:1.0.11`，执行 `docker compose pull` 和 `docker compose up -d`。更新前先验证备份。如需回滚，使用已验证且包含安全修复的版本标签，再执行相同命令。在后续涉及 SQLite 结构升级的版本中，回滚前按对应版本说明判断是否需要恢复升级前的备份。
+想固定版本，可将 Compose 的 `image` 改为 `jjsyx123/suunto-data-borad:1.0.12`，执行 `docker compose pull` 和 `docker compose up -d`。更新前先验证备份。如需回滚，使用已验证且包含安全修复的版本标签，再执行相同命令。在后续涉及 SQLite 结构升级的版本中，回滚前按对应版本说明判断是否需要恢复升级前的备份。
 
 ## 排查与发布
 

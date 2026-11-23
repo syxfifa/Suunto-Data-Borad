@@ -66,12 +66,19 @@
 {% if show_period %}
 <section class="filter-panel" aria-label="训练趋势筛选">
 <form action="/training" class="controls">
+  <input type="hidden" name="report" value="{{ report }}">
   <label>统计方式<select name="period"><option value="day">按日</option><option value="week" {% if weekly %}selected{% endif %}>按周</option></select></label>
   <label>范围<select name="days">{% for n in (28, 90, 365) %}<option value="{{ n }}" {% if n == days %}selected{% endif %}>近 {{ n }} 天</option>{% endfor %}</select></label>
   <label>运动类型<select name="sport"><option value="">全部类型</option>{% for name in sports %}<option {% if name == sport %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
   <button>查看</button>
 </form>
-<p class="meta">查完且没有活动记为 0。覆盖未确认或指标缺失时留空。点击柱形可查看对应活动。</p>
+<p class="meta">确认无训练的时段记为 0。底部标记提示同步覆盖和指标缺失，可在「查看图表数据」展开逐日或逐周状态。点击柱形可查看对应活动。</p>
+<dl class="workout-key-metrics" aria-label="所选时段汇总">
+{% for key, label in [('n', '活动次数'), ('km', '距离（km）'), ('minutes', '时长（分钟）'), ('climb', '爬升（m）')] %}
+  <div><dt>{{ label }}</dt><dd>{{ range_summary[key] if range_summary[key] is not none else '—' }}</dd></div>
+{% endfor %}
+</dl>
+{% if not range_summary.covered %}<p class="meta">所选时段尚未确认完整覆盖，汇总基于本地已有记录。</p>{% endif %}
 {% if training_mix %}<p class="meta">运动类型 · {% for name, count in training_mix %}
   <a href="/training?period={{ 'week' if weekly else 'day' }}&amp;days={{ days }}&amp;sport={{ name|urlencode }}">{{ name }} {{ count }} 次</a>{{ '、' if not loop.last else '' }}
 {% endfor %}</p>{% endif %}
@@ -81,18 +88,25 @@
 <section class="filter-panel" aria-label="筛选运动活动">
 {% if review_return %}<a href="{{ review_return }}">返回复盘图表</a>{% endif %}
 {% if activity_span.first %}
-<p class="meta">本地活动日期范围（北京时间）{{ activity_span.first[:10] }} 至 {{ activity_span.last[:10] }}。可输入日期或选取建议。</p>
+<p class="meta">本地活动日期范围（北京时间）{{ activity_span.first[:10] }} 至 {{ activity_span.last[:10] }}。可手输日期，也可用日历选择。</p>
 {% else %}
 <p>本地还没有活动记录。可在<a href="/settings">设置</a>查看同步状态。</p>
 {% endif %}
-<datalist id="activity-days">{% for item in available_days %}<option value="{{ item.day }}"></option>{% endfor %}</datalist>
+<div class="quick-filters controls" aria-label="快捷日期">
+  {% for label, first in presets %}<a class="button secondary" href="/activities?start={{ first }}&amp;end={{ today }}&amp;{{ search_query }}{% if review_return %}&amp;return_to={{ review_return|urlencode }}{% endif %}">{{ label }}</a>{% endfor %}
+  <a class="button secondary" href="/activities?start=&amp;end=&amp;{{ search_query }}{% if review_return %}&amp;return_to={{ review_return|urlencode }}{% endif %}">全部日期</a>
+</div>
+<script src="/static/activity-filters.js?v=1.0.12" defer></script>
 <form method="get" action="/activities" class="activity-filters">
   {% if review_return %}<input type="hidden" name="return_to" value="{{ review_return }}">{% endif %}
   <div class="activity-fields">
-  <label>开始日期<input name="start" type="text" list="activity-days" placeholder="YYYY-MM-DD" maxlength="10" autocomplete="off" value="{{ start or '' }}"></label>
-  <label>结束日期<input name="end" type="text" list="activity-days" placeholder="YYYY-MM-DD" maxlength="10" autocomplete="off" value="{{ end or '' }}"></label>
+  {% for field, label, value in [('start', '开始日期', start), ('end', '结束日期', end)] %}
+  <div class="date-field">
+    <label>{{ label }}<input name="{{ field }}" type="text" placeholder="YYYY-MM-DD" maxlength="10" autocomplete="off" value="{{ value or '' }}"></label>
+    <label class="date-picker" hidden>日历选择{{ label }}<input type="date" data-date-field="{{ field }}"></label>
+  </div>
+  {% endfor %}
   <label>运动类型<select name="sport"><option value="">全部</option>{% for item in activity_types %}<option {% if item.sport == search.sport %}selected{% endif %}>{{ item.sport }}</option>{% endfor %}</select></label>
-  <button type="submit">筛选</button>
   </div>
   <details class="advanced-filters" {% if search.q or search.km or search.minutes or search.tss or search.sort != 'date' or search.order != 'desc' %}open{% endif %}>
   <summary>高级筛选与排序</summary>
@@ -104,24 +118,37 @@
   <label>排序<select name="sort">{% for key, label in [('date', '时间'), ('distance', '距离'), ('duration', '时长'), ('tss', 'TSS')] %}<option value="{{ key }}" {% if search.sort == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
   <label>方向<select name="order"><option value="desc">从大到小 / 从新到旧</option><option value="asc" {% if search.order == 'asc' %}selected{% endif %}>从小到大 / 从旧到新</option></select></label>
   </div>
-  <button type="submit" class="secondary filter-apply">应用高级筛选</button>
   </details>
+  <button type="submit" class="filter-apply">应用筛选</button>
 </form>
-<div class="quick-filters controls" aria-label="快捷日期">
-  {% for label, first in presets %}<a class="button secondary" href="/activities?start={{ first }}&amp;end={{ today }}&amp;{{ search_query }}{% if review_return %}&amp;return_to={{ review_return|urlencode }}{% endif %}">{{ label }}</a>{% endfor %}
-  <a class="button secondary" href="/activities?start=&amp;end={% if review_return %}&amp;return_to={{ review_return|urlencode }}{% endif %}">全部日期</a>
-</div>
+
 </section>
 {% if result_count is defined %}
-<div class="section-heading">
+<div class="section-heading" id="activity-results">
+
   <p class="results-count">共 {{ result_count }} 条活动</p>
   {% if result_count %}<a href="/export.csv?{{ export_query }}&amp;format=columns">导出当前筛选</a>{% endif %}
 </div>
+{% if active_filters %}
+<ul class="controls filter-tags" aria-label="已生效筛选">
+{% for label, value, link in active_filters %}
+  <li><a href="{{ link }}" aria-label="清除{{ label }}">{{ label }} {{ value }} <span aria-hidden="true">×</span></a></li>
+{% endfor %}
+</ul>
+{% endif %}
+{% if result_count %}
+<div id="comparison-selection" class="controls" hidden>
+  <p role="status">请选择两条同类型活动。</p>
+  <div class="controls comparison-picks"></div>
+  <a class="button" hidden>对比所选活动</a>
+</div>
+{% endif %}
+
 {% endif %}
 {% endif %}
 {% if charts is defined %}
 <script src="/static/chart.umd.min.js" defer></script>
-<script src="/static/charts.js?v=0.7.0" defer></script>
+<script src="/static/charts.js?v=1.0.12" defer></script>
 {% if show_period %}
   <div id="training-charts">
   {% set chart_items = charts %}
@@ -141,7 +168,12 @@
 {% endif %}
 {% if show_period %}
 <div id="training-reports">
-{% for title, totals in [('周报', weeks), ('月报', monthly_totals)] %}
+<nav class="section-nav report-switch" aria-label="训练报告周期">
+  <a href="{{ report_links.week }}"{% if report == 'week' %} aria-current="page"{% endif %}>周报</a>
+  <a href="{{ report_links.month }}"{% if report == 'month' %} aria-current="page"{% endif %}>月报</a>
+</nav>
+{% set title = '月报' if report == 'month' else '周报' %}
+{% set totals = training_totals %}
 <section class="table-wrap">
   <h2>{{ title }}</h2>
   <p>点击时段查看活动。TSS 使用 Suunto 记录值，括号为有效活动数 / 总活动数。</p>
@@ -158,7 +190,6 @@
 </div>
   {% else %}<p>所选范围暂无本地活动。</p>{% endif %}
 </section>
-{% endfor %}
 </div>
 {% endif %}
 {% if sleep_rows %}
@@ -222,7 +253,10 @@
       {% else %}{{ cell if cell is not none and cell != '' else '—' }}{% endif %}
       {% if meta and loop.first %}<div class="meta">最近更新 {{ local_time(meta.modified) }}</div>{% endif %}</td>{% endfor %}
       {% if activity_keys is defined %}
-      <td role="cell" class="activity-detail"><a href="{{ detail_links[loop.index0] }}">查看详情</a></td>
+      <td role="cell" class="activity-detail">
+        <a href="{{ detail_links[loop.index0] }}">查看详情</a>
+        <label class="compare-pick" hidden><input type="checkbox" data-compare-id="{{ activity_keys[loop.index0] }}" data-sport="{{ row[1] or '未标注运动类型' }}" data-date="{{ row[0][:16]|replace('T', ' ') if row[0] else '日期未知' }}" aria-label="选择活动进行对比 {{ row[0] or '' }}">对比</label>
+      </td>
       {% endif %}
       {% if route_maps is defined %}
       <td class="route-points" data-route="{{ row[0] or '' }}">
@@ -259,7 +293,7 @@
   </nav>
   {% endif %}
   {% else %}
-  <p class="empty-state">{{ empty_message or '暂无符合条件的记录。' }}</p>
+  <p class="empty-state">{{ empty_message or '暂无符合条件的记录。' }}{% if empty_action %} <a href="{{ empty_action[0] }}">{{ empty_action[1] }}</a>{% endif %}</p>
   {% endif %}
 </section>
 {% endif %}

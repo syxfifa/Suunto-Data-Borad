@@ -218,6 +218,7 @@ def workout_chart(entries, weekly, first_day, last_day, intervals, tz, *, extend
             ("平均训练效果（PTE）", "PTE", lambda r: workout_value(r, "pte"), "mean"),
         ]
     totals = [[] for _ in definitions]
+    missing = [[] for _ in definitions]
     ranges = []
     coverage = []
     counts = []
@@ -232,8 +233,9 @@ def workout_chart(entries, weekly, first_day, last_day, intervals, tz, *, extend
         ranges.append((start.isoformat(), (end-timedelta(days=1)).isoformat()))
         rows = grouped.get(label, [])
         counts.append(len(rows))
-        for column, (_, _, metric, method) in zip(totals, definitions):
+        for column, gaps, (_, _, metric, method) in zip(totals, missing, definitions):
             values = [v for row in rows if (v := metric(row)) is not None]
+            gaps.append(len(values) < len(rows))
             if method == "coverage":
                 value = 100 * len(values) / len(rows) if rows else None
             elif method == "mean":
@@ -244,7 +246,8 @@ def workout_chart(entries, weekly, first_day, last_day, intervals, tz, *, extend
     result = [chart(title, labels, {label: values}, "bar")
               for (title, label, _, _), values in zip(definitions, totals)]
     if extended:
-        for series in result:
+        for series, gaps in zip(result, missing):
+            series["missing"] = gaps
             series["ranges"] = ranges
             series["covered"] = coverage
             series["counts"] = counts

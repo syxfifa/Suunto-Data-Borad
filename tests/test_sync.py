@@ -139,8 +139,9 @@ class SyncTest(unittest.TestCase):
             self.assertEqual(page.status_code, 200)
             self.assertIn("2026-11-16T21:00:00+08:00", page.text)
             self.assertIn("训练效果 PTE", page.text)
-            self.assertIn('id="activity-days"', page.text)
-            self.assertIn('<option value="2026-11-16">', page.text)
+            self.assertIn('type="date" data-date-field="start"', page.text)
+            self.assertIn('type="date" data-date-field="end"', page.text)
+            self.assertIn('aria-label="清除截止"', page.text)
             self.assertIn('name="end" type="text"', page.text)
             self.assertIn("本地活动日期范围", page.text)
             for query in ("start=2026-11-16&end=", "start=&end=2026-11-16", "start=&end="):

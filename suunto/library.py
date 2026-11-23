@@ -9,7 +9,7 @@ from fastapi import APIRouter, Query, Request
 
 from .amap import amap_ready
 from .reports import compare_metrics
-from .views import local_return, lower_bound, record_filter, route_map_points, table_rows, workout_filter, workout_sql
+from .views import local_return, lower_bound, record_filter, route_map_points, table_rows, workout_filter, workout_speed, workout_sql
 
 
 ROUTE_SPORTS = """CASE WHEN json_type(payload, '$.activityNames')='array'
@@ -58,8 +58,32 @@ def library_router(store, amap_config, discovery, render):
         rows = [compare_metrics(picked[key]) for key in (first, second)] if (
             first != second and first in picked and second in picked) else []
         back = local_return(return_to, "/workout", "/activities")
+        deltas = []
+        detail_links = []
+        if rows:
+            comparison_url = "/compare?" + urlencode({"sport": chosen, "first": first, "second": second,
+                                                       "page": page, "return_to": back or ""})
+            for key in (first, second):
+                detail_links.append((picked[key].get("workoutName") or chosen,
+                                     "/workout?" + urlencode({"id": key, "return_to": comparison_url})))
+            for index, label, unit in ((0, "距离", "km"), (1, "时长", "分钟"),
+                                       (3, "爬升", "m"), (4, "平均心率", "bpm")):
+                a, b = rows[0][index], rows[1][index]
+                deltas.append((label, f"{b - a:+.2f} {unit}" if a is not None and b is not None else None))
+            unit_a, speed_a = workout_speed(picked[first])
+            unit_b, speed_b = workout_speed(picked[second])
+            pace = unit_a == unit_b == "min/km"
+            difference = None
+            if unit_a == unit_b and speed_a is not None and speed_b is not None:
+                if pace:
+                    a, b = (sum(int(value) * factor for value, factor in zip(speed.split(":"), (60, 1)))
+                            for speed in (speed_a, speed_b))
+                    difference = f"{b - a:+d} 秒/km"
+                else:
+                    difference = f"{speed_b - speed_a:+.2f} km/h"
+            deltas.insert(2, ("平均配速" if pace else "平均配速或速度", difference))
         return render(request, "运动对比", comparison=True, sports=sports, sport=chosen, options=options,
-                      comparison_return=back,
+                      comparison_return=back, comparison_deltas=deltas, comparison_links=detail_links,
                       first=first, second=second,
                       best_km=stats["distance"] / 1000 if stats["distance"] is not None else None,
                       best_climb=stats["climb"], comparison_rows=rows, comparison_page=page,

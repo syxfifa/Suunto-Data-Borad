@@ -14,6 +14,40 @@ function auroraFill({chart, dataIndex}, selected) {
   return fill;
 }
 
+const coverageLabels = ["已确认无活动", "同步未确认完整", "活动缺少指标"];
+const coverageColors = [axis, colors[1], colors[3]];
+
+function seriesStates(series) {
+  if (!series.covered) return [];
+  const columns = Object.values(series.columns);
+  return series.covered.map((covered, index) => [
+    covered && !series.counts[index],
+    !covered,
+    series.missing?.[index] ?? (Boolean(series.counts[index]) && columns.some(values => values[index] == null)),
+  ]);
+}
+
+function coverageMarkers(series) {
+  const states = seriesStates(series);
+  return {
+    id: "suuntoCoverage",
+    afterDatasetsDraw({ctx, scales, chartArea}) {
+      if (!states.length) return;
+      const space = chartArea.width / states.length;
+      ctx.save();
+      states.forEach((flags, index) => {
+        const x = scales.x.getPixelForValue(index);
+        flags.forEach((flag, kind) => {
+          if (!flag) return;
+          ctx.fillStyle = coverageColors[kind];
+          ctx.fillRect(x - space * .4, chartArea.bottom - 3 * (kind + 1), Math.max(1, space * .8), 2);
+        });
+      });
+      ctx.restore();
+    },
+  };
+}
+
 function renderChart(canvas, series) {
   const datasets = Object.entries(series.columns).map(([label, data], index) => ({
     label,
@@ -27,6 +61,7 @@ function renderChart(canvas, series) {
   }));
   return new Chart(canvas, {
     type: series.kind,
+    plugins: series.covered ? [coverageMarkers(series)] : [],
     data: { labels: series.labels, datasets },
     options: {
       responsive: true,
@@ -86,7 +121,7 @@ function drawValues(container, series) {
       const status = [];
       if (!series.covered[index]) status.push(href ? "同步未完成" : "日期未到");
       if (series.covered[index] && !series.counts[index]) status.push("已确认无活动");
-      if (series.counts[index] && missing) status.push("部分活动缺少指标");
+      if (series.missing?.[index] ?? (series.counts[index] && missing)) status.push("部分活动缺少指标");
       if (!status.length) status.push("已确认覆盖");
       row.insertCell().textContent = status.join(" · ");
     }
@@ -114,9 +149,22 @@ for (const element of document.querySelectorAll(".chart-data")) {
     if (values.open) drawValues(tableRegion, series);
     chart?.destroy();
     chart = null;
-    const available = typeof Chart !== "undefined" && Object.values(series.columns).some(
-      (column) => column.some(Number.isFinite),
-    );
+    const states = seriesStates(series);
+    const legend = panel.querySelector(".chart-coverage");
+    if (legend) {
+      legend.replaceChildren();
+      coverageLabels.forEach((label, kind) => {
+        const count = states.filter(flags => flags[kind]).length;
+        if (!count) return;
+        const item = document.createElement("li");
+        item.style.setProperty("--coverage-color", coverageColors[kind]);
+        item.textContent = `${label} ${count} 段`;
+        legend.append(item);
+      });
+      legend.hidden = !legend.childElementCount;
+    }
+    const available = typeof Chart !== "undefined" &&
+      (states.length > 0 || Object.values(series.columns).some(column => column.some(Number.isFinite)));
     canvas.parentElement.hidden = !available;
     panel.querySelector(".chart-empty").hidden = available;
     canvas.setAttribute("aria-label", series.title);

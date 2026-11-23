@@ -159,8 +159,9 @@ def exercise(browser, origin, fixture, width):
         page.locator(".chart-values[open]").get_by_role("link", name=day, exact=True).click()
         expect(page.get_by_text("共 1 条活动", exact=True)).to_be_visible()
         page.locator("input[name=start]").fill(day)
-        page.locator("input[name=end]").fill(day)
-        page.get_by_role("button", name="筛选", exact=True).click()
+        page.locator("input[data-date-field=end]").fill(day)
+        expect(page.locator("input[name=end]")).to_have_value(day)
+        page.get_by_role("button", name="应用筛选", exact=True).click()
         expect(page.get_by_text("共 1 条活动", exact=True)).to_be_visible()
         expect(page.get_by_role("link", name="返回复盘图表")).to_be_visible()
         if not page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"):
@@ -178,6 +179,38 @@ def exercise(browser, origin, fixture, width):
         expected_filter = parse_qs(filtered.query)
         assert all(parse_qs(updated.query).get(key) == value for key, value in expected_filter.items())
         assert parse_qs(updated.query)["page"] == ["1"] and updated.fragment == "activity-0"
+        # Fill the first page without changing the filtered fixture above.
+        compare_day = when - timedelta(days=2)
+        rows = [(f"fixture-{i}", (compare_day + timedelta(minutes=i)).isoformat(), {
+            "activityName": "Running", "workoutName": f"对比样本 {i}",
+            "totalDistance": 7000, "totalTimeSeconds": 2100,
+        }) for i in range(50)]
+        covered_start = datetime.combine(when.date() - timedelta(days=1), datetime.min.time(), TZ)
+        covered_end = datetime.combine(when.date(), datetime.min.time(), TZ)
+        store.commit(run, "workouts", rows, interval=(covered_start.isoformat(), covered_end.isoformat()))
+        page.goto(origin + "/activities?start=&end=&sport=Running")
+        page.locator("[data-compare-id=sample-activity]").check()
+        page.get_by_role("link", name="下一页").click()
+        expect(page.get_by_text("已选 1 / 2 条", exact=False)).to_be_visible()
+        page.locator("[data-compare-id=fixture-0]").check()
+        page.get_by_role("link", name="对比所选活动").click()
+        expect(page.get_by_role("heading", name="差值（活动 B 减活动 A）")).to_be_visible()
+        expect(page.get_by_text("+2.00 km", exact=True)).to_be_visible()
+        expect(page.get_by_text("+5.00 分钟", exact=True)).to_be_visible()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+        page.get_by_role("link", name="B · 对比样本 0").click()
+        page.get_by_role("link", name="返回运动对比").click()
+        page.get_by_role("link", name="返回之前的活动页面").click()
+        assert parse_qs(urlsplit(page.url).query)["page"] == ["2"]
+        assert urlsplit(page.url).fragment == "activity-0"
+        expect(page.locator("[data-compare-id=fixture-0]")).to_be_checked()
+        page.goto(origin + "/training?sport=Running")
+        expect(page.get_by_label("图表数据状态").first).to_contain_text("同步未确认完整")
+        expect(page.get_by_label("图表数据状态").first).to_contain_text("已确认无活动")
+        expect(page.locator(".primary-charts .chart-coverage").last).to_contain_text("活动缺少指标")
+        page.get_by_role("link", name="月报", exact=True).click()
+        expect(page.get_by_role("heading", name="月报", exact=True)).to_be_visible()
+        expect(page.get_by_role("heading", name="周报", exact=True)).to_have_count(0)
         exercise_amap(context, page, origin, store, when.isoformat(), now.isoformat(), width)
 
 

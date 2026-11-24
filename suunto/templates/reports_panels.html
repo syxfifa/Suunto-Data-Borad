@@ -1,4 +1,4 @@
-{% from "page_controls.html" import date_links %}
+{% from "page_controls.html" import date_links, report_dates %}
 {% if workout is defined %}
 <section>
   {% if workout_return %}<a href="{{ workout_return }}">{{ '返回运动对比' if workout_return.startswith('/compare?') else '返回筛选后的活动列表' }}</a>{% endif %}
@@ -63,7 +63,12 @@
 </section>
 {% endif %}
 {% if wellness_days is defined %}
-{{ date_links(report_ranges) }}
+{{ date_links(report_ranges + report_window.links) }}
+<form action="/sleep-recovery" class="controls">
+  {{ report_dates(report_window) }}
+  {% if request.query_params.get('chart_view') == 'table' %}<input type="hidden" name="chart_view" value="table">{% endif %}
+  <button>应用日期</button>
+</form>
 <section class="wellness-latest" aria-labelledby="wellness-latest-title">
   <h2 id="wellness-latest-title">最近有效读数</h2>
   <dl class="wellness-readings">
@@ -82,19 +87,20 @@
     {% endfor %}
   </dl>
   <p class="meta">所选时段有 {{ sleep_count }} 晚有效睡眠，原始睡眠样本 {{ sleep_samples }} 条。时间为北京时间。</p>
+  <p class="meta">恢复记录覆盖 {{ recovery_days }} / {{ wellness_days }} 天{% if recovery_latest %}，最近采样日期 {{ recovery_latest }}{% endif %}。</p>
 </section>
 {% endif %}
 {% if daily_stats is defined %}
 {% if daily_saved %}<p class="notice" role="status">{{ daily_saved }}</p>{% endif %}
 <section>
-  {{ date_links(report_ranges) }}
+  {{ date_links(report_ranges + report_window.links) }}
   <form action="/daily-activity" class="controls">
     {% if providers|length > 1 %}
     <label>数据来源<select name="source"><option value="">自动选择</option>{% for name in providers %}<option {% if name == daily_source %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
     {% endif %}
     <label>查看尺度<select name="period">{% for key, label in [('day', '日'), ('week', '周'), ('month', '月')] %}
       <option value="{{ key }}" {% if key == daily_period %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
-    <input type="hidden" name="days" value="{{ daily_days }}">
+    {{ report_dates(report_window) }}
     {% if request.query_params.get('chart_view') == 'table' %}<input type="hidden" name="chart_view" value="table">{% endif %}
     <button>应用筛选</button>
     {% if providers|length > 1 %}
@@ -103,12 +109,13 @@
   </form>
   <p>当前来源：{{ provider or (providers[0] if providers|length == 1 else '暂无可用来源') }}。</p>
   <p>步数有效 {{ daily_stats.days }} 天，缺失 {{ daily_stats.missing }} 天。日均 {{ daily_stats.average if daily_stats.average is not none else '—' }} 步。</p>
+  {% if daily_stats.latest %}<p class="meta">该来源在所选时段的最近采样日期为 {{ daily_stats.latest }}。</p>{% endif %}
   {% if step_goal %}<p>每日目标 {{ step_goal }} 步，达标 {{ daily_stats.goal_days }} / {{ daily_stats.days }} 个有效日。</p>{% endif %}
   <details>
     <summary>{{ '修改每日步数目标' if step_goal else '设置每日步数目标' }}</summary>
     <form action="/daily-activity/preferences" method="post" class="controls">
       <input type="hidden" name="source" value="{{ daily_source }}">
-      <input type="hidden" name="days" value="{{ daily_days }}">
+      {% for key, value in report_window.bounds.items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
     {% if request.query_params.get('chart_view') == 'table' %}<input type="hidden" name="chart_view" value="table">{% endif %}
       <input type="hidden" name="period" value="{{ daily_period }}">
       <label>每日目标（步，留空清除）<input name="step_goal" type="number" min="1" max="1000000" value="{{ step_goal or '' }}"></label>

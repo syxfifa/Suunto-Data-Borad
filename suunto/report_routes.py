@@ -13,7 +13,8 @@ from .reports import (acwr_series, aurora_week, daily_report, dates, grouped_tot
                       intensity_charts, longest_streak, midnight, period_summary,
                       sport_counts, sport_name, wellness)
 from .sync import TZ
-from .views import covers, local_return, lower_bound, numeric, records, summary, workout_chart, workout_metrics, workout_page
+from .views import (covers, local_return, lower_bound, numeric, records, summary, workout_chart,
+                    workout_filter, workout_metrics, workout_page)
 from .web_shared import HOME_HEADERS, NO_CACHE, SOURCE_LABELS, TEMPLATES
 
 
@@ -32,6 +33,32 @@ def report_date_links(request, current, choices, **filters):
         filters["chart_view"] = "table"
     return [(f"近 {days} 天", request.url.path + "?" + urlencode({**filters, "days": days}), days == current)
             for days in choices]
+
+
+def report_window(request, days, start, end, *, maximum, filters):
+    """Resolve a rolling preset or an inclusive Beijing calendar range."""
+    now = datetime.now(TZ)
+    today = now.date()
+    earliest = date(1900, 1, 1)
+    custom = start is not None or end is not None
+    if custom:
+        if not (start and end and earliest <= start <= end <= today and (end - start).days < maximum):
+            raise HTTPException(422, f"请选择有效的开始和结束日期，最多 {maximum} 天，且不能晚于今天。")
+    else:
+        start, end = today - timedelta(days=days - 1), today
+    controls = dict(filters)
+    if request.query_params.get("chart_view") == "table":
+        controls["chart_view"] = "table"
+    links = []
+    for label, delta in (("上一周", -min(7, (start - earliest).days)),
+                         ("下一周", min(7, (today - end).days))):
+        if delta:
+            shifted = timedelta(days=delta)
+            href = request.url.path + "?" + urlencode({**controls, "start": start + shifted, "end": end + shifted})
+            links.append((label, href, False))
+    return {"first": start, "last": end, "end_at": min(now, midnight(end + timedelta(days=1))),
+            "today": today, "length": (end - start).days + 1, "links": links, "controls": controls,
+            "bounds": {"start": start, "end": end} if custom else {"days": days}}
 
 
 def report_router(store, config, dashboard, mcp_state, retry_after):
@@ -109,44 +136,58 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
             headers=HOME_HEADERS,
         )
 
-    def recent(source, days=28):
-        current = datetime.now(TZ)
-        return records(store, source, midnight(current.date() - timedelta(days=days - 1)), current)
-
     @router.get("/training")
-    def training(request: Request, period: str = "day", sport: str = "",
-                 days: Annotated[int, Query(ge=7, le=366)] = 90, report: str = "week"):
-        weekly = period == "week"
+    def training(request: Request, period: str = "", sport: str = "",
+                 days: Annotated[int, Query(ge=7, le=366)] = 90, report: str = "week",
+                 start: date | None = None, end: date | None = None, analysis: str = ""):
         report = "month" if report == "month" else "week"
-        current_time = datetime.now(TZ)
-        today = current_time.date()
-        first_day = today - timedelta(days=days-1)
+        advanced = analysis == "advanced"
+        filters = {"sport": sport, "report": report}
+        if period in ("week", "day"):
+            filters["period"] = period
+        if advanced:
+            filters["analysis"] = "advanced"
+        window = report_window(request, days, start, end, maximum=366, filters=filters)
+        first_day, last_day = window["first"], window["last"]
+        weekly = period == "week" or (period != "day" and window["length"] >= 365)
         coverage = store.coverage("workouts")
-        context_rows = records(store, "workouts", midnight(first_day - timedelta(days=27)),
-                               current_time)
-        sports = sorted({sport_name(row) for _, row in context_rows})
-        selected = sport if sport in sports else ""
-        history = [(at, row) for at, row in context_rows if not selected or sport_name(row) == selected]
-        current = [(at, row) for at, row in history if at[:10] >= first_day.isoformat()]
-        series = workout_chart(current, weekly, first_day, today, coverage, TZ, extended=True)
-        view_args = {"chart_view": "table"} if request.query_params.get("chart_view") == "table" else {}
-        back = "/training?" + urlencode({"period": "week" if weekly else "day", "sport": selected,
-                                        "days": days, "report": report, **view_args})
-        add_review_links(series, selected, back + "#training-charts", today)
-        totals = grouped_totals(current, first_day, today, coverage, monthly=report == "month")
+        first = first_day.isoformat()
+        context_start = first_day - timedelta(days=27) if advanced else first_day
+        rows = records(store, "workouts", midnight(context_start), window["end_at"])
+        sports = {sport_name(row) for _, row in rows}
+        if sport and sport not in sports:
+            where, values = workout_filter("source='workouts'", [], sport=sport)
+            if store.query(f"SELECT 1 FROM records WHERE {where} LIMIT 1", values):
+                sports.add(sport)
+            else:
+                sport = ""
+                window["controls"]["sport"] = ""
+                filters["sport"] = ""
+        history = [(at, row) for at, row in rows if not sport or sport_name(row) == sport]
+        current = [(at, row) for at, row in history if at[:10] >= first]
+        series = workout_chart(current, weekly, first_day, last_day, coverage, TZ, extended=True,
+                               primary_only=not advanced)
+        params = {**window["controls"], **window["bounds"]}
+        back = "/training?" + urlencode(params)
+        add_review_links(series, sport, back + "#training-charts", last_day)
+        totals = grouped_totals(current, first_day, last_day, coverage, monthly=report == "month")
         for item in totals:
-            item["link"] = activity_link(item["start"], item["end"], selected, back + "#training-reports")
-        report_links = {key: "/training?" + urlencode({"period": period, "days": days,
-                        "sport": selected, "report": key, **view_args}) + "#training-reports" for key in ("week", "month")}
-        acwr = acwr_series(history, first_day, today, coverage)
-        report_ranges = report_date_links(request, days, (7, 28, 90, 365),
-                                          period="week" if weekly else "day", sport=selected, report=report)
+            item["link"] = activity_link(item["start"], item["end"], sport, back + "#training-reports")
+        report_links = {key: "/training?" + urlencode({**params, "report": key}) + "#training-reports"
+                        for key in ("week", "month")}
+        acwr = acwr_series(history, first_day, last_day, coverage) if advanced else None
+        report_ranges = report_date_links(request, None if start else days, (7, 28, 90, 365), **filters)
+        analysis_args = {key: value for key, value in params.items() if key != "analysis"}
+        if not advanced:
+            analysis_args["analysis"] = "advanced"
         return dashboard(request, "训练趋势", show_period=True, weekly=weekly, report_ranges=report_ranges,
-                         charts=series[:2] + [series[4]], sport=selected, sports=sports, days=days,
-                         advanced_charts=series[2:4] + series[5:] + [acwr],
-                         acwr_days=sum(value is not None for value in acwr["columns"]["ACWR"]),
+                         report_window=window, charts=series[:3], sport=sport, sports=sorted(sports), days=window["length"],
+                         sport_links={name: "/training?" + urlencode({**params, "sport": name}) for name in sports},
+                         advanced_charts=series[3:] + [acwr] if advanced else [],
+                         analysis_link="/training?" + urlencode(analysis_args) + "#training-analysis",
+                         acwr_days=sum(value is not None for value in acwr["columns"]["ACWR"]) if advanced else 0,
                          report=report, training_totals=totals, report_links=report_links,
-                         range_summary=period_summary(current, midnight(first_day), current_time, coverage),
+                         range_summary=period_summary(current, midnight(first_day), window["end_at"], coverage),
                          streak=longest_streak(current), training_mix=sport_counts(current))
 
     @router.get("/activities")
@@ -271,22 +312,24 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
                          charts=intensity_charts(row), optional_metrics=optional)
 
     @router.get("/sleep-recovery")
-    def sleep_recovery(request: Request, days: Annotated[int, Query(ge=7, le=90)] = 28):
-        today = datetime.now(TZ).date()
-        span = dates(today - timedelta(days=days-1), today)
+    def sleep_recovery(request: Request, days: Annotated[int, Query(ge=7, le=90)] = 28,
+                       start: date | None = None, end: date | None = None):
+        window = report_window(request, days, start, end, maximum=90, filters={})
+        span = dates(window["first"], window["last"])
         preferences = config.read()
         fields = preferences.get("wellness_fields", {})
         unit = preferences.get("sleep_stage_unit", "seconds")
-        sleep = recent("sleep", days+1)
-        recovery = recent("recovery", days)
+        sleep = records(store, "sleep", midnight(span[0] - timedelta(days=1)), window["end_at"])
+        recovery = records(store, "recovery", midnight(span[0]), window["end_at"])
         charts, sleep_rows, count, latest_metrics = wellness(sleep, recovery,
-            recent("workouts", days), span, fields, unit, training_coverage=store.coverage("workouts"))
+            records(store, "workouts", midnight(span[0]), window["end_at"]),
+            span, fields, unit, training_coverage=store.coverage("workouts"))
         first = span[0].isoformat()
         latest_balance = next(((at, round(value * 100, 2)) for at, row in reversed(recovery)
                                if (value := numeric(row["entryData"].get("Balance"))) is not None
                                and 0 <= value <= 1), None)
         metric_states = []
-        observed = store.observed_entry_fields("recovery", midnight(today - timedelta(days=89)).isoformat())
+        observed = store.observed_entry_fields("recovery", midnight(window["today"] - timedelta(days=89)).isoformat())
         candidates = {row["name"] for row in observed
                       if row["type"] in ("integer", "real") and row["name"] not in {"Balance", "StressState"}}
         readings = {item[0]: item for item in latest_metrics}
@@ -306,38 +349,45 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
             metric_states.append((name, readings.get(title), message))
         groups = [(key, title, [item for item in charts if item["group"] == key])
                   for key, title in (("sleep", "睡眠"), ("recovery", "恢复"), ("metrics", "HRV 与静息心率"))]
-        report_ranges = report_date_links(request, days, (7, 28, 90))
+        report_ranges = report_date_links(request, None if start else days, (7, 28, 90))
         return dashboard(request, "睡眠与恢复", charts=charts, wellness_groups=groups, report_ranges=report_ranges,
-                         wellness_days=days, sleep_rows=sleep_rows, metric_states=metric_states, latest_balance=latest_balance,
+                         report_window=window, wellness_days=len(span), sleep_rows=sleep_rows, metric_states=metric_states,
+                         latest_balance=latest_balance, recovery_days=len({at[:10] for at, _ in recovery}),
+                         recovery_latest=recovery[-1][0][:10] if recovery else None,
                          sleep_count=count, sleep_samples=sum(at[:10] >= first for at, _ in sleep),
                          latest_sleep=next((row for row in sleep_rows if row[-1] is not None), None))
 
     @router.get("/daily-activity")
     def daily_activity(request: Request, source: str = "", period: str = "day",
-                       days: Annotated[int, Query(ge=7, le=366)] = 28):
-        today = datetime.now(TZ).date()
+                       days: Annotated[int, Query(ge=7, le=366)] = 28, start: date | None = None,
+                       end: date | None = None):
         preferences = config.read()
         goal = preferences.get("step_goal")
         period = period if period in ("day", "week", "month") else "day"
         providers = store.daily_providers()
         preferred = source if "source" in request.query_params else preferences.get("primary_source")
-        charts, _, selected, metrics = daily_report(recent("daily_activity", days),
-            dates(today - timedelta(days=days-1), today), preferred if preferred in providers else "", goal, period)
         selected_source = preferred if preferred in providers else ""
-        report_ranges = report_date_links(request, days, (7, 28, 90, 365), period=period, source=selected_source)
+        filters = {"period": period, "source": selected_source}
+        window = report_window(request, days, start, end, maximum=366, filters=filters)
+        charts, _, selected, metrics = daily_report(
+            records(store, "daily_activity", midnight(window["first"]), window["end_at"]),
+            dates(window["first"], window["last"]), selected_source, goal, period)
+        report_ranges = report_date_links(request, None if start else days, (7, 28, 90, 365), **filters)
         return dashboard(request, "日常活动", charts=charts, daily_stats=metrics, providers=providers,
-                         report_ranges=report_ranges,
-                         provider=selected, daily_period=period, daily_days=days, step_goal=goal,
+                         report_ranges=report_ranges, report_window=window,
+                         provider=selected, daily_period=period, step_goal=goal,
                          daily_source=selected_source,
                          daily_saved={"source": "已保存常用来源。", "goal": "已保存每日步数目标。"}
                          .get(request.query_params.get("saved")))
 
     @router.post("/daily-activity/preferences")
-    async def daily_preferences(action: Annotated[str, Form()], days: Annotated[int, Form(ge=7, le=366)],
-                                period: Annotated[str, Form()], source: Annotated[str, Form()] = "",
-                                step_goal: Annotated[str, Form()] = "", chart_view: Annotated[str, Form()] = ""):
+    async def daily_preferences(request: Request, action: Annotated[str, Form()], days: Annotated[int, Form(ge=7, le=366)] = 28,
+                                period: Annotated[str, Form()] = "day", source: Annotated[str, Form()] = "",
+                                step_goal: Annotated[str, Form()] = "", chart_view: Annotated[str, Form()] = "",
+                                start: Annotated[date | None, Form()] = None, end: Annotated[date | None, Form()] = None):
         if period not in ("day", "week", "month") or source and source not in store.daily_providers():
             raise HTTPException(422, "请选择有效的日常活动时间范围或数据来源。")
+        window = report_window(request, days, start, end, maximum=366, filters={})
         if action == "source":
             changes = {"primary_source": source}
         elif action == "goal":
@@ -351,7 +401,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
         else:
             raise HTTPException(422, "未知的偏好操作。")
         await asyncio.to_thread(config.update, changes)
-        params = {"days": days, "period": period, "source": source, "saved": action}
+        params = {**window["bounds"], "period": period, "source": source, "saved": action}
         if chart_view == "table":
             params["chart_view"] = "table"
         query = urlencode(params)

@@ -1,12 +1,15 @@
 <details id="preferences" class="settings-details"{% if preferences_saved or request.query_params.get('edit_preferences') %} open{% endif %}>
   <summary>目标与数据偏好</summary>
   {% if preferences_saved %}<p class="notice" role="status">显示偏好已保存。</p>{% endif %}
-  <form action="/preferences" method="post">
-    <div class="controls">
-      <label>每周距离目标（km）<input name="weekly_km" type="number" min="0.1" step="0.1" value="{{ prefs.weekly_km or '' }}"></label>
-    </div>
-    <details{% if request.query_params.get('edit_preferences') %} open{% endif %}>
-      <summary>睡眠与恢复字段</summary>
+  <form action="/preferences" method="post" class="controls">
+    <label>每周距离目标（km）<input name="weekly_km" type="number" min="0.1" step="0.1" value="{{ prefs.weekly_km or '' }}"></label>
+    <button name="section" value="goal">保存距离目标</button>
+  </form>
+  {% if bindings is none %}
+    <p><a href="/settings?edit_preferences=true#preferences">配置睡眠与恢复字段</a></p>
+  {% else %}
+    <form action="/preferences" method="post">
+      <h3>睡眠与恢复字段</h3>
       <p>下拉项来自本地真实记录。请先确认字段含义和单位；无可用字段时保持未配置。</p>
       <div class="controls">
         {% for binding in bindings %}
@@ -30,9 +33,9 @@
           {% endfor %}
         </select></label>
       </div>
-    </details>
-    <button>保存偏好</button>
-  </form>
+      <button name="section" value="fields">保存偏好</button>
+    </form>
+  {% endif %}
 </details>
 <section id="amap-settings">
   <h2>高德地图预览</h2>

@@ -38,13 +38,24 @@ def measure(years):
               "description": f"Fixture route {i}", "activityNames": ["Running", "Cycling"],
               "totalDistance": i * 10, "payload_fixture": padding})
             for i in range(routes)])
+        sleep = 365 * years
+        recovery = sleep * 48
+        store.commit(run, "sleep", [
+            (f"s{i}", (when - timedelta(days=i)).isoformat(),
+             {"entryData": {"SleepId": i, "Duration": 25200}})
+            for i in range(sleep)])
+        store.commit(run, "recovery", [
+            (f"p{i}", (when - timedelta(minutes=30 * i)).isoformat(),
+             {"entryData": {"Balance": .5, "StressState": 2, **{f"fixture{j}": j for j in range(6)}}})
+            for i in range(recovery)])
         print(f"{years}y {workouts} activities / {routes} routes · SQLite {storage_size(directory)/1024**2:.1f} MiB"
               f" · fixture ingest {(perf_counter() - begin) * 1000:.1f} ms")
         startup = perf_counter()
         with TestClient(create_app(directory)) as browser:
             browser.get("/healthz").raise_for_status()
             print(f"cold app startup and health check {(perf_counter() - startup) * 1000:.1f} ms")
-            urls = ("/compare?sport=Running&first=w0&second=w2", "/routes", "/routes?q=route&sport=Cycling")
+            urls = ("/", "/training", "/training?days=365", "/settings", "/settings?edit_preferences=true",
+                    "/sleep-recovery", "/compare?sport=Running&first=w0&second=w2", "/routes", "/routes?q=route&sport=Cycling")
             for url in urls:
                 browser.get(url).raise_for_status()
                 samples = []
@@ -54,7 +65,7 @@ def measure(years):
                     result.raise_for_status()
                     samples.append((perf_counter() - begin) * 1000)
                 print(f"{url} · median {median(samples):.1f} ms · HTML {len(result.content)} bytes")
-            concurrent_access(browser, store, when, workouts + routes)
+            concurrent_access(browser, store, when, workouts + routes + sleep + recovery)
 
 
 def concurrent_access(browser, store, when, expected_rows):

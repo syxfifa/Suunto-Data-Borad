@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "coverage_status.html" import coverage_status %}
-{% from "page_controls.html" import date_links, empty_state %}
+{% from "page_controls.html" import date_links, empty_state, report_dates %}
 {% macro local_time(value) -%}
   {% if value %}<time datetime="{{ value }}" title="{{ value }}">{{ value[:19]|replace('T', ' ') }}</time>{% else %}—{% endif %}
 {%- endmacro %}
@@ -73,12 +73,17 @@
 {% endif %}
 {% if show_period %}
 <section class="filter-panel" aria-label="训练趋势筛选">
-{{ date_links(report_ranges) }}
+{{ date_links(report_ranges + report_window.links) }}
 <form action="/training" class="controls">
   <input type="hidden" name="report" value="{{ report }}">
+  {% if advanced_charts %}<input type="hidden" name="analysis" value="advanced">{% endif %}
   {% if request.query_params.get('chart_view') == 'table' %}<input type="hidden" name="chart_view" value="table">{% endif %}
-  <label>统计方式<select name="period"><option value="day">按日</option><option value="week" {% if weekly %}selected{% endif %}>按周</option></select></label>
-  <input type="hidden" name="days" value="{{ days }}">
+  {{ report_dates(report_window) }}
+  <label>统计方式<select name="period">
+    <option value="">自动（当前按{{ '周' if weekly else '日' }}）</option>
+    <option value="day"{% if report_window.controls.period == 'day' %} selected{% endif %}>按日</option>
+    <option value="week"{% if report_window.controls.period == 'week' %} selected{% endif %}>按周</option>
+  </select></label>
   <label>运动类型<select name="sport"><option value="">全部类型</option>{% for name in sports %}<option {% if name == sport %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
   <button>应用筛选</button>
 </form>
@@ -90,7 +95,7 @@
 </dl>
 {% if not range_summary.covered %}<p class="meta">所选时段尚未确认完整覆盖，汇总基于本地已有记录。</p>{% endif %}
 {% if training_mix %}<p class="meta">运动类型 · {% for name, count in training_mix %}
-  <a href="/training?period={{ 'week' if weekly else 'day' }}&amp;days={{ days }}&amp;sport={{ name|urlencode }}">{{ name }} {{ count }} 次</a>{{ '、' if not loop.last else '' }}
+  <a href="{{ sport_links[name] }}">{{ name }} {{ count }} 次</a>{{ '、' if not loop.last else '' }}
 {% endfor %}</p>{% endif %}
 </section>
 {% endif %}
@@ -167,13 +172,18 @@
   {% set chart_items = charts %}
   {% set chart_layout = 'primary-charts' %}
   {% include "chart_grid.html" %}
-  <details class="advanced-charts panel"{% if request.query_params.get("chart_view") == "table" %} open{% endif %}>
-    <summary>进阶分析</summary>
+  <section class="advanced-charts panel" id="training-analysis" tabindex="-1">
+    {% if advanced_charts %}
+    <h2>进阶分析</h2>
+    <p><a href="{{ analysis_link }}">收起进阶分析</a></p>
     <p class="meta">连续活动最长 {{ streak }} 天。ACWR = 近 7 天 TSS ÷（近 28 天 TSS ÷ 4），当前 {{ acwr_days }} / {{ days }} 天可计算。28 天须完整覆盖，每条活动须有 TSS，且分母须大于零。</p>
     {% with chart_items = advanced_charts, chart_layout = 'secondary-charts' %}
       {% include "chart_grid.html" %}
     {% endwith %}
-  </details>
+    {% else %}
+    <a class="button secondary" href="{{ analysis_link }}">查看进阶分析</a>
+    {% endif %}
+  </section>
   </div>
 {% elif wellness_groups is defined %}
   {% for key, label, group in wellness_groups %}

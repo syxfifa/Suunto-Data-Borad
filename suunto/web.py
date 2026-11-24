@@ -577,6 +577,22 @@ def create_app(data_dir=None, *, client=None):
                    for name, meta in SOURCES.items()]
         prefs = config.read()
         map_settings = amap_config.read()
+        bindings = wellness_bindings(prefs) if request.query_params.get("edit_preferences") == "true" else None
+        return TEMPLATES.TemplateResponse(
+            request=request, name="dashboard.html",
+            context={"title": "设置", "saved": saved, "preferences_saved": preferences_saved,
+                     "amap_saved": amap_saved, "amap_enabled": map_settings.get("enabled", False),
+                     "amap_coordinates": map_settings.get("coordinates"),
+                     "amap_has_key": bool(map_settings.get("key")), "amap_has_secret": bool(map_settings.get("secret")),
+                     "message": message, "oauth_error": oauth_error,
+                     "settings_minutes": config.load(), "discovery": discovery, "sync_status": status,
+                     "sources": sources, "source_labels": SOURCE_LABELS, "prefs": prefs, "bindings": bindings,
+                     "access_protected": access.enabled(), "connection": mcp_state(),
+                     "account_has_data": account_has_data()},
+            headers=NO_CACHE if request.url.path == "/oauth/callback" else HOME_HEADERS,
+        )
+
+    def wellness_bindings(prefs):
         field_sets = wellness_fields()
         configured = prefs.get("wellness_fields", {})
         cutoff = midnight(datetime.now(TZ).date() - timedelta(days=89)).isoformat()
@@ -596,19 +612,7 @@ def create_app(data_dir=None, *, client=None):
                         and (kind != "number" or row["type"] in {"integer", "real"}))
             bindings.append({"key": key, "label": label, "options": options, "selected": selected,
                              "unit": unit, "valid": valid, "samples": samples[source]})
-        return TEMPLATES.TemplateResponse(
-            request=request, name="dashboard.html",
-            context={"title": "设置", "saved": saved, "preferences_saved": preferences_saved,
-                     "amap_saved": amap_saved, "amap_enabled": map_settings.get("enabled", False),
-                     "amap_coordinates": map_settings.get("coordinates"),
-                     "amap_has_key": bool(map_settings.get("key")), "amap_has_secret": bool(map_settings.get("secret")),
-                     "message": message, "oauth_error": oauth_error,
-                     "settings_minutes": config.load(), "discovery": discovery, "sync_status": status,
-                     "sources": sources, "source_labels": SOURCE_LABELS, "prefs": prefs, "bindings": bindings,
-                     "access_protected": access.enabled(), "connection": mcp_state(),
-                     "account_has_data": account_has_data()},
-            headers=NO_CACHE if request.url.path == "/oauth/callback" else HOME_HEADERS,
-        )
+        return bindings
 
     @app.get("/settings")
     def settings(request: Request, saved: bool = False, authorized: bool = False, refresh_required: bool = False,
@@ -633,10 +637,22 @@ def create_app(data_dir=None, *, client=None):
 
     @app.post("/preferences")
     async def save_preferences(request: Request,
+                               section: Annotated[str, Form()] = "",
                                weekly_km: Annotated[str, Form()] = "",
                                step_goal: Annotated[str | None, Form()] = None,
                                primary_source: Annotated[str | None, Form()] = None,
                                sleep_stage_unit: Annotated[str, Form()] = "seconds"):
+        if section not in ("", "goal", "fields"):
+            raise HTTPException(422, "未知的显示偏好。")
+        if section == "goal":
+            try:
+                distance_goal = lower_bound(weekly_km, 10000)
+                if distance_goal == 0:
+                    raise ValueError
+            except ValueError as exc:
+                raise HTTPException(422, "训练目标无效。") from exc
+            await asyncio.to_thread(config.update, {"weekly_km": distance_goal})
+            return RedirectResponse("/settings?preferences_saved=true#preferences", status_code=303, headers=NO_CACHE)
         if sleep_stage_unit not in ("seconds", "minutes", "ms"):
             raise HTTPException(422, "睡眠阶段单位无效。")
         if primary_source and primary_source not in store.daily_providers():
@@ -661,13 +677,16 @@ def create_app(data_dir=None, *, client=None):
         stages = [fields[key] for key in ("deep", "light", "rem") if key in fields]
         if len(stages) != len(set(stages)) or fields.get("bedtime") and fields.get("bedtime") == fields.get("wake"):
             raise HTTPException(422, "睡眠阶段及入睡、醒来时间必须使用各自不同的字段。")
-        changes = {"weekly_km": distance_goal, "sleep_stage_unit": sleep_stage_unit, "wellness_fields": fields}
-        if step_goal is not None:
-            changes["step_goal"] = steps
-        if primary_source is not None:
-            changes["primary_source"] = primary_source
+        changes = {"sleep_stage_unit": sleep_stage_unit, "wellness_fields": fields}
+        if not section:
+            changes["weekly_km"] = distance_goal
+            if step_goal is not None:
+                changes["step_goal"] = steps
+            if primary_source is not None:
+                changes["primary_source"] = primary_source
         await asyncio.to_thread(config.update, changes)
-        return RedirectResponse("/settings?preferences_saved=true#preferences", status_code=303, headers=NO_CACHE)
+        return RedirectResponse("/settings?preferences_saved=true&edit_preferences=true#preferences",
+                                status_code=303, headers=NO_CACHE)
 
     def wellness_fields():
         cutoff = midnight(datetime.now(TZ).date() - timedelta(days=89)).isoformat()

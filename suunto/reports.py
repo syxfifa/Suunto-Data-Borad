@@ -124,6 +124,11 @@ def aurora_week(first, selected, today, workouts, sleep, recovery, intervals, fi
 
 
 def grouped_totals(rows, first, last, coverage, monthly=False):
+    grouped = defaultdict(list)
+    for at, row in rows:
+        day = date.fromisoformat(at[:10])
+        label = day.strftime("%Y-%m") if monthly else (day - timedelta(days=day.weekday())).isoformat()
+        grouped[label].append((at, row))
     periods = []
     start = first
     while start <= last:
@@ -135,7 +140,7 @@ def grouped_totals(rows, first, last, coverage, monthly=False):
             boundary = start + timedelta(days=7 - start.weekday())
         end = min(boundary, last + timedelta(days=1))
         periods.append({"period": label, "start": start.isoformat(), "end": (end - timedelta(days=1)).isoformat(),
-                        **period_summary(rows, midnight(start), midnight(end), coverage)})
+                        **period_summary(grouped[label], midnight(start), midnight(end), coverage)})
         start = end
     return list(reversed(periods))
 
@@ -386,6 +391,8 @@ def daily_report(entries, days, source, goal, period):
         if period != "day":
             charts[-1]["hint"] = "标签括号为有效天数 / 这一柱所涵盖的天数。数值只汇总有记录的日期。"
     valid = [steps[day] for day in labels if day in steps]
+    activity_days = steps.keys() | actual[source]["energyconsumption"].keys() if source else set()
     return charts, providers, source, {"days": len(valid), "missing": len(labels)-len(valid),
+                                        "latest": max(activity_days, default=None),
                                         "average": round(mean(valid)) if valid else None,
                                         "goal_days": sum(v >= goal for v in valid) if goal else None}

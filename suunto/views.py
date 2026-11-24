@@ -193,7 +193,7 @@ def route_map_points(entries):
     return points_by_route
 
 
-def workout_chart(entries, weekly, first_day, last_day, intervals, tz, *, extended=False):
+def workout_chart(entries, weekly, first_day, last_day, intervals, tz, *, extended=False, primary_only=False):
     grouped = defaultdict(list)
     for at, row in entries:
         day = date.fromisoformat(at[:10])
@@ -210,10 +210,11 @@ def workout_chart(entries, weekly, first_day, last_day, intervals, tz, *, extend
         ("时长（分钟）", "时长", lambda r: workout_display_value(r, "duration", 9), "sum"),
     ]
     if extended:
+        definitions.append(("训练负荷（TSS）", "TSS", lambda r: workout_value(r, "tss"), "sum"))
+    if extended and not primary_only:
         definitions += [
             ("活动次数", "活动次数", lambda r: 1, "sum"),
             ("累计爬升（m）", "爬升", lambda r: workout_value(r, "ascent"), "sum"),
-            ("训练负荷（TSS）", "TSS", lambda r: workout_value(r, "tss"), "sum"),
             ("TSS 记录覆盖（%）", "有 TSS 的活动", lambda r: workout_value(r, "tss"), "coverage"),
             ("平均训练效果（PTE）", "PTE", lambda r: workout_value(r, "pte"), "mean"),
         ]

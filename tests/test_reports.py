@@ -3,7 +3,7 @@ from csv import DictReader
 import json
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 
 from fastapi.testclient import TestClient
@@ -100,7 +100,7 @@ class ReportsTest(unittest.TestCase):
         charts, _, _, stats = daily_report(entries, dates(date(2026, 1, 2), date(2026, 1, 3)),
                                            "watch-a", 5000, "day")
         self.assertEqual(charts[0]["columns"]["watch-a"], [3000, None])
-        self.assertEqual(stats, {"days": 1, "missing": 1, "average": 3000, "goal_days": 0})
+        self.assertEqual(stats, {"days": 1, "missing": 1, "latest": "2026-01-02", "average": 3000, "goal_days": 0})
 
     def test_workout_routes_and_preferences_web_paths(self):
         with TemporaryDirectory() as directory:
@@ -129,7 +129,10 @@ class ReportsTest(unittest.TestCase):
                 self.assertIn("心率区间（分钟）", browser.get("/workout?id=a").text)
                 self.assertIn("运动对比", browser.get("/compare?sport=Running&first=a&second=b").text)
                 self.assertIn("请选择两条不同的同类型活动", browser.get("/compare?sport=Running&first=a&second=c").text)
-                self.assertIn("急慢性负荷比", browser.get("/training?sport=Running&period=week").text)
+                primary = browser.get("/training?sport=Running&period=week").text
+                self.assertIn("查看进阶分析", primary)
+                self.assertNotIn("急慢性负荷比", primary)
+                self.assertIn("急慢性负荷比", browser.get("/training?sport=Running&period=week&analysis=advanced").text)
                 back = "/training?period=week&sport=Running#training-charts"
                 activity = browser.get("/activities", params={"sport": "Running", "return_to": back}).text
                 self.assertIn('href="/training?period=week&amp;sport=Running#training-charts"', activity)
@@ -150,6 +153,45 @@ class ReportsTest(unittest.TestCase):
                 self.assertIn('id="route-map-link"', browser.get("/routes?watch=on&km=").text)
                 browser.post("/settings", data={"minutes": 15})
                 self.assertIn('id="route-map-link"', browser.get("/routes").text)
+
+    def test_report_dates_and_advanced_data_follow_the_selected_range(self):
+        with TemporaryDirectory() as directory, TestClient(create_app(directory)) as browser:
+            store = Store(directory)
+            run = store.start("fixture", "2024-02-29T00:00:00+08:00")
+            sport = {"activityName": "Running", "totalDistance": 5000, "totalTimeSeconds": 1800}
+            store.commit(run, "workouts", [("in", "2024-02-29T08:00:00+08:00", sport),
+                                          ("out", "2024-03-01T00:00:00+08:00", sport)])
+            page = browser.get("/training", params={"start": "2024-02-29", "end": "2024-02-29",
+                                                   "sport": "Running", "chart_view": "table"})
+            self.assertIn("2024-02-29", page.text)
+            self.assertIn("start=2024-02-22&amp;end=2024-02-22", page.text)
+            self.assertIn("sport=Running", page.text)
+            self.assertIn("<dd>1</dd>", page.text)
+            self.assertNotIn("急慢性负荷比", page.text)
+            advanced = browser.get("/training?start=2024-02-29&end=2024-02-29&analysis=advanced&chart_view=table")
+            self.assertIn("急慢性负荷比", advanced.text)
+            self.assertEqual(browser.get("/training?start=2024-03-01&end=2024-02-29").status_code, 422)
+            self.assertEqual(browser.get("/sleep-recovery?start=2024-01-01&end=2024-07-01").status_code, 422)
+            self.assertIn("当前按周", browser.get("/training?days=365").text)
+            self.assertIn('value="day" selected', browser.get("/training?days=365&period=day").text)
+
+    def test_health_preferences_load_only_when_requested_and_save_separately(self):
+        with TemporaryDirectory() as directory, TestClient(create_app(directory)) as browser:
+            from suunto.config import Config
+            config = Config(Store(directory).path.parent)
+            config.update({"weekly_km": 15, "wellness_fields": {"hrv": "observed"}, "sleep_stage_unit": "ms"})
+            with patch.object(Store, "observed_entry_fields", return_value=[]) as observed:
+                self.assertNotIn('name="hrv"', browser.get("/settings").text)
+                browser.post("/preferences", data={"section": "goal", "weekly_km": "20"}, follow_redirects=False)
+                observed.assert_not_called()
+                self.assertIn('name="hrv"', browser.get("/settings?edit_preferences=true").text)
+                self.assertEqual(observed.call_count, 2)
+                self.assertEqual(config.read()["wellness_fields"], {"hrv": "observed"})
+                self.assertEqual(config.read()["sleep_stage_unit"], "ms")
+                browser.post("/preferences", data={"section": "fields", "sleep_stage_unit": "seconds"},
+                             follow_redirects=False)
+                self.assertEqual(config.read()["weekly_km"], 20)
+                self.assertEqual(config.read()["wellness_fields"], {})
 
     def test_compare_retains_selected_activity_across_candidate_pages(self):
         with TemporaryDirectory() as directory:

@@ -172,7 +172,7 @@ class Client:
                 raise MCPError(f"OAuth 端点无效（{key}）。")
         return data
 
-    def begin(self, redirect_uri=REDIRECT):
+    def begin(self, redirect_uri=REDIRECT, *, same_account=False):
         with self.lock:
             metadata = self.metadata()
             credential = self.credential()
@@ -190,24 +190,28 @@ class Client:
             verifier = secrets.token_urlsafe(48)
             digest = hashlib.sha256(verifier.encode()).digest()
             challenge = base64.urlsafe_b64encode(digest).decode().rstrip("=")
-            self.pending = (state, verifier, time.monotonic() + AUTHORIZATION_TIMEOUT, client_id, redirect_uri)
+            self.pending = (state, verifier, time.monotonic() + AUTHORIZATION_TIMEOUT, client_id,
+                            redirect_uri, same_account)
             url = metadata["authorization_endpoint"] + "?" + urlencode({
                 "response_type": "code", "client_id": client_id, "redirect_uri": redirect_uri, "resource": MCP_URL,
                 "scope": SCOPE, "state": state, "code_challenge": challenge, "code_challenge_method": "S256",
             })
             return url, state
 
-    def complete(self, code, browser_state, returned_state=None, issuer=None, *, callback_uri=None):
+    def complete(self, code, browser_state, returned_state=None, issuer=None, *,
+                 callback_uri=None, confirm_account=None):
         with self.lock:
             if not self.pending or not code:
                 raise NeedsAuthorization("请先创建授权链接。")
-            expected, verifier, deadline, client_id, redirect_uri = self.pending
+            expected, verifier, deadline, client_id, redirect_uri, same_account = self.pending
             if (time.monotonic() > deadline or
                     not secrets.compare_digest(expected.encode(), browser_state.encode()) or
                     (returned_state is not None and not secrets.compare_digest(expected.encode(), returned_state.encode())) or
                     issuer not in (None, ISSUER) or callback_uri not in (None, redirect_uri)):
                 raise NeedsAuthorization("授权会话已过期或者 state/issuer 无效。")
             self.pending = None
+            if confirm_account is not None:
+                confirm_account(same_account)
             return self.exchange({"client_id": client_id, "redirect_uri": redirect_uri},
                                  grant_type="authorization_code", code=code, code_verifier=verifier,
                                  redirect_uri=redirect_uri)

@@ -99,6 +99,53 @@ def encode(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def overlapping_windows(db, source, start, end):
+    return db.execute("""
+        SELECT * FROM sync_windows WHERE source=? AND start_at<? AND end_at>?
+        ORDER BY start_at, end_at
+        """, (source, end, start)).fetchall()
+
+
+def save_windows(db, removed, additions):
+    db.executemany("DELETE FROM sync_windows WHERE source=? AND start_at=? AND end_at=?",
+                   ((row["source"], row["start_at"], row["end_at"]) for row in removed))
+    db.executemany("INSERT INTO sync_windows VALUES (?, ?, ?, ?, ?, ?)", additions)
+
+
+def subtract_window(db, source, start, end):
+    overlaps = overlapping_windows(db, source, start, end)
+    remaining = []
+    for row in overlaps:
+        state = (row["message"], row["attempts"], row["retry_at"])
+        if row["start_at"] < start:
+            remaining.append((source, row["start_at"], start, *state))
+        if row["end_at"] > end:
+            remaining.append((source, end, row["end_at"], *state))
+    save_windows(db, overlaps, remaining)
+
+
+def compact_windows(db):
+    # Existing volumes may have several overlapping windows. Keep separate
+    # failures independent, including windows which only share an endpoint.
+    rows = db.execute("SELECT * FROM sync_windows ORDER BY source, start_at, end_at").fetchall()
+    groups = []
+    latest_end = ""
+    for row in rows:
+        if groups and row["source"] == groups[-1][0]["source"] and row["start_at"] < latest_end:
+            groups[-1].append(row)
+            latest_end = max(latest_end, row["end_at"])
+        else:
+            groups.append([row])
+            latest_end = row["end_at"]
+    for group in groups:
+        if len(group) > 1:
+            first = group[0]
+            latest_retry = max(group, key=lambda row: row["retry_at"])
+            save_windows(db, group, [(first["source"], first["start_at"],
+                                      max(row["end_at"] for row in group), latest_retry["message"],
+                                      max(row["attempts"] for row in group), latest_retry["retry_at"])])
+
+
 class Store:
     def __init__(self, data_dir):
         self.path = Path(data_dir) / "suunto.sqlite"
@@ -130,6 +177,7 @@ class Store:
                 FROM sync_failures WHERE start_at IS NOT NULL AND end_at IS NOT NULL
                 """)
             db.execute("DELETE FROM sync_failures WHERE start_at IS NOT NULL AND end_at IS NOT NULL")
+            compact_windows(db)
             db.execute("UPDATE sync_runs SET status='interrupted' WHERE status='running'")
 
     def query(self, statement, params=()):
@@ -167,7 +215,7 @@ class Store:
                        (run_id, source, message))
 
     def commit(self, run_id, source, rows, *, until=None, full_scan_at=None,
-               interval=None, history_until=None, active_routes=None, details=(), checked_at=None):
+               interval=None, history_until=None, repair=False, active_routes=None, details=(), checked_at=None):
         """Commit the records and cursor as one operation, including identical replay."""
         with self.connect() as db:
             saved = db.executemany("""
@@ -187,8 +235,7 @@ class Store:
                     """, (source, until, full_scan_at))
             if interval is not None:
                 start, end = interval
-                db.execute("DELETE FROM sync_windows WHERE source=? AND start_at>=? AND end_at<=?",
-                           (source, start, end))
+                subtract_window(db, source, start, end)
                 previous = db.execute("""
                     SELECT min(start_at), max(end_at) FROM coverage
                     WHERE source=? AND start_at<=? AND end_at>=?
@@ -197,6 +244,11 @@ class Store:
                            (source, end, start))
                 db.execute("INSERT INTO coverage VALUES (?, ?, ?)",
                            (source, min(start, previous[0] or start), max(end, previous[1] or end)))
+                if repair:
+                    db.execute("""
+                        UPDATE backfill SET next_at=min(end_at, ?), error=NULL
+                        WHERE source=? AND next_at>=? AND next_at<? AND next_at<end_at
+                        """, (end, source, start, end))
             if history_until is not None:
                 db.execute("UPDATE backfill SET next_at=?, error=NULL WHERE source=?", (history_until, source))
             if checked_at is not None:
@@ -239,25 +291,32 @@ class Store:
         rows = self.query("SELECT * FROM sync_windows WHERE source=? AND start_at=? AND end_at=?", (source, start, end))
         return rows[0] if rows else None
 
-    def advance_repaired_backfill(self, source, start, end):
+    def window_failure(self, source, start, end, message, at):
         with self.connect() as db:
-            db.execute("UPDATE backfill SET next_at=?, error=NULL WHERE source=? AND next_at=? AND end_at>=?",
-                       (end, source, start, end))
-
-    def clear_windows(self, source, start, end):
-        with self.connect() as db:
-            db.execute("DELETE FROM sync_windows WHERE source=? AND start_at>=? AND end_at<=?", (source, start, end))
-
-    def window_failure(self, source, start, end, message, at, *, retry=True):
-        with self.connect() as db:
-            row = db.execute("SELECT attempts FROM sync_windows WHERE source=? AND start_at=? AND end_at=?",
-                             (source, start, end)).fetchone()
-            if row and not retry:
+            db.execute("BEGIN IMMEDIATE")
+            overlaps = overlapping_windows(db, source, start, end)
+            if overlaps:
+                attempts = max(row["attempts"] for row in overlaps)
+                retry_at = max(row["retry_at"] for row in overlaps)
+                start = min(start, overlaps[0]["start_at"])
+                end = max(end, *(row["end_at"] for row in overlaps))
+                save_windows(db, overlaps, [(source, start, end, message, attempts, retry_at)])
                 return
-            attempts = row[0] + 1 if row else 1
-            retry_at = at + timedelta(minutes=15 * 2 ** min(attempts - 1, 6))
-            db.execute("INSERT OR REPLACE INTO sync_windows VALUES (?, ?, ?, ?, ?, ?)",
-                       (source, start, end, message, attempts, retry_at.isoformat()))
+            retry_at = at + timedelta(minutes=15)
+            db.execute("INSERT INTO sync_windows VALUES (?, ?, ?, ?, ?, ?)",
+                       (source, start, end, message, 1, retry_at.isoformat()))
+
+    def postpone_windows(self, source, start, end, message, at):
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for row in overlapping_windows(db, source, start, end):
+                attempts = row["attempts"] + 1
+                retry_at = (at + timedelta(minutes=15 * 2 ** min(attempts - 1, 6))).isoformat()
+                db.execute("""
+                    UPDATE sync_windows SET message=?, attempts=?, retry_at=?
+                    WHERE source=? AND start_at=? AND end_at=?
+                    """, (message, attempts, max(retry_at, row["retry_at"]),
+                          source, row["start_at"], row["end_at"]))
 
     @staticmethod
     def _enqueue(db, kind, trigger):

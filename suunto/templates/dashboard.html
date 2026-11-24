@@ -19,6 +19,10 @@
 <div class="settings-grid" id="suunto">
 <section id="sync" class="authorization">
   <h2>Suunto 连接与同步</h2>
+  {% set scheduler = sync_status.scheduler %}
+  <p>自动同步调度：{% if scheduler.status == 'running' %}正常{% elif scheduler.status == 'recovering' %}遇到错误，正在自动重试{% elif scheduler.status == 'stalled' %}长时间未响应，请查看容器日志{% else %}正在启动{% endif %}。
+    {% if scheduler.checked_at %}最近检查 {{ local_time(scheduler.checked_at) }}。{% endif %}
+  </p>
   {% if oauth_error %}<p role="alert">{{ oauth_error }}</p>{% endif %}
   {% if connection == 'authorization_required' or oauth_error or request.url.path == '/oauth/callback' %}
     <p>完成 Suunto 授权后，浏览器会返回当前看板并开始同步。</p>
@@ -27,8 +31,8 @@
     {% else %}
     <form method="post" action="/oauth/start">
       {% if account_has_data %}
-      <p id="account-isolation">此数据卷已有个人数据。换账号请使用独立的 Compose 项目和数据卷。</p>
-      <p><label><input type="checkbox" name="same_account" value="true" aria-describedby="account-isolation" required>确认继续使用此数据卷原来的 Suunto 账号</label></p>
+      <p id="account-isolation">此数据卷已有 Suunto 数据或同步进度。请在 Suunto 登录页选原账号。换账号请在独立项目目录部署，使用独立的数据目录。</p>
+      <p><label><input type="checkbox" name="same_account" value="true" aria-describedby="account-isolation" required>我将继续使用原 Suunto 账号</label></p>
       {% endif %}
       <button>连接 Suunto</button>
     </form>

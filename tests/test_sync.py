@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta
 import json
 from pathlib import Path
+from sqlite3 import OperationalError
 from tempfile import TemporaryDirectory
 from threading import Event
 from time import monotonic
@@ -317,6 +318,75 @@ class SyncTest(unittest.TestCase):
         self.assertIsNotNone(self.store.window_record(*other))
         self.assertEqual(self.store.status()["backfill"][0]["next_at"], key[2])
         self.assertIsNone(self.store.status()["last_success_at"])
+
+    def test_overlapping_failures_keep_retry_state_and_success_leaves_only_uncovered_parts(self):
+        source = "workouts"
+        base = self.stop
+        marks = [(base + timedelta(hours=i)).isoformat() for i in range(9)]
+        a, b, c, d, e, f, g, h, i = marks
+        # Simulate the overlapping entries left by an older release.
+        with self.store.connect() as db:
+            db.executemany("INSERT INTO sync_windows VALUES (?, ?, ?, ?, ?, ?)", [
+                (source, a, d, "earlier", 1, g),
+                (source, c, e, "later", 3, i),
+                (source, h, i, "separate", 1, i),
+            ])
+        self.store.initialize()
+        self.assertEqual(self.store.window_record(source, a, e)["attempts"], 3)
+        self.store.window_failure(source, d, f, "repeated", base)
+        self.assertEqual(self.store.window_record(source, a, f)["retry_at"], i)
+        run = self.store.start("fixture", a)
+        self.store.commit(run, source, [], interval=(b, d))
+        self.store.postpone_windows(source, a, f, "retry failed", base + timedelta(hours=9))
+        windows = self.store.status()["window_failures"]
+        self.assertEqual([(row["start_at"], row["end_at"], row["attempts"]) for row in windows],
+                         [(a, b, 4), (d, f, 4), (h, i, 1)])
+
+    def test_merged_repair_keeps_mcp_request_windows_bounded(self):
+        source = "recovery"
+        tool, chunk = SOURCES[source]
+        start = self.stop
+        middle, end = start + chunk, start + chunk * 2
+        self.store.window_failure(source, start.isoformat(), middle.isoformat(), "first", start)
+        self.store.window_failure(source, (start + chunk / 2).isoformat(), end.isoformat(), "overlap", start)
+        failure = self.store.window_record(source, start.isoformat(), end.isoformat())
+        self.mcp.fail_recovery_after = middle.isoformat()
+        run = self.store.start("fixture", start.isoformat())
+        self.assertFalse(self.sync.retry_window(run, {tool}, failure))
+        self.assertEqual([(args["startDate"], args["endDate"]) for _, args in self.mcp.calls],
+                         [(start.isoformat(), middle.isoformat()), (middle.isoformat(), end.isoformat())])
+        windows = self.store.status()["window_failures"]
+        self.assertEqual([(row["start_at"], row["end_at"], row["attempts"]) for row in windows],
+                         [(middle.isoformat(), end.isoformat(), 2)])
+
+    def test_scheduler_recovers_after_database_read_fails(self):
+        self.mcp.http = Mock()
+        self.mcp.credential = lambda: {"access_token": "fixture"}
+        self.store.enqueue("incremental", "fixture")
+        queued = Store.queued
+        failed = Event()
+
+        def interrupted(store):
+            if not failed.is_set():
+                failed.set()
+                raise OperationalError("temporary SQLite failure")
+            return queued(store)
+
+        with patch.object(Store, "queued", interrupted), patch("suunto.web.SCHEDULER_RETRY", 0.5):
+            with TestClient(create_app(self.store.path.parent, client=self.mcp)) as browser:
+                self.assertTrue(failed.wait(3))
+                self.assertEqual(browser.get("/healthz").status_code, 200)
+                self.assertEqual(browser.get("/api/status").json()["scheduler"]["status"], "recovering")
+                self.assertIn("正在自动重试", browser.get("/settings").text)
+                for _ in range(100):
+                    status = browser.get("/api/status").json()
+                    if status["scheduler"]["status"] == "running" and status["runs"] and not status["running"]:
+                        break
+                    Event().wait(0.02)
+                self.assertEqual(status["scheduler"]["status"], "running")
+                self.assertTrue(status["scheduler"]["checked_at"])
+                self.assertEqual(status["runs"][0]["trigger"], "fixture")
+                self.assertFalse(status["incremental_pending"])
 
     def test_backfill_restart_resumes_after_last_committed_window(self):
         start = datetime(2020, 1, 1, tzinfo=TZ)

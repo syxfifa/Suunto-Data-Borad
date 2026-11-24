@@ -40,6 +40,8 @@ from .web_security import RequestSecurity
 
 LOG = logging.getLogger(__name__)
 DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+SCHEDULER_HEARTBEAT = 30
+SCHEDULER_RETRY = 5
 
 
 def dashboard_callback(request):
@@ -111,6 +113,18 @@ def create_app(data_dir=None, *, client=None):
     task = None
     task_name = None
     wake = asyncio.Event()
+    scheduler_state = {"beat": None, "checked_at": None, "recovering": False}
+
+    def scheduler_status():
+        state = scheduler_state.copy()
+        beat = state["beat"]
+        if beat is None:
+            status = "starting"
+        elif monotonic() - beat > 3 * SCHEDULER_HEARTBEAT:
+            status = "stalled"
+        else:
+            status = "recovering" if state["recovering"] else "running"
+        return {"status": status, "checked_at": state["checked_at"]}
 
     def queue_increment(trigger):
         store.enqueue("incremental", trigger)
@@ -140,9 +154,14 @@ def create_app(data_dir=None, *, client=None):
                 status = result["status"] if result else "failed"
                 keep = status in {"yielded", "interrupted"} or (
                     trigger == "backfill" and status == "authorization_required") or bool(retry_after())
-                if ticket and not keep and not sync.stopping.is_set():
-                    store.dequeue(ticket["kind"], ticket["revision"])
-                wake.set()
+                try:
+                    if ticket and not keep and not sync.stopping.is_set():
+                        await asyncio.to_thread(store.dequeue, ticket["kind"], ticket["revision"])
+                except SQLiteError:
+                    # Leave the durable ticket in place and avoid an immediate retry loop.
+                    LOG.exception("Could not finish the synchronization queue ticket")
+                else:
+                    wake.set()
 
         task_name = trigger
         task = asyncio.create_task(work())
@@ -190,37 +209,58 @@ def create_app(data_dir=None, *, client=None):
         stopping = False
 
         async def schedule():
-            await startup
             deadline = monotonic() + config.load() * 60
             while not stopping:
                 wake.clear()
-                if schedule_changed.is_set():
-                    schedule_changed.clear()
-                    deadline = monotonic() + config.load() * 60
-                if monotonic() >= deadline:
-                    deadline = monotonic() + config.load() * 60
-                    if discovery["status"] != "authorization_required":
-                        queue_increment("scheduled")
-                    try:
-                        await asyncio.to_thread(prune_logs)
-                    except SQLiteError:
-                        LOG.exception("Could not prune old sync logs")
-                wait = max(0, deadline - monotonic())
-                if not stopping and not (task and not task.done()):
-                    queued = store.queued()
-                    ticket = queued.get("incremental")
-                    if ticket is None and discovery["status"] != "authorization_required":
-                        ticket = queued.get("backfill")
-                    cooldown = retry_after()
-                    if ticket and cooldown:
-                        wait = min(wait, cooldown)
-                    elif ticket:
-                        submit(ticket["trigger"], ticket=ticket)
+                recovering = False
+                try:
+                    if schedule_changed.is_set():
+                        schedule_changed.clear()
+                        deadline = monotonic() + config.load() * 60
+                    if monotonic() >= deadline:
+                        if discovery["status"] != "authorization_required":
+                            await asyncio.to_thread(store.enqueue, "incremental", "scheduled")
+                            sync.yield_history.set()
+                        deadline = monotonic() + config.load() * 60
+                        try:
+                            await asyncio.to_thread(prune_logs)
+                        except SQLiteError:
+                            LOG.exception("Could not prune old sync logs")
+                    wait = min(SCHEDULER_HEARTBEAT, max(0, deadline - monotonic()))
+                    if startup.done() and not stopping and not (task and not task.done()):
+                        queued = await asyncio.to_thread(store.queued)
+                        ticket = queued.get("incremental")
+                        if ticket is None and discovery["status"] != "authorization_required":
+                            ticket = queued.get("backfill")
+                        cooldown = retry_after()
+                        if ticket and cooldown:
+                            wait = min(wait, cooldown)
+                        elif ticket:
+                            submit(ticket["trigger"], ticket=ticket)
+                except (SQLiteError, OSError):
+                    if not scheduler_state["recovering"]:
+                        LOG.exception("Automatic synchronization scheduler will retry")
+                    wait = SCHEDULER_RETRY
+                    recovering = True
+                scheduler_state.update(beat=monotonic(), checked_at=datetime.now(TZ).isoformat(),
+                                       recovering=recovering)
+                if stopping:
+                    break
                 try:
                     await asyncio.wait_for(wake.wait(), timeout=wait)
                 except asyncio.TimeoutError:
                     pass
 
+        def probe_finished(job):
+            try:
+                job.result()
+            except Exception:
+                LOG.exception("Initial Suunto probe failed")
+                discovery.update(status="error", message="初次检查 Suunto 连接失败，稍后会重新同步。")
+            wake.set()
+
+        startup.add_done_callback(probe_finished)
+        scheduler_state.update(beat=None, checked_at=None, recovering=False)
         scheduler = asyncio.create_task(schedule())
         try:
             yield
@@ -229,6 +269,7 @@ def create_app(data_dir=None, *, client=None):
             sync.stopping.set()
             wake.set()
             await scheduler
+            await asyncio.gather(startup, return_exceptions=True)
             if task is not None:
                 await task
             mcp.http.close()
@@ -294,7 +335,11 @@ def create_app(data_dir=None, *, client=None):
                             headers=NO_CACHE)
 
     def account_has_data():
-        return bool(store.query("SELECT 1 FROM records LIMIT 1"))
+        return bool(store.query("SELECT 1 FROM records UNION ALL SELECT 1 FROM cursors LIMIT 1"))
+
+    def confirm_account(same_account):
+        if not same_account and account_has_data():
+            raise MCPError("此数据卷保存了 Suunto 数据或同步进度。继续原账号需重新确认，新账号请使用独立数据卷。")
 
     @app.post("/disconnect")
     async def disconnect():
@@ -317,9 +362,8 @@ def create_app(data_dir=None, *, client=None):
             if (request.headers.get("sec-fetch-site") in ("cross-site", "same-site")
                     or origin and origin != redirect_uri.removesuffix("/oauth/callback")):
                 raise MCPError("请从看板页面发起授权。")
-            if not same_account and account_has_data():
-                raise MCPError("此数据卷已有个人记录，请确认使用原 Suunto 账号；新账号请使用独立数据卷。")
-            url, state = await asyncio.to_thread(mcp.begin, redirect_uri)
+            confirm_account(same_account)
+            url, state = await asyncio.to_thread(mcp.begin, redirect_uri, same_account=same_account)
         except MCPError as exc:
             LOG.warning("OAuth registration or discovery failed: %s", exc)
             return settings_page(request, oauth_error=str(exc))
@@ -338,12 +382,17 @@ def create_app(data_dir=None, *, client=None):
             await asyncio.shield(job)
 
     def complete(request, code, browser_state, returned_state, issuer, callback_uri):
+        if not sync.lock.acquire(blocking=False):
+            return settings_page(request, message="同步进行中，请在任务结束后重新发起授权。")
         try:
-            credentials = mcp.complete(code, browser_state, returned_state, issuer, callback_uri=callback_uri)
+            credentials = mcp.complete(code, browser_state, returned_state, issuer, callback_uri=callback_uri,
+                                       confirm_account=confirm_account)
+            discovery.update(status="probing", tools=[], message=None)
         except MCPError as exc:
             LOG.warning("OAuth completion failed: %s", exc)
             return settings_page(request, message=str(exc))
-        discovery.update(status="probing", tools=[], message=None)
+        finally:
+            sync.lock.release()
         target = "/settings?authorized=true"
         if not credentials.get("refresh_token"):
             target += "&refresh_required=true"
@@ -397,7 +446,7 @@ def create_app(data_dir=None, *, client=None):
         queued = store.queued()
         return {"running": active or sync.lock.locked(), "task": task_name if active else None,
                 "incremental_pending": "incremental" in queued, "backfill_active": "backfill" in queued,
-                "current_source": sync.current_source,
+                "current_source": sync.current_source, "scheduler": scheduler_status(),
                 "retry_after": retry_after(), **store.status()}
 
     def retry_after():

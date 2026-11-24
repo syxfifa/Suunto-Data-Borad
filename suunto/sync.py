@@ -192,13 +192,13 @@ class Synchronizer:
             except NeedsAuthorization:
                 raise
             except (MCPError, ValueError) as exc:
-                self.store.window_failure(source, start.isoformat(), end.isoformat(), str(exc), now(), retry=False)
+                self.store.window_failure(source, start.isoformat(), end.isoformat(), str(exc), now())
                 raise
             if clean:
                 self.store.clear_failure(source)
             else:
                 self.store.window_failure(source, start.isoformat(), end.isoformat(),
-                                          "部分记录无法解析，此窗口未确认覆盖。", now(), retry=False)
+                                          "部分记录无法解析，此窗口未确认覆盖。", now())
             start = end
 
     def repair_windows(self, run_id, names):
@@ -208,25 +208,31 @@ class Synchronizer:
         for failure in self.store.windows_due(now().isoformat(), supported, 4):
             if monotonic() < getattr(self.mcp, "cooldown", 0):
                 break
-            self.retry_window(run_id, names, failure)
+            self.retry_window(run_id, names, failure, automatic=True)
 
-    def retry_window(self, run_id, names, failure):
+    def retry_window(self, run_id, names, failure, *, automatic=False):
         source = failure["source"]
-        tool, _ = SOURCES[source]
+        tool, chunk = SOURCES[source]
         self.current_source = source
         start, end = failure["start_at"], failure["end_at"]
         try:
             if tool not in names:
                 raise MCPError(f"MCP 未公开 {tool}。")
-            if not self.window(run_id, source, tool, datetime.fromisoformat(start), datetime.fromisoformat(end),
-                               names, repair=True):
-                raise MCPError("重试仍有部分记录无法解析。")
-            self.store.advance_repaired_backfill(source, start, end)
+            # A merged gap can exceed this tool's normal request window.
+            current, stop = datetime.fromisoformat(start), datetime.fromisoformat(end)
+            if automatic:
+                # Keep the existing per-pass request budget after merging gaps.
+                stop = min(stop, current + chunk)
+            while current < stop:
+                boundary = min(current + chunk, stop)
+                if not self.window(run_id, source, tool, current, boundary, names, repair=True):
+                    raise MCPError("重试仍有部分记录无法解析。")
+                current = boundary
             return True
         except NeedsAuthorization:
             raise
         except (MCPError, ValueError) as exc:
-            self.store.window_failure(source, start, end, str(exc), now())
+            self.store.postpone_windows(source, start, end, str(exc), now())
             self.log_error(run_id, source, f"修复历史缺口失败。{exc}")
             return False
 
@@ -250,8 +256,7 @@ class Synchronizer:
                     except NeedsAuthorization:
                         raise
                     except (MCPError, ValueError) as exc:
-                        self.store.window_failure(source, start.isoformat(), end.isoformat(), str(exc), now(),
-                                                  retry=False)
+                        self.store.window_failure(source, start.isoformat(), end.isoformat(), str(exc), now())
                         raise
                     start = end
             except (MCPError, ValueError) as exc:
@@ -284,8 +289,6 @@ class Synchronizer:
             if historical and not left:
                 return False
             right = self.window(run_id, source, tool, middle, stop, names, historical=historical, repair=repair)
-            if left and right:
-                self.store.clear_windows(source, start.isoformat(), stop.isoformat())
             return left and right
         errors = self.store.query("SELECT max(id) AS id FROM sync_errors WHERE run_id=?", (run_id,))[0]["id"]
         if source == "daily_activity":
@@ -301,7 +304,7 @@ class Synchronizer:
         self.store.commit(run_id, source, rows, until=None if historical or repair else args["endDate"],
                           history_until=args["endDate"] if historical and clean else None,
                           interval=(args["startDate"], args["endDate"]) if clean else None,
-                          details=details, checked_at=now().isoformat() if clean else None)
+                          repair=repair, details=details, checked_at=now().isoformat() if clean else None)
         return clean
 
     def rows(self, run_id, source, records):

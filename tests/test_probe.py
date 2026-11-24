@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 import httpx
 
 from suunto.mcp import Client, ISSUER, REDIRECT, save_json
+from suunto.store import Store
 from suunto.web import create_app
 
 
@@ -107,6 +108,27 @@ class ProbeTest(unittest.TestCase):
                 self.mcp.path.write_text(json.dumps(state))
             self.assertEqual(browser.post("/api/probe").json()["status"], "ready")
             self.assertEqual(self.grants, ["authorization_code", "refresh_token"])
+
+    def test_callback_rechecks_volume_and_requires_confirmation_bound_to_oauth_state(self):
+        store = Store(self.mcp.path.parent)
+        with TestClient(create_app(client=self.mcp), base_url=self.lan_origin) as browser:
+            browser.post("/oauth/start", follow_redirects=False)
+            state = browser.cookies["suunto_oauth_state"]
+            # An empty sync can leave a cursor even when no records have arrived.
+            at = "2026-11-10T00:00:00+08:00"
+            run = store.start("fixture", at)
+            store.commit(run, "workouts", [], until=at)
+            blocked = browser.get("/oauth/callback", params={"code": "one-time-code", "state": state,
+                                                           "same_account": "true"}, follow_redirects=False)
+            self.assertIn("继续原账号需重新确认", blocked.text)
+            self.assertFalse(self.grants)
+            self.assertFalse(self.mcp.path.exists())
+            browser.post("/oauth/start", data={"same_account": "true"}, follow_redirects=False)
+            state = browser.cookies["suunto_oauth_state"]
+            callback = browser.get("/oauth/callback", params={"code": "one-time-code", "state": state},
+                                   follow_redirects=False)
+            self.assertEqual(callback.headers["location"], "/settings?authorized=true")
+            self.assertEqual(self.grants, ["authorization_code"])
 
     def assert_oauth_at(self, origin):
         self.redirect = origin + "/oauth/callback"

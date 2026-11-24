@@ -84,6 +84,10 @@ class ProbeTest(unittest.TestCase):
             self.assertEqual(sync["runs"][0]["trigger"], "oauth")
             self.assertEqual(sync["counts"]["routes"], 1)
             self.tool_calls.clear()
+            progress = browser.get("/api/sync/progress")
+            self.assertIn("no-store", progress.headers["cache-control"])
+            self.assertEqual(progress.json()["latest"]["changed"], 1)
+            self.assertFalse(self.tool_calls)
             tools = browser.post("/api/probe").json()["tools"]
             self.assertEqual([tool["allowed_read"] for tool in tools], [True, False])
             for name in ("activate_training_program", "list_user_workouts"):

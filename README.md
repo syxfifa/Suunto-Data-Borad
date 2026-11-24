@@ -1,6 +1,6 @@
 # Suunto Data Borad 使用手册
 
-当前版本 **V1.0.15**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。健康检查由镜像提供。
+当前版本 **V1.0.16**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。健康检查由镜像提供。
 
 ## 第一次部署
 
@@ -26,7 +26,8 @@ Compose 的 `7383:7383` 左侧是 NAS 端口，右侧是容器端口。`./suunto
 | `access.json` | 启用看板密码后生成的密码哈希 |
 | `amap.json` | 本地高德配置和凭据。备份命令生成的归档中不包含此文件 |
 | `sync-cooldown.json` | Suunto 限流时的重试期限，用于容器重启后继续等待 |
-| `backup-status.json` | 最近一次通过 `verify --record` 记录的备份验证时间 |
+| `backup-status.json` | 最近一次通过 `verify --record` 记录的归档验证结果 |
+| `restore-drill-status.json` | 最近一次通过 `drill --record` 记录的隔离恢复演练结果 |
 
 ## 看板功能
 
@@ -65,7 +66,8 @@ Compose 的 `7383:7383` 左侧是 NAS 端口，右侧是容器端口。`./suunto
 
 ## 同步、导出与备份
 
-- **手动同步**。打开 **设置 → Suunto 连接与同步 → 立即同步**。自动同步默认每 30 分钟，间隔可在设置页调整。
+- **手动同步**。打开 **设置 → Suunto 连接与同步 → 立即同步**。留在设置页即可看到排队、处理中的来源、完成状态和变更条数。进度查询只读取本地状态。
+- **自动复核**。自动同步默认每 30 分钟。在常规增量与缺口修复之后，每个数据来源每天最多复核两个已覆盖的日期，即北京时间 7 天前和 28 天前。达到 Suunto 限流时跳过复核。更早的更新可使用历史补采。
 - **调度状态**。在 **设置 → Suunto 连接与同步** 查看调度器最近检查时间。临时错误会自动重试。若持续显示长时间未响应，查看 `docker compose logs --tail 100 app`。
 - **补历史**。打开 **设置 → 历史补采**，选近 90 天、近一年或自定义日期。可以暂停后继续，并查看每个来源预计剩余窗口。在「同步详情与诊断」打开「待修复的日期窗口」可查看下一次自动重试时间，也可重试单个窗口。Suunto 限流期间，重启容器后仍会等待。
 - **导出 CSV**。在 **设置 → 导出数据** 选择数据来源、日期和格式。运动活动页可以导出当前筛选的全部结果。分列格式中，距离用公里、时长用分钟，`hrv_ms` 来自设置中已绑定的恢复字段。分享模式会省略坐标、名称、设备来源、编号和原始 JSON。
@@ -89,11 +91,38 @@ docker compose run --rm --no-deps -T app python -m suunto restore --component se
 docker compose up -d
 ```
 
-`verify --record` 成功后，维护页会显示验证时间。恢复到空目录后，在设置中连接原 Suunto 账号并重新配置高德地图。默认归档不含这些凭据。
+`verify --record` 成功后，维护页会显示本次校验时间、归档日期和归档版本。恢复到空目录后，在设置中连接原 Suunto 账号并重新配置高德地图。默认归档不含这些凭据。
+
+### NAS 定时备份和隔离恢复演练
+
+在 NAS 任务计划里添加每日脚本，替换下方两个目录。任务账户需要能执行 Docker Compose。使用仅你可读写的备份目录，最好放在另一存储位置。
+
+```sh
+set -eu
+cd '/path/to/suunto-compose-project'
+backup_dir='/path/to/private-backups'
+umask 077
+mkdir -p "$backup_dir"
+tmp="$(mktemp "$backup_dir/.suunto-XXXXXX")"
+trap 'rm -f "$tmp"' 0
+docker compose exec -T --user 10001:10001 app python -m suunto backup > "$tmp"
+docker compose exec -T --user 10001:10001 app python -m suunto verify --record < "$tmp"
+mv "$tmp" "$backup_dir/suunto-backup-$(date +%Y%m%d-%H%M%S).zip"
+```
+
+升级前或定期挑一份归档做演练。命令会在容器临时目录恢复数据库和已有设置，然后检查恢复后的 SQLite。生产卷只写入演练结果摘要，无需停止看板。
+
+```sh
+docker compose exec -T --user 10001:10001 app python -m suunto drill --record < "$archive"
+```
+
+在 **设置 → 维护** 分别查看归档验证和隔离恢复演练。演练只恢复数据库和设置。
 
 ### 固定版本与回滚
 
-想固定版本，可将 Compose 的 `image` 改为 `jjsyx123/suunto-data-borad:1.0.15`，执行 `docker compose pull` 和 `docker compose up -d`。更新前先验证备份。如需回滚，使用已验证且包含安全修复的版本标签，再执行相同命令。在后续涉及 SQLite 结构升级的版本中，回滚前按对应版本说明判断是否需要恢复升级前的备份。
+想固定版本，可将 Compose 的 `image` 改为 `jjsyx123/suunto-data-borad:1.0.16`，执行 `docker compose pull` 和 `docker compose up -d`。V1.0.16 会自动升级 SQLite 结构。更新前保存并验证备份，回滚到 V1.0.15 或更早版本时，先用旧版镜像恢复升级前的数据库，然后启动旧版应用。
+
+GitHub Actions 的 **Scan published Suunto image** 每周一北京时间约 09:17 扫描 Docker Hub 当前发布的双架构 `latest`，也可以手动运行。报告按镜像摘要保存，发现已有修复的高危或严重项时标记此次扫描失败。
 
 ## 排查与发布
 

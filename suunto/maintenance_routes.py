@@ -10,7 +10,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 
 from . import VERSION
-from .maintenance import last_verified_backup, storage_size
+from .maintenance import backup_status, storage_size
 from .reports import midnight
 from .sync import SOURCES
 from .views import csv_cells, lower_bound
@@ -69,7 +69,7 @@ def maintenance_router(store, config, access, mcp_state, prune_logs):
                      "counts": {name: status["counts"].get(name, 0) for name in SOURCES}, "source_labels": SOURCE_LABELS,
                      "size": round(storage_size(data_dir)/1024**2, 2), "mcp_status": mcp_state(),
                      "last_sync": status["last_success_at"],
-                     "backup_verified": last_verified_backup(data_dir),
+                     "backup_verified": backup_status(data_dir), "restore_drill": backup_status(data_dir, drill=True),
                      "protected": access.enabled(), "secure": local_transport(request)},
             headers=HOME_HEADERS)
 

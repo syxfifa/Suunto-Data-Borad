@@ -16,7 +16,7 @@ import httpx
 
 from suunto import VERSION
 from suunto.access import Access, USERNAME
-from suunto.maintenance import backup, last_verified_backup, restore, verify, volume_lock
+from suunto.maintenance import backup, backup_status, last_verified_backup, restore, verify, volume_lock
 from suunto.mcp import Client, MCPError, save_json
 from suunto.store import SCHEMA_VERSION, Store
 from suunto.sync import TZ
@@ -105,6 +105,22 @@ class MaintenanceTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify(invalid, record_to=self.directory)
         self.assertEqual(last_verified_backup(self.directory), verified_at)
+
+    def test_drill_restores_separately_and_records_archive_metadata(self):
+        data = BytesIO()
+        save_json(self.directory / "config.json", {"sync_interval_minutes": 15})
+        backup(self.directory, data)
+        save_json(self.directory / "config.json", {"sync_interval_minutes": 20})
+        before = self.store.path.read_bytes()
+        self.assertEqual(verify(data, drill=True, record_to=self.directory), ["database", "settings"])
+        self.assertEqual(self.store.path.read_bytes(), before)
+        self.assertEqual(json.loads((self.directory / "config.json").read_bytes())["sync_interval_minutes"], 20)
+        self.assertIsNone(backup_status(self.directory))
+        report = backup_status(self.directory, drill=True)
+        self.assertEqual(report["app_version"], VERSION)
+        self.assertTrue(report["created_at"].endswith("+08:00"))
+        with TestClient(create_app(self.directory)) as browser:
+            self.assertIn("最近一次通过的隔离恢复演练", browser.get("/maintenance").text)
 
     def test_manifest_detects_changed_file_even_with_valid_zip_crc(self):
         settings = self.directory / "config.json"

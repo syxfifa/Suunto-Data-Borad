@@ -138,6 +138,7 @@ def exercise(browser, origin, fixture, width):
             expect(page.get_by_text("Suunto 授权成功", exact=False)).to_be_visible()
             expect(page.get_by_role("button", name="立即同步")).to_be_visible()
             expect(page.get_by_role("button", name="连接 Suunto")).to_have_count(0)
+            expect(page.locator("#sync-progress")).to_contain_text("新增或更新 1 条", timeout=15000)
         except Exception as exc:
             raise AssertionError(f"OAuth browser fixture failed on {origin}: {navigations}") from exc
         assert fixture.grants == ["authorization_code"]

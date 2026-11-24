@@ -12,6 +12,7 @@ suunto-storage
 **/amap.json
 **/sync-cooldown.json
 **/backup-status.json
+**/restore-drill-status.json
 **/.maintenance.lock
 **/suunto-backup*.zip
 **/suunto*.csv

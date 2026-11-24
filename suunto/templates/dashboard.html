@@ -42,13 +42,16 @@
     {% elif connection == 'probing' %}<p>正在检查 Suunto 连接。</p>
     {% else %}<p role="status">{{ discovery.message or 'Suunto 连接异常。' }}</p>{% endif %}
     <p>上次完整同步 {{ local_time(sync_status.last_success_at) }}</p>
-    {% if sync_status.running %}
-    <p role="status">同步任务进行中{% if sync_status.current_source %} · {{ source_labels.get(sync_status.current_source, sync_status.current_source) }}{% endif %}。刷新本页可查看进度。</p>
-    {% endif %}
-    {% if sync_status.incremental_pending and sync_status.task == "backfill" %}
-    <p role="status">增量同步已排队，将在当前补采窗口结束后优先执行。</p>
-    {% endif %}
-    {% if sync_status.retry_after %}<p>Suunto 正在限流。约 {{ sync_status.retry_after }} 秒后可重试。</p>{% endif %}
+    {% set watching = sync_status.running or sync_status.incremental_pending or sync_status.backfill_active
+       or request.query_params.get('job') == 'started' or request.query_params.get('authorized') == 'true' %}
+    <p id="sync-progress" role="status" data-watch="{{ 'true' if watching else 'false' }}">
+      {% if sync_status.retry_after %}Suunto 正在限流。约 {{ sync_status.retry_after }} 秒后可重试。
+      {% elif sync_status.running %}同步任务进行中{% if sync_status.current_source %} · {{ source_labels.get(sync_status.current_source, sync_status.current_source) }}{% endif %}。
+      {% elif sync_status.incremental_pending or sync_status.backfill_active %}同步已排队。
+      {% elif sync_status.runs %}最近一次同步处理 {{ sync_status.runs[0].received }} 条，新增或更新 {{ sync_status.runs[0].changed }} 条。{% endif %}
+    </p>
+    <noscript><p>刷新设置页可查看最新进度。</p></noscript>
+    <script defer src="/static/sync-progress.js?v=1.0.16"></script>
     <div class="controls">
       <form method="post" action="/sync"><button{% if sync_status.retry_after %} disabled{% endif %}>立即同步</button></form>
       {% if connection == 'error' %}

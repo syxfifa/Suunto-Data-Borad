@@ -449,6 +449,14 @@ def create_app(data_dir=None, *, client=None):
                 "current_source": sync.current_source, "scheduler": scheduler_status(),
                 "retry_after": retry_after(), **store.status()}
 
+    @app.get("/api/sync/progress")
+    def sync_progress():
+        active = bool(task and not task.done())
+        return JSONResponse({**store.sync_progress(), "running": active or sync.lock.locked(),
+                             "source_label": SOURCE_LABELS.get(sync.current_source, ""),
+                             "retry_after": retry_after(), "authorized": mcp_state() != "authorization_required"},
+                            headers=NO_CACHE)
+
     def retry_after():
         return max(0, ceil(getattr(mcp, "cooldown", 0) - monotonic()))
 

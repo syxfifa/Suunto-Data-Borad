@@ -21,9 +21,10 @@ COMPONENTS = {"database": "suunto.sqlite", "settings": "config.json", "token": "
 MANIFEST = "manifest.json"
 BACKUP_FORMAT = 1
 BACKUP_STATUS = "backup-status.json"
+DRILL_STATUS = "restore-drill-status.json"
 KNOWN_TABLES = {"records", "cursors", "sync_runs", "sync_errors", "coverage", "backfill",
                 "sync_failures", "sync_windows", "sync_queue", "source_success",
-                "workout_details", "removed_routes", "route_absences"}
+                "workout_details", "removed_routes", "route_absences", "sync_reviews"}
 
 
 @contextmanager
@@ -155,24 +156,56 @@ def extract_checked(archive, temporary):
             if manifest and manifest["files"][name] != {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}:
                 raise ValueError(f"备份校验失败：{name} 与清单不一致。")
             validate_json(component, data)
-    return [component for component, name in COMPONENTS.items() if name in names]
+    return [component for component, name in COMPONENTS.items() if name in names], manifest
 
 
-def verify(input_file, *, record_to=None):
+def verify(input_file, *, record_to=None, drill=False):
     with zipfile.ZipFile(input_file) as archive, TemporaryDirectory() as temporary:
-        components = extract_checked(archive, Path(temporary))
+        source = Path(temporary)
+        components, manifest = extract_checked(archive, source)
+        if drill:
+            target = source / "restore"
+            target.mkdir()
+            with volume_lock(target):
+                restore_component(archive, source, target, "database")
+                if "settings" in components:
+                    restore_component(archive, source, target, "settings")
+                    validate_json("settings", (target / COMPONENTS["settings"]).read_bytes())
+                check_database(target / COMPONENTS["database"])
     if record_to is not None:
-        save_json(Path(record_to) / BACKUP_STATUS, {"verified_at": datetime.now(TZ).isoformat()})
+        manifest = manifest or {}
+        save_json(Path(record_to) / (DRILL_STATUS if drill else BACKUP_STATUS),
+                  {"verified_at": datetime.now(TZ).isoformat(),
+                   "created_at": manifest.get("created_at"), "app_version": manifest.get("app_version")})
     return components
 
 
-def last_verified_backup(directory):
+def backup_status(directory, *, drill=False):
     try:
-        value = json.loads((Path(directory) / BACKUP_STATUS).read_bytes())["verified_at"]
-        at = datetime.fromisoformat(value)
-        return at.astimezone(TZ).isoformat() if at.tzinfo else None
+        metadata = json.loads((Path(directory) / (DRILL_STATUS if drill else BACKUP_STATUS)).read_bytes())
+        at = datetime.fromisoformat(metadata["verified_at"])
+        created = datetime.fromisoformat(metadata["created_at"]) if metadata.get("created_at") else None
+        if at.tzinfo is None:
+            return None
+        return {"verified_at": at.astimezone(TZ).isoformat(),
+                "created_at": created.astimezone(TZ).isoformat() if created and created.tzinfo else None,
+                "app_version": metadata.get("app_version")}
     except (OSError, KeyError, TypeError, ValueError):
         return None
+
+
+def last_verified_backup(directory):
+    report = backup_status(directory)
+    return report["verified_at"] if report else None
+
+
+def restore_component(archive, snapshot, directory, component):
+    filename = COMPONENTS[component]
+    target = directory / filename
+    if component == "database":
+        copy_database(snapshot / filename, target)
+    else:
+        save_json(target, validate_json(component, archive.read(filename)))
 
 
 def restore(directory, input_file, component, *, replace=False, same_account=False):
@@ -180,18 +213,15 @@ def restore(directory, input_file, component, *, replace=False, same_account=Fal
     filename = COMPONENTS[component]
     with volume_lock(directory), zipfile.ZipFile(input_file) as archive, TemporaryDirectory() as temporary:
         snapshot = Path(temporary)
-        if component not in extract_checked(archive, snapshot):
+        components, _ = extract_checked(archive, snapshot)
+        if component not in components:
             raise ValueError("备份内没有所选恢复项。")
         target = directory / filename
         if target.exists() and not replace:
             raise ValueError("恢复项已存在，请先确认已备份，并指定 --replace。")
         if (component == "token" or (component == "database" and (directory / "token.json").exists())) and not same_account:
             raise ValueError("此操作可能混入不同账号的记录。确认归档和数据卷属于同一 Suunto 账号后指定 --same-account；新账号请使用独立数据卷。")
-        if component == "database":
-            copy_database(snapshot / filename, target)
-        else:
-            data = validate_json(component, archive.read(filename))
-            save_json(target, data)
+        restore_component(archive, snapshot, directory, component)
 
 
 def storage_size(directory):

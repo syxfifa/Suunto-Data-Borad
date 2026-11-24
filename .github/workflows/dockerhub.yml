@@ -128,6 +128,8 @@ jobs:
           docker compose exec -T --user 10001:10001 app python -m suunto backup > "$snapshot"
           docker compose exec -T --user 10001:10001 app python -m suunto verify --record < "$snapshot"
           docker compose exec -T --user 10001:10001 app python -c 'from suunto.maintenance import last_verified_backup; assert last_verified_backup("/data")'
+          docker compose exec -T --user 10001:10001 app python -m suunto drill --record < "$snapshot"
+          docker compose exec -T --user 10001:10001 app python -c 'from suunto.maintenance import backup_status; from suunto import VERSION; assert backup_status("/data", drill=True)["app_version"] == VERSION'
           docker compose down
           restored="$RUNNER_TEMP/suunto-restore-data"
           printf 'services:\n  app:\n    image: "%s"\n    volumes:\n      - "%s:/data"\n' \

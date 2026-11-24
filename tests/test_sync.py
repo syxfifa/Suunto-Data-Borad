@@ -359,6 +359,46 @@ class SyncTest(unittest.TestCase):
         self.assertEqual([(row["start_at"], row["end_at"], row["attempts"]) for row in windows],
                          [(middle.isoformat(), end.isoformat(), 2)])
 
+    def test_scheduled_review_imports_late_workout_without_rescanning_it_all_day(self):
+        stop = datetime(2026, 1, 30, 12, tzinfo=TZ)
+        late = "2026-01-23T15:00:00+08:00"
+        run = self.store.start("fixture", stop.isoformat())
+        self.store.commit(run, "workouts", [], until=stop.isoformat(),
+                          interval=((stop - timedelta(days=40)).isoformat(), stop.isoformat()))
+        tool = SOURCES["workouts"][0]
+        calls = []
+
+        def sample(name, args, discovered):
+            self.assertEqual(name, tool)
+            calls.append((args["startDate"], args["endDate"]))
+            rows = [{"workoutId": "late", "startTime": late}] if args["startDate"] <= late < args["endDate"] else []
+            return {"structuredContent": rows}
+
+        self.mcp.sample = sample
+        discover = lambda: [{"name": tool}]
+        self.sync.run("scheduled", stop=stop, discover=discover)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[1][0][:10], "2026-01-23")
+        self.assertEqual(calls[2][0][:10], "2026-01-02")
+        self.assertIsNotNone(self.store.record("workouts", "late"))
+        self.assertEqual(self.store.cursor("workouts")["scanned_until"], stop.isoformat())
+        calls.clear()
+        self.store.initialize()
+        Synchronizer(self.mcp, self.store).run("scheduled", stop=stop + timedelta(minutes=30), discover=discover)
+        self.assertEqual(len(calls), 1)
+
+    def test_review_requires_coverage_and_checks_rate_limit_first(self):
+        stop = datetime(2026, 1, 30, 12, tzinfo=TZ)
+        run = self.store.start("fixture", stop.isoformat())
+        tool = SOURCES["workouts"][0]
+        self.sync.review_recent(run, {tool}, stop)
+        self.assertFalse(self.mcp.calls)
+        self.store.commit(run, "workouts", [], interval=((stop - timedelta(days=40)).isoformat(), stop.isoformat()))
+        self.mcp.cooldown = monotonic() + 30
+        self.sync.review_recent(run, {tool}, stop)
+        self.assertFalse(self.mcp.calls)
+        self.assertFalse(self.store.query("SELECT 1 FROM sync_reviews"))
+
     def test_scheduler_recovers_after_database_read_fails(self):
         self.mcp.http = Mock()
         self.mcp.credential = lambda: {"access_token": "fixture"}

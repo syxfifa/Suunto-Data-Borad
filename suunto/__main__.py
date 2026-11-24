@@ -56,9 +56,11 @@ def maintain(args):
             print("Local dashboard password cleared.")
         else:
             with archive_input(args.archive) as archive:
-                if args.action == "verify":
-                    components = verify(archive, record_to=args.data_dir if args.record else None)
-                    print(json.dumps({"status": "verified", "components": components}))
+                if args.action in ("verify", "drill"):
+                    drill = args.action == "drill"
+                    components = verify(archive, record_to=args.data_dir if args.record else None, drill=drill)
+                    print(json.dumps({"status": "restored_and_verified" if drill else "verified",
+                                      "components": [name for name in components if not drill or name != "token"]}))
                 else:
                     restore(args.data_dir, archive, args.component, replace=args.replace, same_account=args.same_account)
                     print(f"Restored {args.component}.")
@@ -84,6 +86,9 @@ def main():
     check = actions.add_parser("verify", help="Verify an archive from a file or stdin (-)")
     check.add_argument("archive", nargs="?", default="-")
     check.add_argument("--record", action="store_true", help="Record successful verification in the dashboard data directory")
+    drill = actions.add_parser("drill", help="Test restoration in a temporary directory without restoring OAuth tokens")
+    drill.add_argument("archive", nargs="?", default="-")
+    drill.add_argument("--record", action="store_true", help="Record successful isolated restoration in the dashboard")
     restore_cmd = actions.add_parser("restore", help="Restore one component while the app is stopped")
     restore_cmd.add_argument("archive", nargs="?", default="-")
     restore_cmd.add_argument("--component", choices=COMPONENTS, default="database")
@@ -91,7 +96,7 @@ def main():
     restore_cmd.add_argument("--same-account", action="store_true")
     actions.add_parser("access-reset", help="Clear the dashboard password while the app is stopped")
     args = parser.parse_args()
-    if args.action in ("backup", "verify", "restore", "access-reset"):
+    if args.action in ("backup", "verify", "drill", "restore", "access-reset"):
         return maintain(args)
     body = None
     path = args.action

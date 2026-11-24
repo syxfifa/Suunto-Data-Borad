@@ -8,7 +8,15 @@ import sqlite3
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+REVIEW_SCHEMA = """
+CREATE TABLE IF NOT EXISTS sync_reviews (
+    source TEXT NOT NULL,
+    age_days INTEGER NOT NULL,
+    attempted_on TEXT NOT NULL,
+    PRIMARY KEY (source, age_days)
+);
+"""
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS records (
     source TEXT NOT NULL,
@@ -171,6 +179,9 @@ class Store:
             if version == 0:
                 # Version 0 includes both fresh databases and existing unversioned releases.
                 db.executescript(f"BEGIN IMMEDIATE;\n{SCHEMA}\nPRAGMA user_version=1;")
+                db.commit()
+            if version < 2:
+                db.executescript(f"BEGIN IMMEDIATE;\n{REVIEW_SCHEMA}\nPRAGMA user_version=2;")
             db.execute("""
                 INSERT OR IGNORE INTO sync_windows
                 SELECT source, start_at, end_at, message, 1, end_at
@@ -183,6 +194,29 @@ class Store:
     def query(self, statement, params=()):
         with self.connect() as db:
             return [dict(row) for row in db.execute(statement, params)]
+
+    def claim_review(self, source, age, today, start, end):
+        """Limit repeated scans to previously verified dates and one attempt per day."""
+        with self.connect() as db:
+            return bool(db.execute("""
+                INSERT INTO sync_reviews(source, age_days, attempted_on)
+                SELECT ?, ?, ? WHERE EXISTS (
+                    SELECT 1 FROM coverage WHERE source=? AND start_at<=? AND end_at>=?
+                )
+                ON CONFLICT(source, age_days) DO UPDATE SET attempted_on=excluded.attempted_on
+                WHERE sync_reviews.attempted_on<excluded.attempted_on
+                """, (source, age, today, source, start, end)).rowcount)
+
+    def sync_progress(self):
+        with self.connect() as db:
+            db.execute("BEGIN")
+            queued = [row["kind"] for row in db.execute("SELECT kind FROM sync_queue")]
+            recent = db.execute("""
+                SELECT id, trigger, status, started_at, finished_at, received, changed
+                FROM sync_runs ORDER BY id DESC LIMIT 1
+                """).fetchone()
+        return {"incremental_pending": "incremental" in queued, "backfill_active": "backfill" in queued,
+                "latest": dict(recent) if recent else None}
 
     def cursor(self, source):
         seen = self.query("SELECT scanned_until, full_scan_at FROM cursors WHERE source=?", (source,))

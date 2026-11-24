@@ -15,6 +15,7 @@ from .store import encode
 TZ = ZoneInfo("Asia/Shanghai")
 LOG = logging.getLogger(__name__)
 OVERLAP = timedelta(days=2)
+REVIEW_AGES = (7, 28)
 SOURCES = {
     "workouts": ("list_user_workouts", timedelta(days=27)),
     "sleep": ("get_sleep_summary", timedelta(days=27)),
@@ -153,6 +154,8 @@ class Synchronizer:
                 self.repair_windows(run_id, names)
             if "get_workout_detail" in names and not self.stopping.is_set():
                 self.fill_details(run_id, names)
+            if trigger == "scheduled":
+                self.review_recent(run_id, names, stop)
             if self.stopping.is_set():
                 status = "interrupted"
             elif self.store.query("SELECT 1 FROM sync_errors WHERE run_id=? LIMIT 1", (run_id,)):
@@ -209,6 +212,30 @@ class Synchronizer:
             if monotonic() < getattr(self.mcp, "cooldown", 0):
                 break
             self.retry_window(run_id, names, failure, automatic=True)
+
+    def review_recent(self, run_id, names, stop):
+        today = stop.date()
+        for source, (tool, chunk) in SOURCES.items():
+            if not chunk or tool not in names:
+                continue
+            for age in REVIEW_AGES:
+                if self.stopping.is_set() or monotonic() < getattr(self.mcp, "cooldown", 0):
+                    return
+                start = datetime.combine(today - timedelta(days=age), time.min, TZ)
+                end = start + timedelta(days=1)
+                begin, finish = start.isoformat(), end.isoformat()
+                if not self.store.claim_review(source, age, today.isoformat(), begin, finish):
+                    continue
+                self.current_source = source
+                try:
+                    if self.window(run_id, source, tool, start, end, names, review=True):
+                        continue
+                    raise MCPError("复核时发现部分记录无法解析。")
+                except NeedsAuthorization:
+                    raise
+                except (MCPError, ValueError) as exc:
+                    self.store.window_failure(source, begin, finish, str(exc), now())
+                    self.log_error(run_id, source, str(exc))
 
     def retry_window(self, run_id, names, failure, *, automatic=False):
         source = failure["source"]
@@ -271,7 +298,7 @@ class Synchronizer:
             "SELECT 1 FROM sync_errors WHERE run_id=? LIMIT 1", (run_id,)
         ) else "ok"
 
-    def window(self, run_id, source, tool, start, stop, names, *, historical=False, repair=False):
+    def window(self, run_id, source, tool, start, stop, names, *, historical=False, repair=False, review=False):
         if self.stopping.is_set() or (historical and (self.pause_history.is_set() or self.yield_history.is_set())):
             raise InterruptedError
         args = {"startDate": start.isoformat(), "endDate": stop.isoformat()}
@@ -285,10 +312,12 @@ class Synchronizer:
             if span <= 1:
                 raise MCPError("运动查询在一秒窗口仍达到 100 条上限。")
             middle = start + timedelta(seconds=span // 2)
-            left = self.window(run_id, source, tool, start, middle, names, historical=historical, repair=repair)
+            left = self.window(run_id, source, tool, start, middle, names,
+                               historical=historical, repair=repair, review=review)
             if historical and not left:
                 return False
-            right = self.window(run_id, source, tool, middle, stop, names, historical=historical, repair=repair)
+            right = self.window(run_id, source, tool, middle, stop, names,
+                                historical=historical, repair=repair, review=review)
             return left and right
         errors = self.store.query("SELECT max(id) AS id FROM sync_errors WHERE run_id=?", (run_id,))[0]["id"]
         if source == "daily_activity":
@@ -301,7 +330,7 @@ class Synchronizer:
         details = []
         if listed:
             rows, details = self.merge_workout_list(rows)
-        self.store.commit(run_id, source, rows, until=None if historical or repair else args["endDate"],
+        self.store.commit(run_id, source, rows, until=None if historical or repair or review else args["endDate"],
                           history_until=args["endDate"] if historical and clean else None,
                           interval=(args["startDate"], args["endDate"]) if clean else None,
                           repair=repair, details=details, checked_at=now().isoformat() if clean else None)

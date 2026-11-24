@@ -1,0 +1,60 @@
+name: Scan published Suunto image
+
+on:
+  schedule:
+    # Mondays at 09:17 Asia/Shanghai.
+    - cron: '17 1 * * 1'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/scan-published.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      IMAGE: docker.io/jjsyx123/suunto-data-borad
+      GRYPE_DB_REQUIRE_UPDATE_CHECK: 'true'
+    steps:
+      - uses: docker/setup-buildx-action@v4
+      - name: Set up Grype
+        id: grype
+        uses: anchore/scan-action/download-grype@v7.4.2
+      - name: Resolve and scan both published architectures
+        env:
+          GRYPE: ${{ steps.grype.outputs.cmd }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/published-image-scan"
+          mkdir -p "$report"
+          digest="$(docker buildx imagetools inspect "$IMAGE:latest" --format '{{.Manifest.Digest}}')"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          docker buildx imagetools inspect --raw "$IMAGE@$digest" > "$report/index.json"
+          printf 'Published image `%s@%s`\n\n' "$IMAGE" "$digest" >> "$GITHUB_STEP_SUMMARY"
+          for arch in amd64 arm64; do
+            platform="$(jq -er --arg arch "$arch" '
+              [.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch)]
+              | if length == 1 then .[0].digest else error("Expected one Linux manifest") end
+            ' "$report/index.json")"
+            [[ "$platform" =~ ^sha256:[a-f0-9]{64}$ ]]
+            "$GRYPE" "registry:$IMAGE@$platform" -o json > "$report/$arch.json"
+            count="$(jq '[.matches[] | select(.vulnerability.fix.state == "fixed" and
+              (.vulnerability.severity == "High" or .vulnerability.severity == "Critical"))] | length' "$report/$arch.json")"
+            printf -- '- linux/%s (%s): %s fix available\n' "$arch" "$platform" "$count" >> "$GITHUB_STEP_SUMMARY"
+          done
+          if ! jq -es 'all(.[].matches[]; (.vulnerability.fix.state != "fixed" or
+            (.vulnerability.severity != "High" and .vulnerability.severity != "Critical")))' "$report/amd64.json" "$report/arm64.json"; then
+            echo "::error::The published Suunto image has fixable High or Critical vulnerabilities. See the scan artifact."
+            exit 1
+          fi
+      - name: Retain scan reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: published-image-scan
+          path: ${{ runner.temp }}/published-image-scan/
+          if-no-files-found: ignore

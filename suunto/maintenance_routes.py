@@ -4,7 +4,7 @@ import asyncio
 from contextlib import closing
 from datetime import date, timedelta
 from itertools import islice
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
@@ -30,7 +30,11 @@ def maintenance_router(store, config, access, mcp_state, prune_logs):
 
     @router.get("/export.csv")
     def export_csv(source: str = "", start: str = "", end: str = "", format: str = "raw", share: bool = False,
-                   sport: str = "", q: str = "", km: str = "", minutes: str = "", tss: str = ""):
+                   sport: str = "", q: str = "", km: str = "", minutes: str = "", tss: str = "",
+                   purpose: Literal["share", "archive", "columns"] | None = None):
+        if purpose is not None:
+            share = purpose == "share"
+            format = "raw" if purpose == "archive" else "columns"
         if (source and source not in SOURCES) or format not in ("raw", "columns"):
             raise HTTPException(422, "导出数据源或格式无效。")
         try:

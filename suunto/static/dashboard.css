@@ -113,6 +113,9 @@ dd { margin: .1rem 0 0; font-size: 1.12rem; font-weight: 700; font-variant-numer
 .controls, .section-nav { display: flex; flex-wrap: wrap; gap: .7rem .85rem; align-items: end; }
 .controls > * { min-width: 0; }
 .controls > label, .activity-fields label, .advanced-fields > label { font-weight: 590; }
+.export-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 1.25rem; }
+.export-options > div { min-width: 0; padding-top: .85rem; border-top: 1px solid var(--line); }
+.backup-steps pre { max-width: 100%; overflow-x: auto; }
 .section-nav { margin-bottom: 1rem; gap: .25rem 1rem; }
 .section-nav a { display: inline-flex; align-items: center; min-height: 44px; font-size: .9rem; }
 input, button, select, a.button { font: inherit; border-radius: .45rem; }
@@ -206,6 +209,7 @@ code { overflow-wrap: anywhere; }
 .map-point { margin: .1rem; }
 .route-select { max-width: 24ch; text-align: start; overflow-wrap: anywhere; }
 .route-select[aria-pressed=true] { border-color: var(--chart-rose); }
+.route-point-summary { display: block; margin-bottom: .25rem; }
 
 @media (min-width: 39rem) {
   .site-header nav { grid-template-columns: repeat(8, minmax(0, 1fr)); }

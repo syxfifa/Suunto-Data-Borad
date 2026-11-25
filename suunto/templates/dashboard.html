@@ -240,6 +240,7 @@
 </section>
 {% endif %}
 {% if route_maps is defined and route_maps|select|list %}
+{% if not amap_preview %}<p>可先查看位置示意图和坐标，也可<a href="/settings?edit_amap=true#amap-settings">配置高德地图底图</a>。</p>{% endif %}
 <div class="controls"><button type="button" id="route-overview" aria-controls="route-map">预览本页路线的位置</button></div>
 {% if amap_preview %}<script src="/static/amap-preview.js?v=1.0.6" defer></script>{% endif %}
 <script src="/static/route-map.js?v=1.0.13" defer></script>
@@ -276,8 +277,9 @@
       {% endif %}
       {% if route_maps is defined %}
       <td role="cell" class="route-points" data-route="{{ row[0] or '' }}">
+        {% if points %}<span class="route-point-summary">可预览位置 · {{ points|length }} 个点</span>{% endif %}
         {% if amap_preview and points %}
-        <script type="application/json" class="route-point-data">{{ points|tojson }}</script>{{ points|length }} 个位置点
+        <script type="application/json" class="route-point-data">{{ points|tojson }}</script>
         {% else %}{% for point in points %}
         <button type="button" class="map-point" aria-controls="route-map" data-lat="{{ point.lat }}" data-lon="{{ point.lon }}"
                 data-alt="{{ point.alt if point.alt is not none else '' }}">{{ point.label }}</button>
@@ -317,6 +319,7 @@
 <div id="route-map-home">
 <section id="route-map" tabindex="-1" hidden {% if amap_preview %}data-amap-key="{{ amap_preview.key }}" data-amap-coordinates="{{ amap_preview.coordinates }}"{% endif %}>
   <h2>路线位置预览</h2>
+  <p class="meta">预览仅显示 Suunto 提供的位置点。</p>
   <p id="route-point" role="status"></p>
   <div class="route-map-surface">
     <canvas width="680" height="280" role="img" aria-label="Suunto 路线位置点相对示意图"></canvas>
@@ -334,7 +337,7 @@
       <label>坐标<input id="route-coordinates" readonly></label><button type="button" id="copy-coordinates">复制坐标</button>
     </div>
   </div>
-  {% if not amap_preview %}<p>可拖动查看位置点。在 OpenStreetMap 打开底图会发送所选点的坐标。</p>{% endif %}
+  {% if not amap_preview %}<p>在 OpenStreetMap 打开底图会发送所选点的坐标。<a href="/settings?edit_amap=true#amap-settings">配置高德地图底图</a></p>{% endif %}
   <div class="controls">
     <button type="button" class="secondary" id="route-map-close">返回路线列表</button>
     {% if not amap_preview %}<a id="route-map-link" class="button" target="_blank" rel="noopener noreferrer" hidden>在 OpenStreetMap 打开底图</a>{% endif %}

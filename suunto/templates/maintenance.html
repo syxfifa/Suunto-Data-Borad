@@ -12,14 +12,6 @@
     <div><dt>SQLite 占用（MiB）</dt><dd>{{ size }}</dd></div>
     <div><dt>Suunto 数据连接</dt><dd>{{ {'ready': '可用', 'authorization_required': '待授权', 'probing': '待探测', 'error': '连接异常'}[mcp_status] }}</dd></div>
     <div><dt>上次完整同步</dt><dd>{% if last_sync %}<time datetime="{{ last_sync }}">{{ last_sync[:16]|replace('T', ' ') }}</time>{% else %}—{% endif %}</dd></div>
-    {% for label, report in [('最近一次通过的备份验证', backup_verified), ('最近一次通过的隔离恢复演练', restore_drill)] %}
-    <div><dt>{{ label }}（北京时间）</dt><dd>
-      {% if report %}<time datetime="{{ report.verified_at }}">{{ report.verified_at[:16]|replace('T', ' ') }}</time>
-      {% if report.created_at %} · 归档于 {{ report.created_at[:16]|replace('T', ' ') }}{% endif %}
-      {% if report.app_version %} · 镜像 V{{ report.app_version }}{% endif %}
-      {% else %}尚未记录{% endif %}
-    </dd></div>
-    {% endfor %}
   </dl>
   <dl>{% for key, count in counts.items() %}<div><dt>{{ source_labels[key] }}记录</dt><dd>{{ count }}</dd></div>{% endfor %}</dl>
   <p>诊断文件仅含状态、计数和版本等运行信息。</p>
@@ -27,6 +19,39 @@
     <a class="button secondary" href="/diagnostics.json">下载脱敏诊断</a>
     <a class="button secondary" href="/export">导出训练与健康数据</a>
   </div>
+</section>
+<section id="backup">
+  <h2>备份与恢复</h2>
+  <p>更新镜像前，在 NAS 上打开 Compose 项目目录，保存 ZIP 备份并验证，再用同一份 ZIP 做隔离恢复演练。</p>
+  {% for label, report, explanation in [
+    ('最近一次通过的备份验证', backup_verified, '检查 ZIP 归档完整性。'),
+    ('最近一次通过的隔离恢复演练', restore_drill, '在临时目录恢复数据库和设置，并检查 SQLite。可以在看板运行时执行。')
+  ] %}
+    <h3>{{ label }}</h3>
+    <p>{% if report %}<time datetime="{{ report.verified_at }}">{{ report.verified_at[:16]|replace('T', ' ') }}</time>（北京时间）
+      {% if report.created_at %} · 归档于 {{ report.created_at[:16]|replace('T', ' ') }}{% endif %}
+      {% if report.app_version %} · 镜像 V{{ report.app_version }}{% endif %}
+      {% else %}尚未记录{% endif %}</p>
+    <p class="meta">{{ explanation }}</p>
+  {% endfor %}
+  <details>
+    <summary>查看 NAS 操作命令</summary>
+    <p>以下命令将归档保存到 NAS 当前用户的家目录。按顺序执行，每步成功后再继续。</p>
+    <ol class="backup-steps">
+      <li>保存归档
+        <pre><code>umask 077
+archive="$HOME/suunto-backup-$(date +%F-%H%M%S).zip"
+docker compose exec -T --user 10001:10001 app python -m suunto backup &gt; "$archive"</code></pre>
+      </li>
+      <li>验证归档
+        <pre><code>docker compose exec -T --user 10001:10001 app python -m suunto verify --record &lt; "$archive"</code></pre>
+      </li>
+      <li>隔离恢复演练
+        <pre><code>docker compose exec -T --user 10001:10001 app python -m suunto drill --record &lt; "$archive"</code></pre>
+      </li>
+    </ol>
+    <p>刷新本页查看结果。归档包含数据库和已有设置，实际恢复请参照部署 README 的备份与恢复说明。</p>
+  </details>
 </section>
 <section>
   <h2>Suunto 账号</h2>
@@ -63,11 +88,25 @@
       </select></label>
       <label>开始日期<input name="start" type="text" placeholder="YYYY-MM-DD" maxlength="10"></label>
       <label>结束日期<input name="end" type="text" placeholder="YYYY-MM-DD" maxlength="10"></label>
-      <label>格式<select name="format"><option value="columns">指标列（带单位）</option><option value="raw">原始 JSON CSV</option></select></label>
     </div>
     <p>日期使用北京时间，包含结束当天。按日期过滤时，仅导出有时间记录的数据。</p>
-    <p><label><input type="checkbox" name="share" value="true">分享模式，省略坐标、名称、设备来源、识别编号和原始 JSON</label></p>
-    <button>下载 CSV</button>
+    <div class="export-options">
+      <div>
+        <h3>分享统计</h3>
+        <p id="share-contents">包含记录日期、运动类型及距离、时长和心率等可用指标。省略坐标、名称、设备来源、记录编号和原始 JSON。</p>
+        <button name="purpose" value="share" aria-describedby="share-contents">下载分享 CSV</button>
+      </div>
+      <div>
+        <h3>保留原始记录</h3>
+        <p id="archive-contents">包含记录编号、完整时间及本地保存的 Suunto JSON，可能含健康数据、名称及坐标，适合私人存档。</p>
+        <div class="controls">
+          <button class="secondary" name="purpose" value="archive" aria-describedby="archive-contents">下载原始 CSV</button>
+          <button class="secondary" name="purpose" value="columns" aria-describedby="columns-contents">下载完整分列 CSV</button>
+        </div>
+        <p class="meta" id="columns-contents">完整分列版含记录编号、名称、完整时间和指标列，便于在表格软件中分析。</p>
+      </div>
+    </div>
+    <p class="meta">要备份整个看板，请使用<a href="/maintenance#backup">维护页的 ZIP 备份</a>。</p>
   </form>
 </section>
 {% endif %}

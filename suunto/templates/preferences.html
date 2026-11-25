@@ -41,7 +41,7 @@
   <h2>高德地图预览</h2>
   {% if amap_saved %}<p class="notice" role="status">高德地图设置已保存。</p>{% endif %}
   <p id="amap-privacy">启用后，打开「保存路线」会自动加载高德地图，并向高德发送预览位置。凭据保存在本机。</p>
-  <details{% if amap_enabled or amap_saved %} open{% endif %}>
+  <details{% if amap_enabled or amap_saved or request.query_params.get('edit_amap') == 'true' %} open{% endif %}>
   <summary>{{ '配置高德地图' if amap_enabled else '启用或配置高德地图' }}</summary>
   <form action="/settings/amap" method="post">
     <div class="controls">

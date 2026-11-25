@@ -346,7 +346,7 @@ def exercise(browser, origin, fixture, width):
 def exercise_amap(context, page, origin, store, older, newer, width):
     run = store.start("routes_fixture", newer)
     store.commit(run, "routes", [
-        ("no-point", newer, {"routeId": "no-point", "name": "无坐标"}),
+        ("no-point", newer, {"routeId": "no-point", "description": "无坐标"}),
         ("first", newer, {"routeId": "first", "name": "公园环线", "description": "公园环线",
          "startPoint": {"latitude": 30.5, "longitude": 120.5},
          "endPoint": {"latitude": 30.6, "longitude": 120.6}}),
@@ -391,6 +391,8 @@ def exercise_amap(context, page, origin, store, older, newer, width):
     context.route("https://webapi.amap.com/maps?*", mock_sdk)
     page.goto(origin + "/routes")
     expect(page.locator("#route-map")).to_be_hidden()
+    expect(page.get_by_role("row").filter(has_text="公园环线")).to_contain_text("可预览位置")
+    expect(page.get_by_role("row").filter(has_text="无坐标")).to_contain_text("暂无位置点")
     assert not requests
     page.get_by_role("button", name="公园环线").click()
     expect(page.locator("#route-coordinates")).not_to_have_value("")
@@ -398,6 +400,22 @@ def exercise_amap(context, page, origin, store, older, newer, width):
     assert not requests
     page.get_by_role("button", name="返回路线列表").click()
     expect(page.locator("#route-map")).to_be_hidden()
+    page.get_by_role("link", name="配置高德地图底图").click()
+    expect(page.locator("#amap-settings details")).to_have_attribute("open", "")
+    page.goto(origin + "/export")
+    for label, filename in (("下载分享 CSV", "suunto-share.csv"), ("下载原始 CSV", "suunto.csv"),
+                            ("下载完整分列 CSV", "suunto.csv")):
+        with page.expect_download() as download:
+            page.get_by_role("button", name=label).click()
+        assert download.value.suggested_filename == filename
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Export overflow at {width}px"
+    page.get_by_role("link", name="维护页的 ZIP 备份").click()
+    guide = page.locator("#backup")
+    expect(guide.get_by_text("最近一次通过的备份验证")).to_be_visible()
+    expect(guide.get_by_text("最近一次通过的隔离恢复演练")).to_be_visible()
+    guide.get_by_text("查看 NAS 操作命令").press("Enter")
+    expect(guide.get_by_text("python -m suunto drill --record", exact=False)).to_be_visible()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Backup guide overflow at {width}px"
     page.goto(origin + "/settings")
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Settings overflow at {width}px"
     expect(page.locator("#sync-details")).not_to_have_attribute("open", "")

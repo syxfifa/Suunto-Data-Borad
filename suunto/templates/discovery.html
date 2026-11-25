@@ -4,6 +4,9 @@
 {% macro amount(value) -%}
 {{ '—' if value is none else value|int if value == value|int else value }}
 {%- endmacro %}
+{% macro source_state(source) -%}
+{{ '检查异常' if source.problem == 2 else '有待修复日期' if source.problem else '已检查' if source.checked_at else '待更新' }}
+{%- endmacro %}
 {% block content %}
 <div class="page-heading">
   <h1>睡眠与训练</h1>
@@ -21,6 +24,35 @@
 </section>
 {% elif sync_warning %}<p class="notice" role="status">{{ sync_warning }} <a href="/settings#sync">查看同步状态</a></p>{% endif %}
 
+{% if not needs_connection or existing_data %}
+<details class="home-freshness">
+  <summary>数据更新 · 运动{{ source_state(freshness[0]) }} · 睡眠{{ source_state(freshness[1]) }}</summary>
+  <ul>
+    {% for source in freshness %}
+    <li>
+      <a href="/settings?source={{ source.name }}#source-status-{{ source.name }}">{{ source.label }} · {{ source_state(source) }}</a>
+      <small>最近查询成功 {% if source.checked_at %}<time datetime="{{ source.checked_at }}">{{ source.checked_at[:16]|replace('T', ' ') }}</time>{% else %}尚未确认{% endif %}</small>
+      <small>{{ '最近路线日期' if source.name == 'routes' else '最近记录日期' }} {% if source.latest %}<time datetime="{{ source.latest }}">{{ source.latest[:10] }}</time>{% else %}暂无日期{% endif %}</small>
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="meta">查询时间与记录日期均为北京时间。</p>
+</details>
+<section class="home-week" aria-labelledby="home-week-title">
+  <div class="section-heading">
+    <h2 id="home-week-title">本周训练</h2>
+    <a href="{{ period_links[0][1] }}">查看本周汇总</a>
+  </div>
+  <p class="week-totals">{% if week.km is not none %}<strong>{{ amount(week.km) }}</strong> km{% else %}距离暂无完整数据{% endif %}
+    · {% if week.n is not none %}<strong>{{ week.n }}</strong> 次活动{% else %}活动数待确认{% endif %}
+    {% if not week.covered and week.n %}<small>本地小计</small>{% endif %}</p>
+  {% if week.delta %}
+  <p class="meta">较上周同期{% if week.delta.km is not none %} {{ '%+.2f'|format(week.delta.km) }} km ·{% endif %}
+    {{ '%+d'|format(week.delta.n) }} 次（两周均截至周{{ '一二三四五六日'[week.delta.at.weekday()] }} {{ week.delta.at.strftime('%H:%M') }}）</p>
+  {% else %}<p class="meta">两周同期的同步覆盖齐全后显示差值。</p>{% endif %}
+</section>
+{% endif %}
+
 <div class="aurora-review" id="aurora-review">
   <div class="section-heading review-date">
     <h2>复盘日期 <time datetime="{{ chosen_day }}">{{ chosen_day }}</time></h2>
@@ -34,9 +66,9 @@
           <div><strong>{{ amount(selected.resource) }}{% if selected.resource is not none %}<span>%</span>{% endif %}</strong>
             <small>{{ selected.resource_label if selected.resource is not none else '身体资源' }}</small></div>
         </div>
-        <dl><div><dt>睡眠时长</dt><dd>{{ amount(selected.sleep) }}{% if selected.sleep is not none %} <small>小时</small>{% endif %}</dd></div></dl>
+        <dl><div><dt>睡眠时长</dt><dd>{% if selected.sleep is not none %}{{ amount(selected.sleep) }} <small>小时</small>{% else %}<small>{{ '暂无有效睡眠记录' if selected.sleep_covered else '睡眠尚未确认同步' }}</small>{% endif %}</dd></div></dl>
       </div>
-      {% if selected.resource is none or selected.sleep is none %}<p class="meta">所选日缺少部分睡眠或恢复记录。</p>{% endif %}
+      {% if selected.resource is none %}<p class="meta">{{ '当天暂无有效身体资源读数' if selected.recovery_covered else '身体资源尚未确认同步' }}。</p>{% endif %}
     </section>
     <section class="aurora-training" aria-labelledby="aurora-training-title">
       <div class="section-heading">
@@ -45,10 +77,13 @@
       </div>
       <dl class="metrics aurora-metrics">
         {% for name, value, unit in [('距离', selected.km, 'km'), ('时长', selected.minutes, '分钟'), ('训练负荷', selected.tss, 'TSS')] %}
-        <div><dt>{{ name }}</dt><dd>{{ amount(value) }}{% if value is not none %} <small>{{ unit }}</small>{% endif %}</dd></div>
+        <div><dt>{{ name }}</dt><dd>{% if value is not none %}{{ amount(value) }} <small>{{ unit }}</small>
+          {% elif selected.n %}<small>活动缺少{{ ' TSS' if unit == 'TSS' else name }}</small>
+          {% else %}<small>当天同步待确认</small>{% endif %}</dd></div>
         {% endfor %}
       </dl>
-      <p class="meta">{{ coverage_status(selected, [selected.km, selected.minutes, selected.tss]) }}
+      <p class="meta">{% if selected_cutoff %}今日统计截至 {{ selected_cutoff }} · {% endif %}
+      {{ '当天未训练' if selected.n == 0 and selected.covered else coverage_status(selected, [selected.km, selected.minutes, selected.tss]) }}
       {% if selected.confirmed_until and not selected.covered %} · 最近确认至 {{ selected.confirmed_until[:16]|replace('T', ' ') }}{% endif %}</p>
     </section>
   </div>
@@ -73,6 +108,13 @@
       {% endif %}
       {% endfor %}
     </div>
+    <form action="/#aurora-review" class="controls calendar-jump">
+      <input type="hidden" name="overview" value="{{ overview }}">
+      {% if request.query_params.get('chart_view') == 'table' %}<input type="hidden" name="chart_view" value="table">{% endif %}
+      <label>跳到日期<input name="day" type="{{ 'text' if date_error else 'date' }}" value="{{ requested_day if date_error else chosen_day }}" min="1900-01-01" max="{{ today }}" required{% if date_error %} aria-invalid="true" aria-describedby="calendar-error"{% endif %}></label>
+      <button class="secondary">查看该日</button>
+      {% if date_error %}<p class="notice" id="calendar-error" role="alert">请输入有效的历史日期（YYYY-MM-DD），最晚可选今天。</p>{% endif %}
+    </form>
   </section>
   <div class="aurora-pair aurora-charts">
     {% for pair in review_charts %}
@@ -125,11 +167,4 @@
   </details>
   {% endif %}
 </section>
-<details class="notice">
-  <summary>各数据源最近成功时间</summary>
-  <dl>{% for key in ('workouts', 'sleep', 'recovery', 'daily_activity', 'routes') %}
-    {% set checked = source_success.get(key) %}
-    <div><dt>{{ source_labels[key] }}</dt><dd>{% if checked %}<time datetime="{{ checked }}">{{ checked[:16]|replace('T', ' ') }}</time>{% else %}—{% endif %}</dd></div>
-  {% endfor %}</dl>
-</details>
 {% endblock %}

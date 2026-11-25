@@ -102,8 +102,10 @@ def workout_page(store, start, end, page, size=50, *, sport="", search="", minim
         FROM records WHERE {where}
         ORDER BY {primary} IS NULL, {primary} {direction}, occurred_at DESC, record_key DESC LIMIT ? OFFSET ?
         """, [*parameters, size, (page - 1) * size])
-    displayed = table_rows([(row["occurred_at"], json.loads(row["payload"])) for row in reversed(rows)], "workouts")
-    return count, page, pages, displayed, [row["record_key"] for row in rows]
+    entries = [(row["occurred_at"], json.loads(row["payload"])) for row in rows]
+    displayed = table_rows(entries[::-1], "workouts")
+    names = [item.get("workoutName") for _, item in entries]
+    return count, page, pages, displayed, [row["record_key"] for row in rows], names
 
 
 def covers(intervals, begin, end):

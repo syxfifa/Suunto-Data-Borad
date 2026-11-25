@@ -8,7 +8,8 @@ from urllib.parse import urlencode
 
 from fastapi.testclient import TestClient
 
-from suunto.reports import acwr_series, aurora_week, compare_metrics, daily_report, dates, intensity_charts, midnight, period_summary, wellness
+from suunto.reports import (acwr_series, aurora_week, compare_metrics, daily_report, dates,
+                            intensity_charts, midnight, period_summary, weekly_progress, wellness)
 from suunto.store import Store
 from suunto.sync import Synchronizer, TZ
 from suunto.web import create_app
@@ -16,6 +17,39 @@ from suunto.views import csv_cells, table_rows, workout_metrics
 
 
 class ReportsTest(unittest.TestCase):
+    def test_weekly_progress_uses_the_same_checked_cutoff_for_both_weeks(self):
+        begin = midnight(date(2026, 1, 12))
+        now = begin + timedelta(days=2, hours=12)
+        cutoff = now - timedelta(hours=2)
+        offset = timedelta(days=7)
+        rows = [((cutoff - timedelta(hours=1)).isoformat(), {"totalDistance": 8000}),
+                ((cutoff + timedelta(hours=1)).isoformat(), {"totalDistance": 3000})]
+        earlier = [((cutoff - offset - timedelta(hours=1)).isoformat(), {"totalDistance": 5000})]
+        interval = lambda start, end: {"start_at": start.isoformat(), "end_at": end.isoformat()}
+        current = interval(begin, cutoff)
+        previous = interval(begin - offset, cutoff - offset)
+        result = weekly_progress(rows, earlier, begin, now, [current, previous])
+        self.assertEqual(result["km"], 11)
+        self.assertEqual(result["delta"], {"km": 3, "n": 0, "at": cutoff})
+        self.assertIsNone(weekly_progress(rows, earlier, begin, now, [current])["delta"])
+
+    def test_home_freshness_links_to_source_and_calendar_retains_options(self):
+        with TemporaryDirectory() as directory, TestClient(create_app(directory)) as browser:
+            store = Store(directory)
+            recorded = "2026-01-14T08:00:00+08:00"
+            checked = "2026-01-16T09:15:00+08:00"
+            run = store.start("fixture", checked)
+            store.commit(run, "workouts", [("fixture", recorded, {"workoutId": "fixture"})], checked_at=checked)
+            store.failure("sleep", None, None, "fixture missing")
+            text = browser.get("/?day=2026-01-14&overview=28&chart_view=table").text
+            self.assertIn("运动已检查 · 睡眠检查异常", text)
+            self.assertIn("2026-01-16 09:15", text)
+            self.assertIn('href="/settings?source=sleep#source-status-sleep"', text)
+            self.assertIn('id="sync-details" class="settings-details" open', browser.get("/settings?source=sleep").text)
+            self.assertIn('name="overview" value="28"', text)
+            self.assertIn('name="chart_view" value="table"', text)
+            self.assertEqual(browser.get("/?day=not-a-date").status_code, 422)
+
     def test_activity_listing_detail_comparison_and_export_share_units(self):
         with TemporaryDirectory() as directory:
             store = Store(directory)

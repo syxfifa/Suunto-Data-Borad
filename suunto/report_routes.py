@@ -10,7 +10,7 @@ from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 
 from .reports import (acwr_series, aurora_week, daily_report, dates, grouped_totals,
-                      intensity_charts, longest_streak, midnight, period_summary,
+                      intensity_charts, longest_streak, midnight, period_summary, weekly_progress,
                       sport_counts, sport_name, wellness)
 from .sync import TZ
 from .views import (covers, local_return, lower_bound, numeric, records, summary, workout_chart,
@@ -87,12 +87,16 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
     router = APIRouter()
 
     @router.get("/")
-    def index(request: Request, day: date | None = None, overview: str = "week"):
+    def index(request: Request, day: str = "", overview: str = "week"):
         today = datetime.now(TZ)
-        chosen = day or today.date()
         earliest = date(1900, 1, 1)
-        if not earliest <= chosen <= today.date():
-            raise HTTPException(422, "请选择有效的历史日期。")
+        try:
+            chosen = date.fromisoformat(day) if day else today.date()
+            if not earliest <= chosen <= today.date():
+                raise ValueError
+            date_error = False
+        except ValueError:
+            chosen, date_error = today.date(), True
         review_start = chosen - timedelta(days=chosen.weekday())
         review_end = review_start + timedelta(days=6)
         query_end = min(today, midnight(review_end + timedelta(days=1)))
@@ -121,14 +125,16 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
         selected = snapshots[(chosen - review_start).days]
         selected_end = min(today, midnight(chosen + timedelta(days=1)))
         selected["confirmed_until"] = period_summary([], midnight(chosen), selected_end, intervals)["confirmed_until"]
-        data = records(store, "workouts", midnight(summary_start), today)
+        selected["sleep_covered"] = covers(store.coverage("sleep"), midnight(chosen), selected_end)
+        selected["recovery_covered"] = covers(store.coverage("recovery"), midnight(chosen), selected_end)
+        data = records(store, "workouts", midnight(min(week_start, summary_start)), today)
+        previous_start = midnight(week_start - timedelta(days=7))
+        previous_end = today - timedelta(days=7)
+        previous_rows = records(store, "workouts", previous_start, previous_end)
+        week = weekly_progress(data, previous_rows, midnight(week_start), today, intervals)
         period = period_summary(data, midnight(summary_start), today, intervals)
-        prior = None
-        if overview == "week":
-            previous_start = midnight(week_start - timedelta(days=7))
-            previous_end = today - timedelta(days=7)
-            previous_rows = records(store, "workouts", previous_start, previous_end)
-            prior = period_summary(previous_rows, previous_start, previous_end, intervals)
+        data = [(at, row) for at, row in data if at[:10] >= summary_start.isoformat()]
+        prior = period_summary(previous_rows, previous_start, previous_end, intervals) if overview == "week" else None
         period_links = [(name, "/?" + urlencode({"day": chosen, "overview": key, **view_args}) + "#overview-summary", key == overview)
                         for key, (name, _) in periods.items()]
         stats = store.home_sync_status()
@@ -150,6 +156,8 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
             context={"overview": overview, "period": period, "period_label": label, "period_start": summary_start,
                      "period_end": today.isoformat(timespec="minutes"), "period_links": period_links,
                      "prior": prior, "review_query": review_query, "chosen_day": chosen,
+                     "date_error": date_error, "requested_day": request.query_params.get("day", ""),
+                     "week": week, "selected_cutoff": selected_end.strftime("%H:%M") if chosen == day else None,
                      "selected_link": activity_link(chosen, chosen, return_to=back), "today": day,
                      "summary_link": "/training?" + urlencode({"start": summary_start, "end": day, "period": "week", **view_args}),
                      "week_chart_links": {
@@ -158,13 +166,13 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
                      },
                      "needs_connection": needs_connection, "existing_data": existing_data, "returning_user": returning_user,
                      "sports": sport_counts(data), "last_sync": stats["last_success_at"],
-                     "sync_warning": warning, "source_success": stats["source_success"], "source_labels": SOURCE_LABELS,
+                     "sync_warning": warning, "freshness": store.home_sources(SOURCE_LABELS, stats["source_success"]),
                      "weekly_goal": preferences.get("weekly_km"), "review_days": snapshots,
                      "selected": selected, "week_from": review_start,
                      "week_to": review_end, "review_charts": review_charts,
                      "previous_week": chosen - timedelta(days=7) if chosen - timedelta(days=7) >= earliest else None,
                      "next_week": min(today.date(), chosen + timedelta(days=7)) if review_end < today.date() else None},
-            headers=HOME_HEADERS,
+            headers=HOME_HEADERS, status_code=422 if date_error else 200,
         )
 
     @router.get("/training")
@@ -234,8 +242,10 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
         activity_span = store.query(
             "SELECT min(occurred_at) AS first, max(occurred_at) AS last FROM records WHERE source='workouts'"
         )[0]
-        presets = [(f"近 {days} 天", today - timedelta(days=days-1)) for days in (7, 28, 90)]
-        presets.extend((("本月", today.replace(day=1)), ("全部日期", None)))
+        week = today - timedelta(days=today.weekday())
+        presets = [(f"近 {days} 天", today - timedelta(days=days-1), today) for days in (7, 28, 30, 90)]
+        presets.extend((("本周", week, today), ("上周", week - timedelta(days=7), week - timedelta(days=1)),
+                        ("本月", today.replace(day=1), today), ("全部日期", None, None)))
         activity_types = store.query("""
             SELECT DISTINCT coalesce(nullif(json_extract(payload, '$.activityName'), ''), '未标注运动类型') AS sport
             FROM records WHERE source='workouts' ORDER BY sport
@@ -246,7 +256,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
         filters = {"filters": True, "activity_span": activity_span, "activity_types": activity_types,
                    "search": search_state, "review_return": review_return,
                    "activity_ranges": [(name, "/activities?" + urlencode({**range_filters, "start": first or "",
-                                       "end": today if first else ""}), False) for name, first in presets],
+                                       "end": last or ""}), False) for name, first, last in presets],
                    "search_query": urlencode({key: value for key, value in search_state.items() if value not in ("", None)})}
         start, end = start.strip(), end.strip()
         try:
@@ -264,13 +274,12 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
         default_range = first is None and last is None and not {"start", "end"}.intersection(request.query_params)
         if default_range:
             first = today - timedelta(days=27)
-        if default_range or last == today or first is None and last is None:
-            active_label = next((name for name, preset in presets if preset == first), None)
-            filters["activity_ranges"] = [(name, href, name == active_label)
-                                          for name, href, _ in filters["activity_ranges"]]
+        preset_end = today if default_range else last
+        active_label = next((name for name, begin, finish in presets if (begin, finish) == (first, preset_end)), None)
+        filters["activity_ranges"] = [(name, href, name == active_label) for name, href, _ in filters["activity_ranges"]]
         begin = datetime.combine(first, clock_time.min, TZ) if first else None
         finish = datetime.combine(last + timedelta(days=1), clock_time.min, TZ) if last else None
-        count, page, pages, rows, keys = workout_page(
+        count, page, pages, rows, keys, names = workout_page(
             store, begin, finish, page, sport=sport, search=q.strip(), sort=sort, order=order,
             minimums={"distance": km * 1000 if km is not None else None,
                       "duration": minutes * 60 if minutes is not None else None, "tss": tss})
@@ -317,7 +326,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
                    for index, key in enumerate(keys)]
         return dashboard(request, "运动活动", **filters, start=first, end=last, detail_links=details,
                          headings=("北京时间", "运动类型", "距离（km）", "时长（分钟）", "平均心率", "训练效果 PTE"),
-                         rows=rows, activity_keys=keys, result_count=count, page=page, pages=pages,
+                         rows=rows, activity_keys=keys, activity_names=names, result_count=count, page=page, pages=pages,
                          empty_message=summary, empty_action=empty_action, active_filters=active_filters,
                          export_query=export_query)
 

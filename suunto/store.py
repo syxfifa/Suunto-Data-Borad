@@ -440,6 +440,26 @@ class Store:
             stats["source_success"] = dict(db.execute("SELECT source, checked_at FROM source_success").fetchall())
         return stats
 
+    def home_sources(self, sources, checked_at):
+        """Find the most recent visible record using the source/time index."""
+        with self.connect() as db:
+            problems = dict(db.execute("""
+                SELECT source, max(severity) FROM (
+                    SELECT source, 1 AS severity FROM sync_windows
+                    UNION ALL SELECT source, 2 FROM sync_failures
+                ) GROUP BY source
+                """))
+            return [
+                {"name": name, "label": label, "checked_at": checked_at.get(name),
+                 "latest": next(iter(db.execute("""
+                     SELECT occurred_at FROM records WHERE source=? AND occurred_at IS NOT NULL
+                         AND (source!='routes' OR record_key NOT IN (SELECT record_key FROM removed_routes))
+                     ORDER BY occurred_at DESC LIMIT 1
+                     """, (name,))), (None,))[0],
+                 "problem": problems.get(name)}
+                for name, label in sources.items()
+            ]
+
     def status(self):
         windows = self.query("SELECT * FROM sync_windows ORDER BY source, start_at, end_at")
         source_failures = {row["source"]: row for row in windows}

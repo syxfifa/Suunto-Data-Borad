@@ -115,7 +115,7 @@
 {% endif %}
 {{ date_links(activity_ranges) }}
 <p class="meta"><a href="/compare">打开运动对比</a></p>
-<script src="/static/activity-filters.js?v=1.0.12" defer></script>
+<script src="/static/activity-filters.js?v=1.0.19" defer></script>
 <form method="get" action="/activities" class="activity-filters">
   {% if review_return %}<input type="hidden" name="return_to" value="{{ review_return }}">{% endif %}
   <div class="activity-fields">
@@ -155,13 +155,11 @@
 {% endfor %}
 </ul>
 {% endif %}
-{% if result_count %}
 <div id="comparison-selection" class="controls" hidden>
   <p role="status">请选择两条同类型活动。</p>
   <div class="controls comparison-picks"></div>
   <a class="button" hidden>对比所选活动</a>
 </div>
-{% endif %}
 
 {% endif %}
 {% endif %}
@@ -271,7 +269,9 @@
       {% if activity_keys is defined %}
       <td role="cell" class="activity-detail">
         <a href="{{ detail_links[loop.index0] }}">查看详情</a>
-        <label class="compare-pick" hidden><input type="checkbox" data-compare-id="{{ activity_keys[loop.index0] }}" data-sport="{{ row[1] or '未标注运动类型' }}" data-date="{{ row[0][:16]|replace('T', ' ') if row[0] else '日期未知' }}" aria-label="选择活动进行对比 {{ row[0] or '' }}">对比</label>
+        <label class="compare-pick" hidden><input type="checkbox" data-compare-id="{{ activity_keys[loop.index0] }}" data-sport="{{ row[1] or '未标注运动类型' }}" data-date="{{ row[0][:16]|replace('T', ' ') if row[0] else '日期未知' }}"
+          data-activity-name="{{ activity_names[loop.index0] or '' }}" data-distance="{{ row[2] if row[2] is not none else '' }}"
+          aria-label="选择活动进行对比 {{ activity_names[loop.index0] or '' }} {{ row[0] or '' }}">对比</label>
       </td>
       {% endif %}
       {% if route_maps is defined %}
@@ -344,7 +344,7 @@
 </div>
 {% endif %}
 {% if sync_status %}
-<details id="sync-details" class="settings-details">
+<details id="sync-details" class="settings-details"{% if request.query_params.get('source') in source_labels %} open{% endif %}>
 <summary>同步详情与诊断{% if sync_status.window_failures %}（{{ sync_status.window_failures|length }} 个待修复窗口）{% endif %}</summary>
 {% if discovery.checked_at %}<p class="meta">最近探测 {{ local_time(discovery.checked_at) }}</p>{% endif %}
 {% if discovery.tools %}<p>MCP 可用工具（{{ discovery.tools|length }}）</p>
@@ -359,7 +359,7 @@
 <table>
     <thead><tr><th scope="col">数据来源</th><th scope="col">已确认的查询范围（北京时间）</th><th scope="col">本地记录</th><th scope="col">同步状态</th></tr></thead>
     <tbody>{% for source in sources %}
-    <tr><th scope="row">{{ source.label }}</th>
+    <tr id="source-status-{{ source.name }}" tabindex="-1"><th scope="row">{{ source.label }}</th>
       <td>{% for item in source.coverage %}<div>{{ local_time(item.start_at) }} 至 {{ local_time(item.end_at) }}</div>
           {% else %}{% if source.name == 'routes' and source.cursor and source.cursor.full_scan_at %}
           最近完整扫描 {{ local_time(source.cursor.full_scan_at) }}{% else %}待确认{% endif %}{% endfor %}</td>

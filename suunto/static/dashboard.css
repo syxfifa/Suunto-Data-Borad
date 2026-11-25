@@ -307,6 +307,16 @@ code { overflow-wrap: anywhere; }
 
 .review-date, .wellness-group { margin-block: 1rem; }
 .review-date h2 { margin: 0; }
+.home-freshness { margin-block: .75rem; }
+.home-freshness ul { padding: 0; list-style: none; display: grid; gap: .65rem; }
+.home-freshness li { display: flex; flex-wrap: wrap; gap: .3rem .85rem; align-items: baseline; }
+.home-freshness small, .comparison-pick small { color: var(--muted); }
+.home-week h2, .home-week p { margin: 0; }
+.home-week .week-totals { margin-block: .4rem; }
+.calendar-jump { margin-top: .65rem; }
+.comparison-pick { display: grid; gap: .25rem; min-width: 0; overflow-wrap: anywhere; }
+.comparison-pick button { justify-self: start; }
+tr[id^="source-status-"]:target { background: var(--accent-tint); }
 .wellness-readings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .85rem 1.2rem; }
 .wellness-readings dd small { display: block; font-weight: 500; color: var(--muted); }
 .wellness-group > h2 { margin-block: 1.4rem .7rem; }

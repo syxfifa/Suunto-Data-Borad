@@ -67,6 +67,23 @@ def period_summary(rows, begin, end, intervals):
     return {**period_totals(included, covered), "confirmed_until": confirmed_until}
 
 
+def weekly_progress(rows, previous_rows, begin, now, intervals):
+    week = period_summary(rows, begin, now, intervals)
+    delta = None
+    offset = timedelta(days=7)
+    # Use only the continuous coverage starting on Monday, and match the
+    # cutoff to the same weekday and time last week.
+    cutoff = max((min(now, datetime.fromisoformat(item["end_at"])) for item in intervals
+                  if item["start_at"] <= begin.isoformat() < item["end_at"]), default=None)
+    if cutoff and cutoff > begin and covers(intervals, begin - offset, cutoff - offset):
+        current = period_summary(rows, begin, cutoff, intervals)
+        previous = period_summary(previous_rows, begin - offset, cutoff - offset, intervals)
+        delta = {"n": current["n"] - previous["n"], "at": cutoff,
+                 "km": round(current["km"] - previous["km"], 2)
+                 if current["km"] is not None and previous["km"] is not None else None}
+    return {**week, "delta": delta}
+
+
 def aurora_week(first, selected, today, workouts, sleep, recovery, intervals, fields):
     """Summarize Beijing calendar days without equating missing samples to zero."""
     days = dates(first, first + timedelta(days=6))

@@ -1,6 +1,6 @@
 # Suunto Data Borad 使用手册
 
-当前版本 **V1.0.17**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。健康检查由镜像提供。
+当前版本 **V1.0.18**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。健康检查由镜像提供。
 
 ## 第一次部署
 
@@ -12,7 +12,7 @@ docker compose up -d
 docker compose ps
 ```
 
-从同一内网打开 **`http://NAS内网IP:7383`**。容器显示 `healthy` 后，进入 **设置 → 连接 Suunto**，在同一浏览器完成登录和授权。确认后会自动返回看板并安排首次同步，通常从近 28 天开始。
+从同一内网打开 **`http://NAS内网IP:7383`**。在首页点击 **连接 Suunto**，在同一浏览器完成登录和授权。授权返回后可查看首次同步进度，通常从近 28 天开始。有运动记录时会出现 **查看已同步活动**。
 
 Compose 的 `7383:7383` 左侧是 NAS 端口，右侧是容器端口。`./suunto-storage:/data` 将项目目录内的文件夹挂载到容器。Docker 在首次部署时创建缺失目录。镜像启动时自动初始化目录和看板文件的权限，随后以 UID/GID `10001:10001` 运行看板。通过 `docker compose exec --user 10001:10001 app ls -lah /data` 可以查看文件。
 
@@ -120,7 +120,7 @@ docker compose exec -T --user 10001:10001 app python -m suunto drill --record < 
 
 ### 固定版本与回滚
 
-想固定版本，可将 Compose 的 `image` 改为 `jjsyx123/suunto-data-borad:1.0.17`，执行 `docker compose pull` 和 `docker compose up -d`。从 V1.0.15 或更早版本升级时会自动更新 SQLite 结构。更新前保存并验证备份，回滚到 V1.0.15 或更早版本时，先用旧版镜像恢复升级前的数据库，然后启动旧版应用。
+想固定版本，可将 Compose 的 `image` 改为 `jjsyx123/suunto-data-borad:1.0.18`，执行 `docker compose pull` 和 `docker compose up -d`。从 V1.0.15 或更早版本升级时会自动更新 SQLite 结构。更新前保存并验证备份，回滚到 V1.0.15 或更早版本时，先用旧版镜像恢复升级前的数据库，然后启动旧版应用。
 
 GitHub Actions 的 **Scan published Suunto image** 每周一北京时间约 09:17 扫描 Docker Hub 当前发布的双架构 `latest`，也可以手动运行。报告按镜像摘要保存，发现已有修复的高危或严重项时标记此次扫描失败。
 

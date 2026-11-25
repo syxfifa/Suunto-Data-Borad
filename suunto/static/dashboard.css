@@ -167,7 +167,8 @@ details[open] > summary { margin-bottom: .4rem; }
 .chart-grid { align-items: start; }
 .chart-panel h2 { font-size: 1.03rem; }
 .plot { position: relative; height: clamp(12rem, 26vw, 16rem); }
-.plot[hidden], #route-map-link[hidden] { display: none; }
+.plot[hidden], #route-map-link[hidden], #oauth-activities[hidden], .report-date-error[hidden] { display: none; }
+.report-date-error { flex-basis: 100%; margin: 0; }
 .chart-panel:has(.empty-state:not([hidden])) { align-self: stretch; }
 .advanced-charts > summary { font-size: 1.06rem; }
 .secondary-charts .chart-panel { background: var(--canvas); }

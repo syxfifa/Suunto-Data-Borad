@@ -337,6 +337,9 @@ def create_app(data_dir=None, *, client=None):
     def account_has_data():
         return bool(store.query("SELECT 1 FROM records UNION ALL SELECT 1 FROM cursors LIMIT 1"))
 
+    def has_workouts():
+        return bool(store.query("SELECT 1 FROM records WHERE source='workouts' LIMIT 1"))
+
     def confirm_account(same_account):
         if not same_account and account_has_data():
             raise MCPError("此数据卷保存了 Suunto 数据或同步进度。继续原账号需重新确认，新账号请使用独立数据卷。")
@@ -346,6 +349,11 @@ def create_app(data_dir=None, *, client=None):
         if (task and not task.done()) or not sync.lock.acquire(blocking=False):
             return RedirectResponse("/maintenance?notice=busy", status_code=303, headers=NO_CACHE)
         try:
+            try:
+                if mcp.credential().get("access_token"):
+                    await asyncio.to_thread(config.update, {"suunto_connected_before": True})
+            except (MCPError, OSError):
+                LOG.warning("Could not record connection history before disconnecting")
             await asyncio.to_thread(mcp.disconnect)
             store.dequeue("incremental")
             discovery.update(status="authorization_required", tools=[], message="已从此看板断开 Suunto。")
@@ -388,6 +396,10 @@ def create_app(data_dir=None, *, client=None):
             credentials = mcp.complete(code, browser_state, returned_state, issuer, callback_uri=callback_uri,
                                        confirm_account=confirm_account)
             discovery.update(status="probing", tools=[], message=None)
+            try:
+                config.update({"suunto_connected_before": True})
+            except OSError:
+                LOG.exception("Could not save the first-connection flag")
         except MCPError as exc:
             LOG.warning("OAuth completion failed: %s", exc)
             return settings_page(request, message=str(exc))
@@ -454,6 +466,7 @@ def create_app(data_dir=None, *, client=None):
         active = bool(task and not task.done())
         return JSONResponse({**store.sync_progress(), "running": active or sync.lock.locked(),
                              "source_label": SOURCE_LABELS.get(sync.current_source, ""),
+                             "has_workouts": has_workouts(),
                              "retry_after": retry_after(), "authorized": mcp_state() != "authorization_required"},
                             headers=NO_CACHE)
 
@@ -546,9 +559,10 @@ def create_app(data_dir=None, *, client=None):
             raise HTTPException(404, "路线不在本地路线库中。")
         return sync_redirect(submit("route_details", detail_key=key))
 
-    def dashboard(request, title, **context):
+    def dashboard(request, title, *, status_code=200, **context):
         return TEMPLATES.TemplateResponse(request=request, name="dashboard.html",
-                                         context={"title": title, **context}, headers=HOME_HEADERS)
+                                         context={"title": title, **context}, headers=HOME_HEADERS,
+                                         status_code=status_code)
 
     app.include_router(amap_router(amap_config, TEMPLATES))
     app.include_router(library_router(store, amap_config, discovery, dashboard))
@@ -588,7 +602,8 @@ def create_app(data_dir=None, *, client=None):
                      "settings_minutes": config.load(), "discovery": discovery, "sync_status": status,
                      "sources": sources, "source_labels": SOURCE_LABELS, "prefs": prefs, "bindings": bindings,
                      "access_protected": access.enabled(), "connection": mcp_state(),
-                     "account_has_data": account_has_data()},
+                     "account_has_data": account_has_data(),
+                     "oauth_workouts_ready": request.query_params.get("authorized") == "true" and has_workouts()},
             headers=NO_CACHE if request.url.path == "/oauth/callback" else HOME_HEADERS,
         )
 
@@ -692,6 +707,6 @@ def create_app(data_dir=None, *, client=None):
         cutoff = midnight(datetime.now(TZ).date() - timedelta(days=89)).isoformat()
         return {source: store.observed_entry_fields(source, cutoff) for source in ("sleep", "recovery")}
 
-    app.include_router(report_router(store, config, dashboard, mcp_state, retry_after))
+    app.include_router(report_router(store, config, dashboard, mcp_state, retry_after, account_has_data))
     app.include_router(maintenance_router(store, config, access, mcp_state, prune_logs))
     return app

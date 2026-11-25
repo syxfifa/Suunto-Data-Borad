@@ -129,7 +129,7 @@ class SyncTest(unittest.TestCase):
             self.assertIn("Suunto 请求受限", browser.get("/").text)
             mcp.no_auth = True
             self.assertEqual(browser.post("/api/sync").json()["status"], "authorization_required")
-            self.assertIn("授权已失效", browser.get("/").text)
+            self.assertIn("重新连接 Suunto", browser.get("/").text)
 
     def test_dashboard_filters_settings_and_csv(self):
         self.sync.run("test", stop=self.stop)

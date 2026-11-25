@@ -42,8 +42,14 @@ def report_window(request, days, start, end, *, maximum, filters):
     earliest = date(1900, 1, 1)
     custom = start is not None or end is not None
     if custom:
-        if not (start and end and earliest <= start <= end <= today and (end - start).days < maximum):
-            raise HTTPException(422, f"请选择有效的开始和结束日期，最多 {maximum} 天，且不能晚于今天。")
+        if not start or not end:
+            raise HTTPException(422, "请填写开始日期和结束日期。")
+        if start > end:
+            raise HTTPException(422, "结束日期不能早于开始日期。")
+        if start < earliest or end > today:
+            raise HTTPException(422, "请选择 1900 年 1 月 1 日至今天之间的日期。")
+        if (end - start).days >= maximum:
+            raise HTTPException(422, f"一次最多查看 {maximum} 天，请缩短日期范围。")
     else:
         start, end = today - timedelta(days=days - 1), today
     controls = dict(filters)
@@ -61,7 +67,23 @@ def report_window(request, days, start, end, *, maximum, filters):
             "bounds": {"start": start, "end": end} if custom else {"days": days}}
 
 
-def report_router(store, config, dashboard, mcp_state, retry_after):
+def date_form_window(request, days, start, end, *, maximum, filters):
+    parsed, malformed = {}, []
+    for name, value in (("start", start), ("end", end)):
+        try:
+            parsed[name] = date.fromisoformat(value) if value else None
+        except ValueError:
+            malformed.append(name)
+    try:
+        if malformed:
+            raise HTTPException(422, "请输入有效日期（YYYY-MM-DD）。")
+        return report_window(request, days, parsed["start"], parsed["end"], maximum=maximum, filters=filters)
+    except HTTPException as exc:
+        return {"first": start, "last": end, "today": datetime.now(TZ).date(), "links": [],
+                "controls": filters, "malformed": malformed, "error": exc.detail}
+
+
+def report_router(store, config, dashboard, mcp_state, retry_after, account_has_data):
     router = APIRouter()
 
     @router.get("/")
@@ -112,8 +134,11 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
         stats = store.home_sync_status()
         connection = mcp_state()
         retry = retry_after()
-        if connection == "authorization_required":
-            warning = "尚未连接 Suunto 或授权已失效。请在设置中连接。"
+        needs_connection = connection == "authorization_required"
+        existing_data = account_has_data() if needs_connection else False
+        returning_user = needs_connection and (existing_data or preferences.get("suunto_connected_before"))
+        if needs_connection:
+            warning = None
         elif retry:
             warning = f"Suunto 请求受限，请等待 {retry} 秒后再试。"
         elif connection == "error":
@@ -126,6 +151,12 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
                      "period_end": today.isoformat(timespec="minutes"), "period_links": period_links,
                      "prior": prior, "review_query": review_query, "chosen_day": chosen,
                      "selected_link": activity_link(chosen, chosen, return_to=back), "today": day,
+                     "summary_link": "/training?" + urlencode({"start": summary_start, "end": day, "period": "week", **view_args}),
+                     "week_chart_links": {
+                         path: path + "?" + urlencode({"start": review_start, "end": min(review_end, day), **view_args})
+                         for path in ("/training", "/sleep-recovery")
+                     },
+                     "needs_connection": needs_connection, "existing_data": existing_data, "returning_user": returning_user,
                      "sports": sport_counts(data), "last_sync": stats["last_success_at"],
                      "sync_warning": warning, "source_success": stats["source_success"], "source_labels": SOURCE_LABELS,
                      "weekly_goal": preferences.get("weekly_km"), "review_days": snapshots,
@@ -139,7 +170,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
     @router.get("/training")
     def training(request: Request, period: str = "", sport: str = "",
                  days: Annotated[int, Query(ge=7, le=366)] = 90, report: str = "week",
-                 start: date | None = None, end: date | None = None, analysis: str = ""):
+                 start: str = "", end: str = "", analysis: str = ""):
         report = "month" if report == "month" else "week"
         advanced = analysis == "advanced"
         filters = {"sport": sport, "report": report}
@@ -147,7 +178,11 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
             filters["period"] = period
         if advanced:
             filters["analysis"] = "advanced"
-        window = report_window(request, days, start, end, maximum=366, filters=filters)
+        window = date_form_window(request, days, start, end, maximum=366, filters=filters)
+        if window.get("error"):
+            return dashboard(request, "训练趋势", status_code=422, show_period=True, report_window=window,
+                             report_ranges=report_date_links(request, None, (7, 28, 90, 365), **filters),
+                             report=report, weekly=period == "week", sport=sport, sports=[sport] if sport else [])
         first_day, last_day = window["first"], window["last"]
         weekly = period == "week" or (period != "day" and window["length"] >= 365)
         coverage = store.coverage("workouts")
@@ -313,8 +348,11 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
 
     @router.get("/sleep-recovery")
     def sleep_recovery(request: Request, days: Annotated[int, Query(ge=7, le=90)] = 28,
-                       start: date | None = None, end: date | None = None):
-        window = report_window(request, days, start, end, maximum=90, filters={})
+                       start: str = "", end: str = ""):
+        window = date_form_window(request, days, start, end, maximum=90, filters={})
+        if window.get("error"):
+            return dashboard(request, "睡眠与恢复", status_code=422, wellness_days=days, report_window=window,
+                             report_ranges=report_date_links(request, None, (7, 28, 90)))
         span = dates(window["first"], window["last"])
         preferences = config.read()
         fields = preferences.get("wellness_fields", {})
@@ -359,8 +397,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
 
     @router.get("/daily-activity")
     def daily_activity(request: Request, source: str = "", period: str = "day",
-                       days: Annotated[int, Query(ge=7, le=366)] = 28, start: date | None = None,
-                       end: date | None = None):
+                       days: Annotated[int, Query(ge=7, le=366)] = 28, start: str = "", end: str = ""):
         preferences = config.read()
         goal = preferences.get("step_goal")
         period = period if period in ("day", "week", "month") else "day"
@@ -368,7 +405,11 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
         preferred = source if "source" in request.query_params else preferences.get("primary_source")
         selected_source = preferred if preferred in providers else ""
         filters = {"period": period, "source": selected_source}
-        window = report_window(request, days, start, end, maximum=366, filters=filters)
+        window = date_form_window(request, days, start, end, maximum=366, filters=filters)
+        if window.get("error"):
+            return dashboard(request, "日常活动", status_code=422, daily_stats=None, providers=providers,
+                             report_window=window, report_ranges=report_date_links(request, None, (7, 28, 90, 365), **filters),
+                             daily_period=period, daily_source=selected_source)
         charts, _, selected, metrics = daily_report(
             records(store, "daily_activity", midnight(window["first"]), window["end_at"]),
             dates(window["first"], window["last"]), selected_source, goal, period)
@@ -384,10 +425,15 @@ def report_router(store, config, dashboard, mcp_state, retry_after):
     async def daily_preferences(request: Request, action: Annotated[str, Form()], days: Annotated[int, Form(ge=7, le=366)] = 28,
                                 period: Annotated[str, Form()] = "day", source: Annotated[str, Form()] = "",
                                 step_goal: Annotated[str, Form()] = "", chart_view: Annotated[str, Form()] = "",
-                                start: Annotated[date | None, Form()] = None, end: Annotated[date | None, Form()] = None):
+                                start: Annotated[str, Form()] = "", end: Annotated[str, Form()] = ""):
         if period not in ("day", "week", "month") or source and source not in store.daily_providers():
             raise HTTPException(422, "请选择有效的日常活动时间范围或数据来源。")
-        window = report_window(request, days, start, end, maximum=366, filters={})
+        window = date_form_window(request, days, start, end, maximum=366, filters={})
+        if window.get("error"):
+            params = {"days": days, "period": period, "source": source, "start": start, "end": end}
+            if chart_view == "table":
+                params["chart_view"] = "table"
+            return RedirectResponse("/daily-activity?" + urlencode(params), status_code=303, headers=NO_CACHE)
         if action == "source":
             changes = {"primary_source": source}
         elif action == "goal":

@@ -19,12 +19,17 @@ if (syncProgress) {
       if (!response.ok) throw new Error("Status request failed");
       const progress = await response.json();
       const run = progress.latest;
+      const activityLink = document.querySelector("#oauth-activities");
+      if (activityLink) activityLink.hidden = !progress.has_workouts;
       errors = 0;
       watching = progress.authorized && (progress.running || progress.incremental_pending || progress.backfill_active);
       let message;
       if (!progress.authorized) message = "Suunto 需要重新授权。刷新设置后可重新连接。";
       else if (progress.retry_after && watching) message = `Suunto 正在限流，约 ${progress.retry_after} 秒后可重试。`;
-      else if (progress.running) message = progress.source_label ? `同步中 · ${progress.source_label}` : "同步任务准备中。";
+      else if (progress.running) {
+        const phase = activityLink && !progress.has_workouts && run?.trigger === "oauth" ? "正在首次同步" : "同步中";
+        message = progress.source_label ? `${phase} · ${progress.source_label}` : `${phase}，正在准备。`;
+      }
       else if (watching) message = "同步已排队。";
       else message = statuses[run?.status] || "当前没有同步任务。";
       if (run && (!watching || run.status === "running")) {

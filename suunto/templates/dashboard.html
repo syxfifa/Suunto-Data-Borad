@@ -8,6 +8,7 @@
 <div class="page-heading"><h1>{{ title }}</h1></div>
 {% if message %}<p class="notice" role="status">{{ message }}</p>{% endif %}
 {% include "reports_panels.html" %}
+{% if report_window is defined %}<script defer src="/static/report-dates.js?v=1.0.18"></script>{% endif %}
 {% if settings_minutes is defined %}
 <nav class="section-nav" aria-label="设置页分区">
   <a href="#suunto">连接与同步</a><a href="#backfill">历史补采</a><a href="#amap-settings">高德地图</a><a href="/export">导出数据</a><a href="/maintenance">维护</a>
@@ -34,7 +35,7 @@
       <p id="account-isolation">此数据卷已有 Suunto 数据或同步进度。请在 Suunto 登录页选原账号。换账号请在独立项目目录部署，使用独立的数据目录。</p>
       <p><label><input type="checkbox" name="same_account" value="true" aria-describedby="account-isolation" required>我将继续使用原 Suunto 账号</label></p>
       {% endif %}
-      <button>连接 Suunto</button>
+      <button>{{ '重新连接 Suunto' if account_has_data or prefs.suunto_connected_before else '连接 Suunto' }}</button>
     </form>
     {% endif %}
   {% else %}
@@ -50,8 +51,11 @@
       {% elif sync_status.incremental_pending or sync_status.backfill_active %}同步已排队。
       {% elif sync_status.runs %}最近一次同步处理 {{ sync_status.runs[0].received }} 条，新增或更新 {{ sync_status.runs[0].changed }} 条。{% endif %}
     </p>
+    {% if request.query_params.get('authorized') == 'true' %}
+    <a id="oauth-activities" class="button secondary" href="/activities?start=&amp;end="{% if not oauth_workouts_ready %} hidden{% endif %}>查看已同步活动</a>
+    {% endif %}
     <noscript><p>刷新设置页可查看最新进度。</p></noscript>
-    <script defer src="/static/sync-progress.js?v=1.0.16"></script>
+    <script defer src="/static/sync-progress.js?v=1.0.18"></script>
     <div class="controls">
       <form method="post" action="/sync"><button{% if sync_status.retry_after %} disabled{% endif %}>立即同步</button></form>
       {% if connection == 'error' %}
@@ -74,9 +78,9 @@
 {% if show_period %}
 <section class="filter-panel" aria-label="训练趋势筛选">
 {{ date_links(report_ranges + report_window.links) }}
-<form action="/training" class="controls">
+<form action="/training" class="controls" data-report-date-range>
   <input type="hidden" name="report" value="{{ report }}">
-  {% if advanced_charts %}<input type="hidden" name="analysis" value="advanced">{% endif %}
+  {% if report_window.controls.analysis == 'advanced' %}<input type="hidden" name="analysis" value="advanced">{% endif %}
   {% if request.query_params.get('chart_view') == 'table' %}<input type="hidden" name="chart_view" value="table">{% endif %}
   {{ report_dates(report_window) }}
   <label>统计方式<select name="period">
@@ -87,6 +91,7 @@
   <label>运动类型<select name="sport"><option value="">全部类型</option>{% for name in sports %}<option {% if name == sport %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
   <button>应用筛选</button>
 </form>
+{% if not report_window.error %}
 <p class="meta">确认无训练的时段记为 0。底部标记提示同步覆盖和指标缺失，可在「查看图表数据」展开逐日或逐周状态。点击柱形可查看对应活动。</p>
 <dl class="workout-key-metrics" aria-label="所选时段汇总">
 {% for key, label in [('n', '活动次数'), ('km', '距离（km）'), ('minutes', '时长（分钟）'), ('climb', '爬升（m）')] %}
@@ -97,6 +102,7 @@
 {% if training_mix %}<p class="meta">运动类型 · {% for name, count in training_mix %}
   <a href="{{ sport_links[name] }}">{{ name }} {{ count }} 次</a>{{ '、' if not loop.last else '' }}
 {% endfor %}</p>{% endif %}
+{% endif %}
 </section>
 {% endif %}
 {% if filters %}
@@ -199,7 +205,7 @@
   {% with chart_items = charts %}{% include "chart_grid.html" %}{% endwith %}
 {% endif %}
 {% endif %}
-{% if show_period %}
+{% if show_period and not report_window.error %}
 <div id="training-reports">
 <nav class="section-nav report-switch" aria-label="训练报告周期">
   <a href="{{ report_links.week }}"{% if report == 'week' %} aria-current="page"{% endif %}>周报</a>

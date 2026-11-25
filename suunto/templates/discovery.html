@@ -9,7 +9,17 @@
   <h1>睡眠与训练</h1>
   <p class="meta">最近成功同步 {% if last_sync %}<time datetime="{{ last_sync }}">{{ last_sync[:16]|replace('T', ' ') }}</time> · 北京时间{% else %}—{% endif %}</p>
 </div>
-{% if sync_warning %}<p class="notice" role="status">{{ sync_warning }} <a href="/settings#sync">查看同步状态</a></p>{% endif %}
+{% if needs_connection %}
+<section id="home-connection" aria-labelledby="home-connection-title">
+  <h2 id="home-connection-title">{{ '重新连接 Suunto' if returning_user else '连接 Suunto，开始同步' }}</h2>
+  <p>{{ '连接原 Suunto 账号后，可以继续同步。已有记录仍可查看。' if existing_data else '登录 Suunto 后，看板会自动读取你的训练、睡眠和日常活动。' }}</p>
+  {% if existing_data %}
+    <a class="button" href="/settings#sync">重新连接 Suunto</a>
+  {% else %}
+    <form action="/oauth/start" method="post"><button>{{ '重新连接 Suunto' if returning_user else '连接 Suunto' }}</button></form>
+  {% endif %}
+</section>
+{% elif sync_warning %}<p class="notice" role="status">{{ sync_warning }} <a href="/settings#sync">查看同步状态</a></p>{% endif %}
 
 <div class="aurora-review" id="aurora-review">
   <div class="section-heading review-date">
@@ -31,7 +41,7 @@
     <section class="aurora-training" aria-labelledby="aurora-training-title">
       <div class="section-heading">
         <h2 id="aurora-training-title">当日训练</h2>
-        {% if selected.n %}<a href="{{ selected_link }}">{{ selected.n }} 次活动</a>{% endif %}
+        {% if selected.n %}<a href="{{ selected_link }}">查看当天 {{ selected.n }} 次活动</a>{% endif %}
       </div>
       <dl class="metrics aurora-metrics">
         {% for name, value, unit in [('距离', selected.km, 'km'), ('时长', selected.minutes, '分钟'), ('训练负荷', selected.tss, 'TSS')] %}
@@ -73,7 +83,7 @@
           {% for series in pair %}<option value="{{ loop.index0 }}">{{ series.title }}</option>{% endfor %}
         </select>{% endif %}
       </div>
-      {% set chart_next = ("/sleep-recovery", "查看睡眠与恢复") if loop.first else ("/training", "查看训练趋势") %}
+      {% set chart_next = (week_chart_links["/sleep-recovery"], "查看这周的睡眠与恢复") if loop.first else (week_chart_links["/training"], "查看这周的训练趋势") %}
       {% include "chart_values.html" %}
     </section>
     {% endfor %}
@@ -88,7 +98,7 @@
 <section id="overview-summary">
   <div class="section-heading">
     <h2>活动汇总 · {{ period_label }}</h2>
-    <a href="/training?period=week">查看训练趋势</a>
+    <a href="{{ summary_link }}">查看{{ {'week': '本周', 'month': '本月', '7': '这 7 天', '28': '这 28 天'}[overview] }}的训练趋势</a>
   </div>
   {{ date_links(period_links, "活动汇总时间范围") }}
   <p class="meta">{{ period_start }} 至 {{ period_end[:16]|replace('T', ' ') }} · 北京时间</p>

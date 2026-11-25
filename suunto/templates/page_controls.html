@@ -7,8 +7,11 @@
 {% endmacro %}
 
 {% macro report_dates(window) %}
-<label>开始日期<input type="date" name="start" value="{{ window.first }}" min="1900-01-01" max="{{ window.today }}" required></label>
-<label>结束日期<input type="date" name="end" value="{{ window.last }}" min="1900-01-01" max="{{ window.today }}" required></label>
+{% for name, label, value in [('start', '开始日期', window.first), ('end', '结束日期', window.last)] %}
+<label>{{ label }}<input type="{{ 'text' if name in window.malformed|default([]) else 'date' }}" name="{{ name }}" value="{{ value }}"
+  min="1900-01-01" max="{{ window.today }}" required{% if window.error %} aria-invalid="true" aria-describedby="report-date-error"{% endif %}></label>
+{% endfor %}
+<p class="notice report-date-error" id="report-date-error" role="alert"{% if not window.error %} hidden{% endif %}>{{ window.error|default('') }}</p>
 {% endmacro %}
 
 {% macro empty_state(message, action=none) %}

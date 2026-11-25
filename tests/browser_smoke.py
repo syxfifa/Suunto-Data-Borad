@@ -130,7 +130,7 @@ def exercise(browser, origin, fixture, width):
 
         context.route(origin + "/oauth/start", begin)
         context.route("https://provider.test/authorize**", authorize)
-        page.goto(origin + "/settings")
+        page.goto(origin + "/")
         try:
             page.get_by_role("button", name="连接 Suunto").click()
             page.locator("#mock-provider").click()
@@ -143,6 +143,7 @@ def exercise(browser, origin, fixture, width):
             raise AssertionError(f"OAuth browser fixture failed on {origin}: {navigations}") from exc
         assert fixture.grants == ["authorization_code"]
         assert page.url.startswith(origin + "/settings?authorized=true")
+        expect(page.get_by_role("link", name="查看已同步活动")).to_be_hidden()
 
         store = Store(fixture.mcp.path.parent)
         now = datetime.now(TZ)
@@ -153,6 +154,8 @@ def exercise(browser, origin, fixture, width):
             "totalDistance": 5000, "totalTimeSeconds": 1800, "tss": 28,
             "summary": {"ascent": 48},
         })])
+        page.reload()
+        expect(page.get_by_role("link", name="查看已同步活动")).to_be_visible()
         # Exercise the interactive links as well as the manually submitted date filter.
         page.goto(origin + "/training?sport=Running")
         page.get_by_role("navigation", name="快捷日期").get_by_role("link", name="近 7 天").click()
@@ -237,6 +240,11 @@ def exercise(browser, origin, fixture, width):
         expect(page.get_by_label("运动类型")).to_have_value("Running")
         page.get_by_role("link", name="下一周").click()
         expect(page.get_by_label("结束日期")).to_have_value(day)
+        page.get_by_label("开始日期").fill(now.date().isoformat())
+        current_url = page.url
+        page.get_by_role("button", name="应用筛选").click()
+        expect(page.locator("#report-date-error")).to_have_text("结束日期不能早于开始日期。")
+        assert page.url == current_url
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
         # Distinguish empty data from script failure, and verify the server-rendered fallback.
         page.goto(origin + "/daily-activity")
@@ -268,6 +276,11 @@ def exercise(browser, origin, fixture, width):
         page.get_by_role("link", name="近 28 天", exact=True).click()
         expect(page.get_by_role("heading", name="活动汇总 · 近 28 天")).to_be_visible()
         assert parse_qs(urlsplit(page.url).query)["day"] == [day]
+        with page.expect_navigation():
+            page.get_by_role("link", name="查看这 28 天的训练趋势").click()
+        expect(page.get_by_label("开始日期")).to_have_value((now.date() - timedelta(days=27)).isoformat())
+        expect(page.get_by_label("结束日期")).to_have_value(now.date().isoformat())
+        page.go_back()
         page.get_by_role("link", name="回到今天").click()
         expect(page.get_by_role("heading", name=f"复盘日期 {now.date()}")).to_be_visible()
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")

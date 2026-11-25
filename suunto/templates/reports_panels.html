@@ -64,11 +64,12 @@
 {% endif %}
 {% if wellness_days is defined %}
 {{ date_links(report_ranges + report_window.links) }}
-<form action="/sleep-recovery" class="controls">
+<form action="/sleep-recovery" class="controls" data-report-date-range>
   {{ report_dates(report_window) }}
   {% if request.query_params.get('chart_view') == 'table' %}<input type="hidden" name="chart_view" value="table">{% endif %}
   <button>应用日期</button>
 </form>
+{% if not report_window.error %}
 <section class="wellness-latest" aria-labelledby="wellness-latest-title">
   <h2 id="wellness-latest-title">最近有效读数</h2>
   <dl class="wellness-readings">
@@ -90,11 +91,12 @@
   <p class="meta">恢复记录覆盖 {{ recovery_days }} / {{ wellness_days }} 天{% if recovery_latest %}，最近采样日期 {{ recovery_latest }}{% endif %}。</p>
 </section>
 {% endif %}
+{% endif %}
 {% if daily_stats is defined %}
 {% if daily_saved %}<p class="notice" role="status">{{ daily_saved }}</p>{% endif %}
 <section>
   {{ date_links(report_ranges + report_window.links) }}
-  <form action="/daily-activity" class="controls">
+  <form action="/daily-activity" class="controls" data-report-date-range>
     {% if providers|length > 1 %}
     <label>数据来源<select name="source"><option value="">自动选择</option>{% for name in providers %}<option {% if name == daily_source %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
     {% endif %}
@@ -107,6 +109,7 @@
     <button class="secondary" name="action" value="source" formaction="/daily-activity/preferences" formmethod="post">记住来源设置</button>
     {% endif %}
   </form>
+  {% if not report_window.error %}
   <p>当前来源：{{ provider or (providers[0] if providers|length == 1 else '暂无可用来源') }}。</p>
   <p>步数有效 {{ daily_stats.days }} 天，缺失 {{ daily_stats.missing }} 天。日均 {{ daily_stats.average if daily_stats.average is not none else '—' }} 步。</p>
   {% if daily_stats.latest %}<p class="meta">该来源在所选时段的最近采样日期为 {{ daily_stats.latest }}。</p>{% endif %}
@@ -122,6 +125,7 @@
       <button name="action" value="goal">保存目标</button>
     </form>
   </details>
+  {% endif %}
 </section>
 {% endif %}
 {% if route_filter is defined %}

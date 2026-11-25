@@ -115,7 +115,8 @@ dd { margin: .1rem 0 0; font-size: 1.12rem; font-weight: 700; font-variant-numer
 .controls > label, .activity-fields label, .advanced-fields > label { font-weight: 590; }
 .export-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 1.25rem; }
 .export-options > div { min-width: 0; padding-top: .85rem; border-top: 1px solid var(--line); }
-.backup-steps pre { max-width: 100%; overflow-x: auto; }
+.backup-steps { padding-inline-start: 1.5rem; }
+.backup-steps pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .section-nav { margin-bottom: 1rem; gap: .25rem 1rem; }
 .section-nav a { display: inline-flex; align-items: center; min-height: 44px; font-size: .9rem; }
 input, button, select, a.button { font: inherit; border-radius: .45rem; }

@@ -38,9 +38,6 @@ jobs:
           fi
           if [[ -n "$BEFORE_SHA" ]] && git cat-file -e "$BEFORE_SHA:VERSION" 2>/dev/null; then
             previous="$(git show "$BEFORE_SHA:VERSION")"
-            if [[ "$previous" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$previous" != "$version" ]]; then
-              echo "PREVIOUS_VERSION=$previous" >> "$GITHUB_ENV"
-            fi
             if [[ "$version" != "$previous" && "$(printf '%s\n' "$previous" "$version" | sort -V | tail -1)" != "$version" ]]; then
               echo "::error file=VERSION::A release version cannot decrease."
               exit 1
@@ -146,9 +143,10 @@ jobs:
           assert Store("/data").record("workouts", "fixture-activity")["totalDistance"] == 1000
           assert json.loads(Path("/data/config.json").read_bytes())["sync_interval_minutes"] == 15
           PY
-      - name: Verify upgrade from the previous release with persisted data
+      - name: Verify upgrade from the published release with persisted data
         run: |
-          previous="docker.io/${DOCKERHUB_USERNAME,,}/suunto-data-borad:${PREVIOUS_VERSION:-1.0.7}"
+          # The preceding Git commit may have failed CI before its image was published.
+          previous="docker.io/${DOCKERHUB_USERNAME,,}/suunto-data-borad:latest"
           data="$(mktemp -d "$RUNNER_TEMP/suunto-upgrade-XXXXXX")"
           old="suunto-upgrade-old-${GITHUB_RUN_ID}"
           candidate="suunto-upgrade-new-${GITHUB_RUN_ID}"

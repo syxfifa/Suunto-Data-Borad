@@ -1,6 +1,6 @@
 # Suunto Data Borad 使用手册
 
-当前版本 **V1.0.20**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。健康检查由镜像提供。
+当前版本 **V1.0.21**。容器名为 `suunto-data-borad`，NAS 和容器统一使用 **7383** 端口。数据库、授权和设置保存在 Compose 文件旁的 **suunto-storage** 文件夹中。健康检查由镜像提供。
 
 ## 第一次部署
 
@@ -120,7 +120,7 @@ docker compose exec -T --user 10001:10001 app python -m suunto drill --record < 
 
 ### 固定版本与回滚
 
-想固定版本，可将 Compose 的 `image` 改为 `jjsyx123/suunto-data-borad:1.0.20`，执行 `docker compose pull` 和 `docker compose up -d`。从 V1.0.15 或更早版本升级时会自动更新 SQLite 结构。更新前保存并验证备份，回滚到 V1.0.15 或更早版本时，先用旧版镜像恢复升级前的数据库，然后启动旧版应用。
+想固定版本，可将 Compose 的 `image` 改为 `jjsyx123/suunto-data-borad:1.0.21`，执行 `docker compose pull` 和 `docker compose up -d`。从 V1.0.15 或更早版本升级时会自动更新 SQLite 结构。更新前保存并验证备份，回滚到 V1.0.15 或更早版本时，先用旧版镜像恢复升级前的数据库，然后启动旧版应用。
 
 GitHub Actions 的 **Scan published Suunto image** 每周一北京时间约 09:17 扫描 Docker Hub 当前发布的双架构 `latest`，也可以手动运行。报告按镜像摘要保存，发现已有修复的高危或严重项时标记此次扫描失败。
 

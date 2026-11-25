@@ -413,9 +413,7 @@ def exercise_amap(context, page, origin, store, older, newer, width):
     guide = page.locator("#backup")
     expect(guide.get_by_text("最近一次通过的备份验证")).to_be_visible()
     expect(guide.get_by_text("最近一次通过的隔离恢复演练")).to_be_visible()
-    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Maintenance overflow at {width}px"
-    guide.get_by_text("查看 NAS 操作命令").press("Enter")
-    expect(guide.get_by_text("python -m suunto drill --record", exact=False)).to_be_visible()
+    expect(guide.get_by_role("link", name="查看 NAS 备份与恢复命令（GitHub）")).to_be_visible()
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Backup guide overflow at {width}px"
     page.goto(origin + "/settings")
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Settings overflow at {width}px"

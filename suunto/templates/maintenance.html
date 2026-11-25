@@ -34,24 +34,8 @@
       {% else %}尚未记录{% endif %}</p>
     <p class="meta">{{ explanation }}</p>
   {% endfor %}
-  <details>
-    <summary>查看 NAS 操作命令</summary>
-    <p>以下命令将归档保存到 NAS 当前用户的家目录。按顺序执行，每步成功后再继续。</p>
-    <ol class="backup-steps">
-      <li>保存归档
-        <pre><code>umask 077
-archive="$HOME/suunto-backup-$(date +%F-%H%M%S).zip"
-docker compose exec -T --user 10001:10001 app python -m suunto backup &gt; "$archive"</code></pre>
-      </li>
-      <li>验证归档
-        <pre><code>docker compose exec -T --user 10001:10001 app python -m suunto verify --record &lt; "$archive"</code></pre>
-      </li>
-      <li>隔离恢复演练
-        <pre><code>docker compose exec -T --user 10001:10001 app python -m suunto drill --record &lt; "$archive"</code></pre>
-      </li>
-    </ol>
-    <p>刷新本页查看结果。归档包含数据库和已有设置，实际恢复请参照部署 README 的备份与恢复说明。</p>
-  </details>
+  <p>归档包含数据库和已有设置。运行 <code>verify --record</code> 或 <code>drill --record</code> 后，刷新本页查看结果。</p>
+  <p><a href="https://github.com/syxfifa/Suunto-Data-Borad#同步导出与备份" target="_blank" rel="noopener noreferrer">查看 NAS 备份与恢复命令（GitHub）</a></p>
 </section>
 <section>
   <h2>Suunto 账号</h2>

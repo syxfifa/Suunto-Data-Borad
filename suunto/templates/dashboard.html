@@ -4,6 +4,15 @@
 {% macro local_time(value) -%}
   {% if value %}<time datetime="{{ value }}" title="{{ value }}">{{ value[:19]|replace('T', ' ') }}</time>{% else %}—{% endif %}
 {%- endmacro %}
+{% macro remember_view(scope, values) -%}
+<div id="{{ scope }}-view-preference" class="controls view-preference" hidden
+     data-view-scope="{{ scope }}" data-view-options="{{ values|tojson|forceescape }}">
+  <button class="secondary" type="button" data-save-view>记住此视图</button>
+  <button class="secondary" type="button" data-clear-view hidden>清除已记住的视图</button>
+  <span class="meta" role="status"></span>
+</div>
+<script src="/static/training-view.js?v=1.0.29" defer></script>
+{%- endmacro %}
 {% block content %}
 <div class="page-heading"><h1>{{ title }}</h1></div>
 {% if message %}<p class="notice" role="status">{{ message }}</p>{% endif %}
@@ -92,13 +101,7 @@
   <button>应用筛选</button>
 </form>
 {% if not report_window.error %}
-<div id="training-view-preference" class="controls" hidden>
-  <button class="secondary" type="button" id="remember-training-view">记住此视图</button>
-  <button class="secondary" type="button" id="forget-training-view" hidden>清除已记住的视图</button>
-  <span class="meta" role="status"></span>
-</div>
-<script type="application/json" id="training-view-data">{{ remembered_scopes|tojson }}</script>
-<script src="/static/training-view.js?v=1.0.25" defer></script>
+{{ remember_view('training', remembered_scopes) }}
 <p class="meta">确认无训练的时段记为 0。底部标记提示同步覆盖和指标缺失，可在「查看图表数据」展开逐日或逐周状态。点击柱形可查看对应活动。</p>
 <dl class="workout-key-metrics" aria-label="所选时段汇总">
 {% for key, label in [('n', '活动次数'), ('km', '距离（km）'), ('minutes', '时长（分钟）'), ('climb', '爬升（m）')] %}
@@ -147,6 +150,7 @@
   </details>
   <button type="submit" class="filter-apply">应用筛选</button>
 </form>
+{% if activity_view is defined %}{{ remember_view('activity', activity_view) }}{% endif %}
 
 </section>
 {% if result_count is defined %}
@@ -321,9 +325,9 @@
 </div>
   {% if pages is defined and pages > 1 %}
   <nav class="pagination" aria-label="活动分页">
-    {% if page > 1 %}<a href="/activities?start={{ start or '' }}&amp;end={{ end or '' }}&amp;page={{ page-1 }}&amp;{{ search_query }}{% if review_return %}&amp;return_to={{ review_return|urlencode }}{% endif %}">上一页</a>{% endif %}
+    {% if page > 1 %}<a href="/activities?{% if activity_view.range is undefined %}start={{ start or '' }}&amp;end={{ end or '' }}&amp;{% endif %}page={{ page-1 }}&amp;{{ search_query }}{% if review_return %}&amp;return_to={{ review_return|urlencode }}{% endif %}">上一页</a>{% endif %}
     <span>第 {{ page }} / {{ pages }} 页</span>
-    {% if page < pages %}<a href="/activities?start={{ start or '' }}&amp;end={{ end or '' }}&amp;page={{ page+1 }}&amp;{{ search_query }}{% if review_return %}&amp;return_to={{ review_return|urlencode }}{% endif %}">下一页</a>{% endif %}
+    {% if page < pages %}<a href="/activities?{% if activity_view.range is undefined %}start={{ start or '' }}&amp;end={{ end or '' }}&amp;{% endif %}page={{ page+1 }}&amp;{{ search_query }}{% if review_return %}&amp;return_to={{ review_return|urlencode }}{% endif %}">下一页</a>{% endif %}
   </nav>
   {% endif %}
   {% if route_pages is defined and route_pages > 1 %}

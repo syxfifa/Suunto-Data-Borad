@@ -79,8 +79,8 @@ a:hover { color: var(--accent-hover); }
 .week-sport-list { margin: 0; padding-inline-start: 1.25rem; }
 .week-sport-list li { overflow-wrap: anywhere; }
 .week-sport-list span { margin-inline-start: .5rem; color: var(--muted); }
-#training-view-preference { margin-block: .75rem; }
-#training-view-preference[hidden], #forget-training-view[hidden] { display: none; }
+.view-preference { margin-block: .75rem; }
+.view-preference[hidden], .view-preference [hidden] { display: none; }
 @media (min-width: 62rem) {
   .chart-grid.wellness-review-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }

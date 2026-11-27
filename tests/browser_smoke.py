@@ -242,6 +242,22 @@ def exercise(browser, origin, fixture, width):
         assert parse_qs(urlsplit(page.url).query)["page"] == ["2"]
         assert urlsplit(page.url).fragment == "activity-0"
         expect(page.locator("[data-compare-id=fixture-0]")).to_be_checked()
+        page.goto(origin + "/activities?sport=Running&km=3")
+        page.get_by_role("link", name="近 30 天", exact=True).click()
+        page.get_by_role("button", name="记住此视图").click()
+        expect(page.locator("#activity-view-preference [role=status]")).to_contain_text("已在此浏览器记住")
+        page.goto(origin + "/activities")
+        expect(page.get_by_role("link", name="近 30 天", exact=True)).to_have_attribute("aria-current", "page")
+        assert parse_qs(urlsplit(page.url).query)["range"] == ["30"]
+        expect(page.locator(".activity-filters select[name=sport]")).to_have_value("Running")
+        expect(page.get_by_label("最短距离（km）")).to_have_value("3")
+        page.goto(origin + "/activities?" + urlencode({"start": day, "end": day, "return_to": "/training?days=7"}))
+        expect(page.get_by_label("开始日期", exact=True)).to_have_value(day)
+        expect(page.get_by_role("link", name="返回复盘图表")).to_be_visible()
+        page.get_by_role("button", name="清除已记住的视图").click()
+        page.goto(origin + "/activities")
+        expect(page.locator("#activity-view-preference [data-clear-view]")).to_be_hidden()
+        assert not urlsplit(page.url).query
         page.goto(origin + "/training?sport=Running")
         expect(page.get_by_label("图表数据状态").first).to_contain_text("同步未确认完整")
         expect(page.get_by_label("图表数据状态").first).to_contain_text("已确认无活动")

@@ -1,17 +1,20 @@
 (() => {
-  const controls = document.querySelector("#training-view-preference");
-  const current = JSON.parse(document.querySelector("#training-view-data").textContent);
-  const save = document.querySelector("#remember-training-view");
-  const clear = document.querySelector("#forget-training-view");
+  const controls = document.querySelector("[data-view-scope]");
+  const current = JSON.parse(controls.dataset.viewOptions);
+  const save = controls.querySelector("[data-save-view]");
+  const clear = controls.querySelector("[data-clear-view]");
   const status = controls.querySelector("[role=status]");
-  const key = "suunto.trainingView.v1";
+  const activity = controls.dataset.viewScope === "activity";
+  const key = activity ? "suunto.activityView.v1" : "suunto.trainingView.v1";
+  const allowed = activity ? ["sport", "q", "km", "minutes", "tss", "sort", "order", "start", "end", "range"]
+    : ["sport", "period", "report", "days", "start", "end"];
 
   try {
     const storage = window.localStorage;
     const remembered = JSON.parse(storage.getItem(key) || "null");
     if (remembered && !location.search && !location.hash) {
-      const destination = new URL("/training", location.origin);
-      for (const name of ["sport", "period", "report", "days", "start", "end"]) {
+      const destination = new URL(location.pathname, location.origin);
+      for (const name of allowed) {
         if (typeof remembered[name] === "string") destination.searchParams.set(name, remembered[name]);
       }
       if (destination.search) {

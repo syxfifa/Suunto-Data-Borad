@@ -301,9 +301,9 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
             "SELECT min(occurred_at) AS first, max(occurred_at) AS last FROM records WHERE source='workouts'"
         )[0]
         week = today - timedelta(days=today.weekday())
-        presets = [(f"近 {days} 天", today - timedelta(days=days-1), today) for days in (7, 28, 30, 90)]
-        presets.extend((("本周", week, today), ("上周", week - timedelta(days=7), week - timedelta(days=1)),
-                        ("本月", today.replace(day=1), today), ("全部日期", None, None)))
+        presets = {str(days): (f"近 {days} 天", today - timedelta(days=days-1), today) for days in (7, 28, 30, 90)}
+        presets.update({"week": ("本周", week, today), "last-week": ("上周", week - timedelta(days=7), week - timedelta(days=1)),
+                        "month": ("本月", today.replace(day=1), today), "all": ("全部日期", None, None)})
         activity_types = store.query("""
             SELECT DISTINCT coalesce(nullif(json_extract(payload, '$.activityName'), ''), '未标注运动类型') AS sport
             FROM records WHERE source='workouts' ORDER BY sport
@@ -313,8 +313,8 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
         range_filters = {**search_state, "return_to": review_return or ""}
         filters = {"filters": True, "activity_span": activity_span, "activity_types": activity_types,
                    "search": search_state, "review_return": review_return,
-                   "activity_ranges": [(name, "/activities?" + urlencode({**range_filters, "start": first or "",
-                                       "end": last or ""}), False) for name, first, last in presets],
+                   "activity_ranges": [(name, "/activities?" + urlencode({**range_filters, "range": key}), False)
+                                       for key, (name, _, _) in presets.items()],
                    "search_query": urlencode({key: value for key, value in search_state.items() if value not in ("", None)})}
         start, end = start.strip(), end.strip()
         try:
@@ -330,11 +330,23 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
         except ValueError:
             return dashboard(request, "运动活动", **filters, start=start, end=end, message="请输入有效的筛选数值。")
         default_range = first is None and last is None and not {"start", "end"}.intersection(request.query_params)
+        selected_range = request.query_params.get("range")
+        preset = presets.get(selected_range)
+        if preset and default_range:
+            _, first, last = preset
+            default_range = False
         if default_range:
             first = today - timedelta(days=27)
         preset_end = today if default_range else last
-        active_label = next((name for name, begin, finish in presets if (begin, finish) == (first, preset_end)), None)
+        active_label = preset[0] if preset and (first, preset_end) == preset[1:] else next(
+            (name for name, begin, finish in presets.values() if (begin, finish) == (first, preset_end)), None)
         filters["activity_ranges"] = [(name, href, name == active_label) for name, href, _ in filters["activity_ranges"]]
+        date_scope = {"start": first or "", "end": last or ""}
+        if default_range or (preset and (first, preset_end) == preset[1:]):
+            date_scope = {"range": "28" if default_range else selected_range}
+        activity_view = {**search_state, **date_scope}
+        if "range" in date_scope:
+            filters["search_query"] += "&" + urlencode(date_scope)
         begin = datetime.combine(first, clock_time.min, TZ) if first else None
         finish = datetime.combine(last + timedelta(days=1), clock_time.min, TZ) if last else None
         count, page, pages, rows, keys, names = workout_page(
@@ -357,7 +369,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
         export_query = urlencode({"source": "workouts", "start": first or "", "end": last or "",
                                   **{key: search_state[key] for key in ("sport", "q", "km", "minutes", "tss")}})
         current_page = "/activities?" + urlencode({"start": first or "", "end": last or "", "page": page,
-                                                 **search_state, "return_to": filters["review_return"] or ""})
+                                                 **activity_view, "return_to": filters["review_return"] or ""})
         filter_values = {"start": first or "", "end": last or "", **search_state,
                          "return_to": filters["review_return"] or ""}
         labels = {"start": "起始", "end": "截止", "sport": "运动类型", "q": "关键词",
@@ -379,7 +391,8 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
                          headings=("北京时间", "运动类型", "距离（km）", "时长（分钟）", "平均心率", "训练效果 PTE"),
                          rows=rows, activity_keys=keys, activity_names=names, result_count=count, page=page, pages=pages,
                          empty_message=summary, empty_action=empty_action, active_filters=active_filters,
-                         export_query=export_query, activities_notice=notice)
+                         export_query=export_query, activities_notice=notice,
+                         activity_view={key: str(value) for key, value in activity_view.items()})
 
     @router.get("/workout")
     def workout(request: Request, id: str, return_to: str = ""):

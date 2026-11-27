@@ -27,7 +27,10 @@
 <section>
   {% if comparison_return %}<p><a href="{{ comparison_return }}">返回之前的活动页面</a></p>{% endif %}
   {% if comparison_deltas %}
-  <h2>差值（活动 B 减活动 A）</h2>
+  <div class="section-heading" id="comparison-result">
+    <h2>差值（活动 B 减活动 A）</h2>
+    <a class="button secondary" href="{{ swap_link }}">交换 A/B</a>
+  </div>
   <p><a href="{{ comparison_links[0][1] }}">A · {{ comparison_links[0][0] }}</a> · <a href="{{ comparison_links[1][1] }}">B · {{ comparison_links[1][0] }}</a></p>
   <dl class="workout-key-metrics">{% for label, value in comparison_deltas %}
     <div><dt>{{ label }}</dt><dd>{{ value if value is not none else '—' }}</dd></div>

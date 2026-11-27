@@ -328,6 +328,13 @@ class ReportsTest(unittest.TestCase):
                 self.assertIn("first=prior&amp;second=current", detail)
                 comparison = browser.get("/compare?sport=Running&first=prior&second=current").text
                 self.assertIn("活动 B 每公里快 12 秒", comparison)
+                compared = browser.get("/compare", params={"sport": "Running", "first": "prior", "second": "current",
+                    "q": "current", "day": "2025-06-12", "return_to": "/workout?id=current"}).text
+                self.assertIn("first=current&amp;second=prior&amp;return_to=%2Fworkout%3Fid%3Dcurrent"
+                              "&amp;q=current&amp;day=2025-06-12&amp;page=1#comparison-result", compared)
+                swapped = browser.get("/compare?sport=Running&first=current&second=prior").text
+                self.assertIn("活动 B 每公里慢 12 秒", swapped)
+                self.assertIn("缺少可对比数据", swapped)
 
     def test_routes_page_filters_before_paginating(self):
         with TemporaryDirectory() as directory:

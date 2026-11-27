@@ -22,6 +22,13 @@ def activity_link(start, end, sport="", return_to=""):
     return "/activities?" + urlencode({"start": start, "end": end, "sport": sport, "return_to": return_to})
 
 
+def review_activities(store, begin, end, back, *, limit):
+    _, _, _, rows, keys, names = workout_page(store, begin, end, 1, size=limit)
+    return [(name or row[1] or "未命名活动", row[0][11:16],
+             "/workout?" + urlencode({"id": key, "return_to": back}))
+            for row, key, name in zip(rows, keys, names)]
+
+
 def data_notice(store, source, begin, end, *, covered, has_records, missing_metric=False, filtered=False):
     label = SOURCE_LABELS[source]
     args = {"source": source}
@@ -136,9 +143,10 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
         query_end = min(today, midnight(review_end + timedelta(days=1)))
         preferences = config.read()
         intervals = store.coverage("workouts")
+        review_workouts = records(store, "workouts", midnight(review_start), query_end)
         snapshots, review_charts = aurora_week(
             review_start, chosen, today.date(),
-            records(store, "workouts", midnight(review_start), query_end),
+            review_workouts,
             records(store, "sleep", midnight(review_start - timedelta(days=1)), today if review_end >= today.date()
                     else midnight(review_end + timedelta(days=2))),
             records(store, "recovery", midnight(review_start), query_end),
@@ -158,8 +166,9 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
         add_review_links(review_charts[1], "", back, today.date())
         selected = snapshots[(chosen - review_start).days]
         selected_end = min(today, midnight(chosen + timedelta(days=1)))
-        selected["confirmed_until"] = period_summary([], midnight(chosen), selected_end, intervals)["confirmed_until"]
         selected_begin = midnight(chosen)
+        selected.update(period_summary(review_workouts, selected_begin, selected_end, intervals))
+        selected_activities = review_activities(store, selected_begin, selected_end, back, limit=3) if selected["n"] else []
         selected["notices"] = {}
         for source, has_records, missing_metric in (
             ("sleep", selected["sleep_recorded"], selected["sleep"] is None),
@@ -204,6 +213,10 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
                      "date_error": date_error, "requested_day": request.query_params.get("day", ""),
                      "week": week, "selected_cutoff": selected_end.strftime("%H:%M") if chosen == day else None,
                      "selected_link": activity_link(chosen, chosen, return_to=back), "today": day,
+                     "selected_activities": selected_activities,
+                     "sleep_review_link": "/sleep-recovery?" + urlencode({
+                         "start": review_start, "end": min(review_end, day), "review_day": chosen, **view_args,
+                     }) + "#wellness-review",
                      "summary_link": "/training?" + urlencode({"start": summary_start, "end": day, "period": "week", **view_args}),
                      "week_chart_links": {
                          path: path + "?" + urlencode({"start": review_start, "end": min(review_end, day), **view_args})
@@ -407,7 +420,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
                     "avgPower", "pte", "peakEpoc", "recoveryTime", "zones"}
         optional = {labels.get(key, key): value for key, value in detail.items()
                     if key not in featured and value is not None}
-        back = local_return(return_to, "/activities", "/compare", "/sleep-recovery")
+        back = local_return(return_to, "/activities", "/compare", "/sleep-recovery", "/")
         detail_url = "/workout?" + urlencode({"id": id, "return_to": back or ""})
         compare_url = "/compare?" + urlencode({"first": id, "sport": sport_name(row), "return_to": detail_url})
         recommended_url = None
@@ -479,12 +492,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
             end_at = min(window["end_at"], midnight(activity_day + timedelta(days=1)))
             entries = [(at, row) for at, row in training if at[:10] == activity_day.isoformat()]
             totals = period_summary(entries, begin, end_at, training_coverage)
-            items = []
-            if entries:
-                _, _, _, rows, keys, names = workout_page(store, begin, end_at, 1, size=5)
-                items = [(name or row[1] or "未命名活动", row[0][11:16],
-                          "/workout?" + urlencode({"id": key, "return_to": review_link}))
-                         for row, key, name in zip(rows, keys, names)]
+            items = review_activities(store, begin, end_at, review_link, limit=5) if entries else []
             notice = data_notice(
                 store, "workouts", begin, end_at, covered=totals["covered"], has_records=entries,
                 missing_metric=any(totals[key] is None for key in ("km", "minutes")),

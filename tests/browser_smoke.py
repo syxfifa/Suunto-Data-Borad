@@ -333,6 +333,13 @@ def exercise(browser, origin, fixture, width):
         expect(page.locator(".aurora-chart").last.get_by_role("table").first).to_be_visible()
         page.goto(origin + "/?day=" + day)
         expect(page.get_by_role("heading", name=f"复盘日期 {day}")).to_be_visible()
+        page.locator(".aurora-training").get_by_role("link", name="Browser fixture").click()
+        page.get_by_role("link", name="返回首页复盘").click()
+        expect(page.get_by_role("heading", name=f"复盘日期 {day}")).to_be_visible()
+        page.get_by_role("link", name="看睡眠与训练复盘").click()
+        expect(page.locator("#wellness-review").get_by_label("复盘日期", exact=True)).to_have_value(day)
+        page.go_back()
+        expect(page.get_by_role("heading", name=f"复盘日期 {day}")).to_be_visible()
         page.get_by_role("link", name="近 28 天", exact=True).click()
         expect(page.get_by_role("heading", name="活动汇总 · 近 28 天")).to_be_visible()
         assert parse_qs(urlsplit(page.url).query)["day"] == [day]

@@ -60,7 +60,10 @@
   </div>
   <div class="aurora-pair aurora-snapshot">
     <section class="aurora-recovery" aria-labelledby="aurora-recovery-title">
-      <h2 id="aurora-recovery-title">昨夜与晨间</h2>
+      <div class="section-heading">
+        <h2 id="aurora-recovery-title">昨夜与晨间</h2>
+        <a href="{{ sleep_review_link }}">看睡眠与训练复盘</a>
+      </div>
       <div class="aurora-ring-layout">
         <div class="aurora-ring" style="--pct: {{ selected.resource|default(0, true) }}%">
           <div><strong>{{ amount(selected.resource) }}{% if selected.resource is not none %}<span>%</span>{% endif %}</strong>
@@ -84,9 +87,15 @@
         {% endfor %}
       </dl>
       <p class="meta">{% if selected_cutoff %}今日统计截至 {{ selected_cutoff }} · {% endif %}
-      {{ '当天未训练' if selected.n == 0 and selected.covered else coverage_status(selected, [selected.km, selected.minutes, selected.tss]) }}
+      {% if selected.n == 0 and selected.covered %}{{ '截至目前暂无活动' if chosen_day == today else '当天未训练' }}
+      {% else %}{{ coverage_status(selected, [selected.km, selected.minutes, selected.tss]) }}{% endif %}
       {% if selected.confirmed_until and not selected.covered %} · 最近确认至 {{ selected.confirmed_until[:16]|replace('T', ' ') }}{% endif %}</p>
       {% if selected.notices.workouts and selected.notices.workouts[1] %}{{ data_notice(selected.notices.workouts) }}{% endif %}
+      {% if selected_activities %}
+      <ul class="review-activities">
+        {% for name, clock, href in selected_activities %}<li><time>{{ clock }}</time> <a href="{{ href }}">{{ name }}</a></li>{% endfor %}
+      </ul>
+      {% endif %}
     </section>
   </div>
   <section class="aurora-calendar" aria-labelledby="review-calendar">

@@ -38,19 +38,6 @@
   </ul>
   <p class="meta">查询时间与记录日期均为北京时间。</p>
 </details>
-<section class="home-week" aria-labelledby="home-week-title">
-  <div class="section-heading">
-    <h2 id="home-week-title">本周训练</h2>
-    <a href="{{ period_links[0][1] }}">查看本周汇总</a>
-  </div>
-  <p class="week-totals">{% if week.km is not none %}<strong>{{ amount(week.km) }}</strong> km{% else %}距离暂无完整数据{% endif %}
-    · {% if week.n is not none %}<strong>{{ week.n }}</strong> 次活动{% else %}活动数待确认{% endif %}
-    {% if not week.covered and week.n %}<small>本地小计</small>{% endif %}</p>
-  {% if week.delta %}
-  <p class="meta">较上周同期{% if week.delta.km is not none %} {{ '%+.2f'|format(week.delta.km) }} km ·{% endif %}
-    {{ '%+d'|format(week.delta.n) }} 次（两周均截至周{{ '一二三四五六日'[week.delta.at.weekday()] }} {{ week.delta.at.strftime('%H:%M') }}）</p>
-  {% else %}<p class="meta">两周同期的同步覆盖齐全后显示差值。</p>{% endif %}
-</section>
 {% endif %}
 
 <div class="aurora-review" id="aurora-review">
@@ -98,6 +85,21 @@
       {% endif %}
     </section>
   </div>
+{% if not needs_connection or existing_data %}
+<section class="home-week" aria-labelledby="home-week-title">
+  <div class="section-heading">
+    <h2 id="home-week-title">本周训练</h2>
+    <a href="{{ period_links[0][1] }}">查看本周汇总</a>
+  </div>
+  <p class="week-totals">{% if week.km is not none %}<strong>{{ amount(week.km) }}</strong> km{% else %}距离暂无完整数据{% endif %}
+    · {% if week.n is not none %}<strong>{{ week.n }}</strong> 次活动{% else %}活动数待确认{% endif %}
+    {% if not week.covered and week.n %}<small>本地小计</small>{% endif %}</p>
+  {% if week.delta %}
+  <p class="meta">较上周同期{% if week.delta.km is not none %} {{ '%+.2f'|format(week.delta.km) }} km ·{% endif %}
+    {{ '%+d'|format(week.delta.n) }} 次（两周均截至周{{ '一二三四五六日'[week.delta.at.weekday()] }} {{ week.delta.at.strftime('%H:%M') }}）</p>
+  {% else %}<p class="meta">两周同期的同步覆盖齐全后显示差值。</p>{% endif %}
+</section>
+{% endif %}
   <section class="aurora-calendar" aria-labelledby="review-calendar">
     <div class="section-heading">
       <h2 id="review-calendar">选择对照日期</h2>

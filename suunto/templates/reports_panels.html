@@ -73,9 +73,11 @@
 </section>
 {% endif %}
 {% if wellness_days is defined %}
+{% if home_review %}<p><a href="{{ home_review }}">返回首页复盘</a></p>{% endif %}
 {{ date_links(report_ranges + report_window.links) }}
 <form action="/sleep-recovery" class="controls" data-report-date-range>
   {{ report_dates(report_window) }}
+  {% if home_review %}<input type="hidden" name="return_to" value="{{ home_review }}">{% endif %}
   {% if request.query_params.get('chart_view') == 'table' %}<input type="hidden" name="chart_view" value="table">{% endif %}
   <button>应用日期</button>
 </form>

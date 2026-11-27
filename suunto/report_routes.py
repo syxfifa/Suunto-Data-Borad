@@ -215,7 +215,8 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
                      "selected_link": activity_link(chosen, chosen, return_to=back), "today": day,
                      "selected_activities": selected_activities,
                      "sleep_review_link": "/sleep-recovery?" + urlencode({
-                         "start": review_start, "end": min(review_end, day), "review_day": chosen, **view_args,
+                         "start": review_start, "end": min(review_end, day), "review_day": chosen,
+                         "return_to": back, **view_args,
                      }) + "#wellness-review",
                      "summary_link": "/training?" + urlencode({"start": summary_start, "end": day, "period": "week", **view_args}),
                      "week_chart_links": {
@@ -448,11 +449,13 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
 
     @router.get("/sleep-recovery")
     def sleep_recovery(request: Request, days: Annotated[int, Query(ge=7, le=90)] = 28,
-                       start: str = "", end: str = "", review_day: str = ""):
-        window = date_form_window(request, days, start, end, maximum=90, filters={})
+                       start: str = "", end: str = "", review_day: str = "", return_to: str = ""):
+        home_review = local_return(return_to, "/")
+        filters = {"return_to": home_review} if home_review else {}
+        window = date_form_window(request, days, start, end, maximum=90, filters=filters)
         if window.get("error"):
             return dashboard(request, "睡眠与恢复", status_code=422, wellness_days=days, report_window=window,
-                             report_ranges=report_date_links(request, None, (7, 28, 90)))
+                             home_review=home_review, report_ranges=report_date_links(request, None, (7, 28, 90), **filters))
         span = dates(window["first"], window["last"])
         try:
             day = date.fromisoformat(review_day) if review_day else span[-1]
@@ -527,7 +530,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
             metric_states.append((name, readings.get(title), message))
         groups = [(key, title, [item for item in charts if item["group"] == key])
                   for key, title in (("sleep", "睡眠"), ("recovery", "恢复"), ("metrics", "HRV 与静息心率"))]
-        report_ranges = report_date_links(request, None if start else days, (7, 28, 90))
+        report_ranges = report_date_links(request, None if start else days, (7, 28, 90), **filters)
         notices = []
         for source, has_records, has_metric in (("sleep", sleep_rows, count), ("recovery", recovery, latest_balance)):
             begin, end = midnight(span[0]), window["end_at"]
@@ -541,6 +544,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
                          sleep_count=count, sleep_samples=sum(at[:10] >= first for at, _ in sleep),
                          latest_sleep=next((row for row in sleep_rows if row[-1] is not None), None),
                          wellness_notices=notices, review_day=day, review_args=review_args, review_error=review_error,
+                         home_review=home_review,
                          review_training=review_training, review_sleep=sleep_hours, review_sleep_notice=sleep_notice,
                          previous_review=day_links.get((day - timedelta(days=1)).isoformat()),
                          next_review=day_links.get((day + timedelta(days=1)).isoformat()),

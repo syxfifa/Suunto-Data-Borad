@@ -2,7 +2,10 @@
 {% from "coverage_status.html" import data_notice %}
 {% if workout is defined %}
 <section>
-  {% if workout_return %}<a href="{{ workout_return }}">{{ '返回运动对比' if workout_return.startswith('/compare?') else '返回筛选后的活动列表' }}</a>{% endif %}
+  {% if workout_return %}
+    {% set return_label = '返回运动对比' if workout_return.startswith('/compare?') else '返回单日复盘' if workout_return.startswith('/sleep-recovery?') else '返回筛选后的活动列表' %}
+    <a href="{{ workout_return }}">{{ return_label }}</a>
+  {% endif %}
   <p>{{ workout.activityName or '未标注运动类型' }} · {{ workout_at or '—' }}</p>
   {% if workout.description %}<p>{{ workout.description }}</p>{% endif %}
   <dl class="workout-key-metrics">{% for label, value in metrics.items() %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
@@ -74,6 +77,45 @@
   <button>应用日期</button>
 </form>
 {% if not report_window.error %}
+<section id="wellness-review" aria-labelledby="wellness-review-title">
+  <div class="section-heading">
+    <h2 id="wellness-review-title">单日复盘</h2>
+    <nav class="week-nav" aria-label="切换复盘日期">
+      {% if previous_review %}<a href="{{ previous_review }}">前一天</a>{% endif %}
+      {% if next_review %}<a href="{{ next_review }}">后一天</a>{% endif %}
+    </nav>
+  </div>
+  <form action="/sleep-recovery#wellness-review" method="get" class="controls">
+    {% for name, value in review_args.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+    <label>复盘日期<input type="date" name="review_day" value="{{ review_day }}" min="{{ report_window.first }}" max="{{ report_window.last }}"
+      {% if review_error %}aria-describedby="review-day-error"{% endif %} required></label>
+    <button>查看当天</button>
+  </form>
+  {% if review_error %}<p class="notice" id="review-day-error" role="alert">请选择当前报表日期范围内的一天。已显示范围内最后一天。</p>{% endif %}
+  <p class="meta">也可从睡眠时长或身体资源图选择日期，包括图表数据表中的日期链接。日期以北京时间为准。</p>
+  <div class="chart-grid wellness-review-grid">
+    <div>
+      <h3>昨夜睡眠</h3>
+      <p>{% if review_sleep is not none %}<strong>{{ review_sleep }}</strong> 小时{% else %}—{% endif %}</p>
+      <p class="meta">优先按醒来日期归档，缺少醒来时间时使用记录日期。</p>
+      {{ data_notice(review_sleep_notice) }}
+    </div>
+    {% for part in review_training %}
+    <div>
+      <h3>{{ part.label }} <small>{{ part.date }}</small></h3>
+      {% if part.totals.n %}
+      <p>{{ part.totals.n }} 次{% if part.totals.km is not none %} · {{ part.totals.km }} km{% endif %}
+        {% if part.totals.minutes is not none %} · {{ part.totals.minutes }} 分钟{% endif %}</p>
+      <ul class="review-activities">
+        {% for name, clock, href in part.activities %}<li><time>{{ clock }}</time> <a href="{{ href }}">{{ name }}</a></li>{% endfor %}
+      </ul>
+      {% if part.totals.n > part.activities|length %}<p><a href="{{ part.link }}">查看全部 {{ part.totals.n }} 次</a></p>{% endif %}
+      {% endif %}
+      {{ data_notice(part.notice) }}
+    </div>
+    {% endfor %}
+  </div>
+</section>
 <section class="wellness-latest" aria-labelledby="wellness-latest-title">
   <h2 id="wellness-latest-title">最近有效读数</h2>
   <dl class="wellness-readings">

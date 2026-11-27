@@ -107,7 +107,7 @@
 {% endif %}
 {% if filters %}
 <section class="filter-panel" aria-label="筛选运动活动">
-{% if review_return %}<a href="{{ review_return }}">返回复盘图表</a>{% endif %}
+{% if review_return %}<a href="{{ review_return }}">{{ '返回单日复盘' if review_return.startswith('/sleep-recovery?') else '返回复盘图表' }}</a>{% endif %}
 {% if activity_span.first %}
 <p class="meta">本地活动日期范围（北京时间）{{ activity_span.first[:10] }} 至 {{ activity_span.last[:10] }}。可手输日期，也可用日历选择。</p>
 {% else %}

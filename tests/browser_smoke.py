@@ -316,6 +316,17 @@ def exercise(browser, origin, fixture, width):
         expect(readings).to_contain_text("52 ms")
         expect(readings).to_contain_text("基线样本不足")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+        page.goto(origin + "/sleep-recovery?chart_view=table")
+        sleep_table = page.get_by_role("region", name="睡眠时长与 7 日均值（小时）")
+        sleep_table.get_by_role("link", name=day, exact=True).click()
+        review = page.locator("#wellness-review")
+        expect(review.get_by_label("复盘日期", exact=True)).to_have_value(day)
+        expect(review).to_contain_text("7.0 小时")
+        review.get_by_role("link", name="Browser fixture").click()
+        page.get_by_role("link", name="返回单日复盘").click()
+        expect(review.get_by_label("复盘日期", exact=True)).to_have_value(day)
+        assert parse_qs(urlsplit(page.url).query)["chart_view"] == ["table"]
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
 
         store.commit(run, "daily_activity", [("daily-primary", when.isoformat(), {
             "Name": "stepcount", "Aggregation": "sum", "Source": "手表", "Sample": {"Value": 8900},

@@ -73,6 +73,12 @@ a:hover { color: var(--accent-hover); }
 .site-header :focus-visible { outline-color: var(--nav-active); }
 
 .settings-grid, .chart-grid { display: grid; gap: 1rem; }
+.wellness-review-grid { margin-top: 1rem; }
+.wellness-review-grid > div { min-width: 0; }
+.review-activities { padding-inline-start: 1.25rem; overflow-wrap: anywhere; }
+@media (min-width: 62rem) {
+  .chart-grid.wellness-review-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 
 main { max-width: 79rem; margin-inline: auto; padding: var(--space) var(--space) 4rem; min-width: 0; }
 h1, h2, h3 { line-height: 1.22; text-wrap: balance; }

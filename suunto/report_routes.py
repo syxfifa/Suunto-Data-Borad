@@ -302,7 +302,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
             FROM records WHERE source='workouts' ORDER BY sport
         """)
         search_state = {"sport": sport, "q": q, "km": km, "minutes": minutes, "tss": tss, "sort": sort, "order": order}
-        review_return = local_return(return_to, "/", "/training")
+        review_return = local_return(return_to, "/", "/training", "/sleep-recovery")
         range_filters = {**search_state, "return_to": review_return or ""}
         filters = {"filters": True, "activity_span": activity_span, "activity_types": activity_types,
                    "search": search_state, "review_return": review_return,
@@ -387,7 +387,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
                     "avgPower", "pte", "peakEpoc", "recoveryTime", "zones"}
         optional = {labels.get(key, key): value for key, value in detail.items()
                     if key not in featured and value is not None}
-        back = local_return(return_to, "/activities", "/compare")
+        back = local_return(return_to, "/activities", "/compare", "/sleep-recovery")
         detail_url = "/workout?" + urlencode({"id": id, "return_to": back or ""})
         compare_url = "/compare?" + urlencode({"first": id, "sport": sport_name(row), "return_to": detail_url})
         recommended_url = None
@@ -415,20 +415,65 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
 
     @router.get("/sleep-recovery")
     def sleep_recovery(request: Request, days: Annotated[int, Query(ge=7, le=90)] = 28,
-                       start: str = "", end: str = ""):
+                       start: str = "", end: str = "", review_day: str = ""):
         window = date_form_window(request, days, start, end, maximum=90, filters={})
         if window.get("error"):
             return dashboard(request, "睡眠与恢复", status_code=422, wellness_days=days, report_window=window,
                              report_ranges=report_date_links(request, None, (7, 28, 90)))
         span = dates(window["first"], window["last"])
+        try:
+            day = date.fromisoformat(review_day) if review_day else span[-1]
+            if not span[0] <= day <= span[-1]:
+                raise ValueError
+            review_error = False
+        except ValueError:
+            day, review_error = span[-1], True
+        review_args = {**window["controls"], **window["bounds"]}
+        day_links = {
+            item.isoformat(): "/sleep-recovery?" + urlencode({**review_args, "review_day": item}) + "#wellness-review"
+            for item in span
+        }
+        day_key = day.isoformat()
+        review_link = day_links[day_key]
         preferences = config.read()
         fields = preferences.get("wellness_fields", {})
         unit = preferences.get("sleep_stage_unit", "seconds")
         sleep = records(store, "sleep", midnight(span[0] - timedelta(days=1)), window["end_at"])
         recovery = records(store, "recovery", midnight(span[0]), window["end_at"])
-        charts, sleep_rows, count, latest_metrics = wellness(sleep, recovery,
-            records(store, "workouts", midnight(span[0]), window["end_at"]),
-            span, fields, unit, training_coverage=store.coverage("workouts"))
+        training = records(store, "workouts", midnight(span[0] - timedelta(days=1)), window["end_at"])
+        training_coverage = store.coverage("workouts")
+        charts, sleep_rows, count, latest_metrics = wellness(
+            sleep, recovery, training, span, fields, unit, training_coverage=training_coverage)
+        sleep_chart = charts[0]
+        sleep_hours = sleep_chart["columns"]["时长"][(day - span[0]).days]
+        night = [row for row in sleep_rows if row[0] == day_key]
+        sleep_begin, sleep_end = midnight(day), min(window["end_at"], midnight(day + timedelta(days=1)))
+        sleep_notice = data_notice(
+            store, "sleep", sleep_begin, sleep_end,
+            covered=covers(store.coverage("sleep"), sleep_begin, sleep_end),
+            has_records=night, missing_metric=sleep_hours is None,
+        )
+        review_training = []
+        for label, activity_day in (("前一天训练", day - timedelta(days=1)), ("当天活动", day)):
+            begin = midnight(activity_day)
+            end_at = min(window["end_at"], midnight(activity_day + timedelta(days=1)))
+            entries = [(at, row) for at, row in training if at[:10] == activity_day.isoformat()]
+            totals = period_summary(entries, begin, end_at, training_coverage)
+            items = []
+            if entries:
+                _, _, _, rows, keys, names = workout_page(store, begin, end_at, 1, size=5)
+                items = [(name or row[1] or "未命名活动", row[0][11:16],
+                          "/workout?" + urlencode({"id": key, "return_to": review_link}))
+                         for row, key, name in zip(rows, keys, names)]
+            notice = data_notice(
+                store, "workouts", begin, end_at, covered=totals["covered"], has_records=entries,
+                missing_metric=any(totals[key] is None for key in ("km", "minutes")),
+            )
+            review_training.append({"label": label, "date": activity_day, "totals": totals, "notice": notice,
+                                    "activities": items, "link": activity_link(activity_day, activity_day, return_to=review_link)})
+        recovery_chart = next(chart for chart in charts if chart["group"] == "recovery")
+        for chart in (sleep_chart, recovery_chart):
+            chart["links"] = [day_links[value] for value in chart["labels"]]
         first = span[0].isoformat()
         latest_balance = next(((at, round(value * 100, 2)) for at, row in reversed(recovery)
                                if (value := numeric(row["entryData"].get("Balance"))) is not None
@@ -467,7 +512,11 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
                          recovery_latest=recovery[-1][0][:10] if recovery else None,
                          sleep_count=count, sleep_samples=sum(at[:10] >= first for at, _ in sleep),
                          latest_sleep=next((row for row in sleep_rows if row[-1] is not None), None),
-                         wellness_notices=notices)
+                         wellness_notices=notices, review_day=day, review_args=review_args, review_error=review_error,
+                         review_training=review_training, review_sleep=sleep_hours, review_sleep_notice=sleep_notice,
+                         previous_review=day_links.get((day - timedelta(days=1)).isoformat()),
+                         next_review=day_links.get((day + timedelta(days=1)).isoformat()),
+                         status_code=422 if review_error else 200)
 
     @router.get("/daily-activity")
     def daily_activity(request: Request, source: str = "", period: str = "day",

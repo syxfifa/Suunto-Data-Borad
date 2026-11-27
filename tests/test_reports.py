@@ -17,6 +17,35 @@ from suunto.views import csv_cells, table_rows, workout_metrics
 
 
 class ReportsTest(unittest.TestCase):
+    def test_wellness_daily_review_links_sleep_and_training_to_selected_date(self):
+        with TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.initialize()
+            day = midnight(date(2025, 6, 12))
+            previous = day - timedelta(hours=4)
+            morning = day + timedelta(hours=8)
+            run = store.start("test", morning.isoformat())
+            store.commit(run, "sleep", [("sleep", morning.isoformat(), {"entryData": {"Duration": 25200}})])
+            store.commit(run, "workouts", [
+                ("previous", previous.isoformat(), {"workoutName": "昨日慢跑", "totalDistance": 4000}),
+                ("current", morning.isoformat(), {"workoutName": "今日骑行", "totalDistance": 10000}),
+            ])
+            params = {"start": "2025-06-12", "end": "2025-06-13", "chart_view": "table", "review_day": "2025-06-12"}
+            with TestClient(create_app(directory)) as browser:
+                view = browser.get("/sleep-recovery", params=params)
+                self.assertEqual(view.status_code, 200)
+                self.assertIn("<strong>7.0</strong> 小时", view.text)
+                self.assertIn("昨日慢跑", view.text)
+                self.assertIn("今日骑行", view.text)
+                self.assertIn('review_day=2025-06-13#wellness-review">2025-06-13</a>', view.text)
+                back = "/sleep-recovery?" + urlencode(params) + "#wellness-review"
+                detail = browser.get("/workout", params={"id": "current", "return_to": back}).text
+                self.assertIn(back.replace("&", "&amp;"), detail)
+                self.assertIn("返回单日复盘", detail)
+                bad = browser.get("/sleep-recovery", params={**params, "review_day": "2025-06-11"})
+                self.assertEqual(bad.status_code, 422)
+                self.assertIn("已显示范围内最后一天", bad.text)
+
     def test_weekly_progress_uses_the_same_checked_cutoff_for_both_weeks(self):
         begin = midnight(date(2026, 1, 12))
         now = begin + timedelta(days=2, hours=12)

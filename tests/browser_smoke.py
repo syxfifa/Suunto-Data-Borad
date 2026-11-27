@@ -330,6 +330,9 @@ def exercise(browser, origin, fixture, width):
             finally:
                 context.unroute(script)
         page.goto(origin + "/?chart_view=table")
+        expect(page).to_have_title("首页 · Suunto Data Borad")
+        expect(page.get_by_role("link", name="Suunto Data Borad", exact=True)).to_be_visible()
+        expect(page.locator(".aurora-recovery")).to_have_css("backdrop-filter", "blur(16px)")
         expect(page.locator(".aurora-chart").last.get_by_role("table").first).to_be_visible()
         page.goto(origin + "/?" + urlencode({"day": day, "overview": "month", "chart_view": "table"}))
         assert page.evaluate("""document.querySelector(".aurora-snapshot")

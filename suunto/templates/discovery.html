@@ -146,7 +146,7 @@
 </div>
 {% if request.query_params.get('chart_view') != 'table' %}
 <script src="/static/chart.umd.min.js" defer></script>
-<script src="/static/charts.js?v=1.0.14" defer></script>
+<script src="/static/charts.js?v=1.0.32" defer></script>
 {% else %}
 <p class="meta">当前为数据表视图。 <a href="{{ request.url.path }}?{{ request.query_params.items()|rejectattr('0', 'equalto', 'chart_view')|list|urlencode }}">返回图表</a></p>
 {% endif %}

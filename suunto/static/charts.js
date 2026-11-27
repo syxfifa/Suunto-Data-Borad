@@ -10,7 +10,7 @@ function auroraFill({chart, dataIndex}, selected) {
   if (!area) return top;
   const fill = chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
   fill.addColorStop(0, top);
-  fill.addColorStop(1, "#8e86e5");
+  fill.addColorStop(1, themeColor("--chart-fade"));
   return fill;
 }
 

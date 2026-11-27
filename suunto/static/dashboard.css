@@ -1,27 +1,31 @@
 :root {
-  --ink: #fff2ff;
-  --muted: #e0cce9;
-  --accent: #f1bdf2;
-  --accent-hover: #ffe2ff;
-  --accent-tint: #453053;
-  --surface: #312345;
-  --canvas: #21172f;
-  --line: #715787;
-  --input-line: #a389b3;
-  --nav: #281830;
-  --nav-fg: #f5e6fb;
-  --nav-active: #f2bdf3;
-  --button-ink: #2b1738;
-  --chart-cyan: #bcecff;
-  --chart-lilac: #c3afff;
-  --chart-rose: #f5a9d9;
-  --chart-gold: #ffe1a1;
-  --radius: .85rem;
+  --ink: #142c3a;
+  --muted: #344f5e;
+  --accent: #185361;
+  --accent-hover: #103e4b;
+  --accent-tint: #d8ecee;
+  --surface: #f2f8fadd;
+  --canvas: #e3eff2;
+  --line: #9cb4bf;
+  --input-line: #64848f;
+  --glass-edge: #ffffffe0;
+  --glass-shadow: 0 12px 27px #25485419;
+  --nav: #edf6f7e6;
+  --nav-fg: #263f4e;
+  --nav-active: #1c525e;
+  --button-ink: #fff;
+  --chart-cyan: #40658b;
+  --chart-lilac: #71598d;
+  --chart-rose: #146269;
+  --chart-gold: #8b541d;
+  --chart-fade: #537e9b;
+  --radius: 1rem;
   --space: clamp(1rem, 2.3vw, 2rem);
   color: var(--ink);
-  background: radial-gradient(ellipse 48rem 31rem at 91% 5rem, #6b336a 0, transparent 78%),
-              linear-gradient(154deg, #221631 12rem, #1d2740 50rem, var(--canvas) 77rem);
-  color-scheme: dark;
+  background: radial-gradient(ellipse 46rem 42rem at 16% 8rem, #b5d1e4, transparent 92%),
+              radial-gradient(ellipse 59rem 47rem at 90% 24rem, #91bfbd, transparent 92%),
+              linear-gradient(149deg, #e1edf3 14rem, #d2e3e8 48rem, #eff6f8 88rem);
+  color-scheme: light;
   font: 1rem/1.55 system-ui, "Microsoft YaHei", sans-serif;
 }
 
@@ -39,6 +43,7 @@ a:hover { color: var(--accent-hover); }
 .site-header {
   color: var(--nav-fg);
   background: var(--nav);
+  backdrop-filter: blur(14px);
   padding: .65rem var(--space);
   border-bottom: 1px solid var(--line);
 }
@@ -88,6 +93,7 @@ a:hover { color: var(--accent-hover); }
 main { max-width: 79rem; margin-inline: auto; padding: var(--space) var(--space) 4rem; min-width: 0; }
 h1, h2, h3 { line-height: 1.22; text-wrap: balance; }
 h1 { font-size: clamp(1.75rem, 1.42rem + 1.3vw, 2.6rem); letter-spacing: -.028em; margin: 0; }
+body:has(.aurora-review) h1 { font-family: Georgia, "Songti SC", SimSun, serif; }
 h2 { font-size: 1.15rem; margin: 0 0 .75rem; }
 h3 { font-size: .96rem; margin: 0 0 .5rem; }
 p { margin-block: .55rem; max-width: 75ch; overflow-wrap: anywhere; }
@@ -98,14 +104,22 @@ p { margin-block: .55rem; max-width: 75ch; overflow-wrap: anywhere; }
 .meta, .results-count { font-size: .88rem; color: var(--muted); }
 .meta { margin-top: .7rem; }
 .notice, .empty-state, .authorization [role=alert] { padding: .7rem .9rem; border-radius: .5rem; background: var(--accent-tint); color: var(--ink); }
-.authorization [role=alert] { background: #592e49; color: #ffe5ed; }
+.authorization [role=alert] { background: #f9e3e3; color: #792f36; }
 main section, .panel {
   background: var(--surface);
-  border: 1px solid var(--line);
+  border: 1px solid var(--glass-edge);
   border-radius: var(--radius);
   padding: clamp(.85rem, 1.6vw, 1.4rem);
   margin-block: 1rem;
   min-width: 0;
+}
+main > section, .aurora-recovery, .aurora-training, .home-week, .chart-panel {
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(16px);
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root { --surface: #f2f8fa; --nav: #edf6f7; }
+  main > section, .aurora-recovery, .aurora-training, .home-week, .chart-panel, .site-header { backdrop-filter: none; }
 }
 .goal p { font-variant-numeric: tabular-nums; }
 meter { width: 100%; height: .8rem; display: block; }
@@ -270,26 +284,23 @@ code { overflow-wrap: anywhere; }
 .aurora-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: clamp(.22rem, .65vw, .45rem); }
 .aurora-days > * {
   display: grid; place-content: center; text-align: center; min-height: 3.2rem;
-  color: var(--ink); padding: .3rem .05rem; background: #322443; border: 1px solid var(--line);
+  color: var(--ink); padding: .3rem .05rem; background: var(--surface); border: 1px solid var(--line);
   border-radius: .45rem; font-variant-numeric: tabular-nums; text-decoration: none;
 }
 .aurora-days span span, .aurora-days a span { font-size: .76rem; color: var(--muted); }
 .aurora-days a:hover { background: var(--accent-tint); color: var(--ink); }
 .aurora-days a[aria-current=date] { background: var(--nav-active); color: var(--button-ink); border-color: var(--nav-active); }
 .aurora-days a[aria-current=date] span { color: var(--button-ink); }
-.aurora-days .future-day { background: #292039; border-color: #5a486f; color: #b7a8c6; }
-.aurora-days .future-day span { color: #b7a8c6; }
+.aurora-days .future-day { background: var(--canvas); color: var(--muted); }
 .aurora-pair { display: grid; gap: 1rem; }
-.aurora-review .aurora-recovery { background: linear-gradient(136deg, #462f69, #38284f); border-color: #8963a3; }
-.aurora-review .aurora-training { background: #3d264d; border-color: #8963a3; }
 .aurora-ring-layout { display: grid; grid-template-columns: clamp(6.1rem, 18vw, 7.4rem) minmax(0, 1fr); gap: clamp(.8rem, 2vw, 1.5rem); align-items: center; }
 .aurora-ring-layout dl { margin: 0; }
 .aurora-ring {
   display: grid; place-items: center; text-align: center; aspect-ratio: 1; border-radius: 50%;
-  background: conic-gradient(#c4f7ff var(--pct), #735288 0); position: relative;
+  color: var(--accent); background: conic-gradient(var(--chart-rose) var(--pct), var(--line) 0); position: relative;
   font-variant-numeric: tabular-nums;
 }
-.aurora-ring::before { content: ""; position: absolute; inset: .5rem; border-radius: 50%; background: #38274f; }
+.aurora-ring::before { content: ""; position: absolute; inset: .5rem; border-radius: 50%; background: var(--canvas); }
 .aurora-ring > div { position: relative; padding-inline: .45rem; }
 .aurora-ring strong { display: block; font-size: clamp(1.4rem, 3vw, 1.85rem); line-height: 1.1; }
 .aurora-ring strong span { font-size: .8em; }
@@ -298,7 +309,6 @@ code { overflow-wrap: anywhere; }
 .aurora-metrics div + div { padding-inline-start: .65rem; border-inline-start: 1px solid var(--line); }
 .aurora-metrics dd, .aurora-ring-layout dd { font-size: clamp(1.22rem, 2.7vw, 1.7rem); }
 .aurora-metrics small, .aurora-ring-layout small { font-size: .76rem; font-weight: 500; color: var(--muted); }
-.aurora-chart { border-color: #86679a; }
 .aurora-chart .plot { height: clamp(9rem, 21vw, 12.2rem); }
 .aurora-chart .chart-metric { margin: 0; }
 .chart-metric[hidden] { display: none; }

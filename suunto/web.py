@@ -277,7 +277,7 @@ def create_app(data_dir=None, *, client=None):
     def prune_logs():
         store.prune_logs((datetime.now(TZ) - timedelta(days=config.retention_days())).isoformat())
 
-    app = FastAPI(title="Suunto 内网看板", version=VERSION, lifespan=lifespan)
+    app = FastAPI(title="Suunto Data Borad", version=VERSION, lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
 
     @app.middleware("http")

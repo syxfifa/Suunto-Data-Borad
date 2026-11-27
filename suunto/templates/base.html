@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ title or '首页' }} · Suunto 内网看板</title>
-  <link rel="stylesheet" href="/static/dashboard.css?v=1.0.29">
+  <title>{{ title or '首页' }} · Suunto Data Borad</title>
+  <link rel="stylesheet" href="/static/dashboard.css?v=1.0.32">
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主内容</a>
   <header class="site-header">
-    <a class="brand" href="/"><strong>Suunto</strong><span>Data Borad</span></a>
+    <a class="brand" href="/" aria-label="Suunto Data Borad"><strong>Suunto</strong><span>Data Borad</span></a>
     <nav aria-label="主导航">
       {% set current = request.url.path %}
       {% set aliases = {'/workout': '/activities', '/sync-status': '/settings', '/sync': '/settings',

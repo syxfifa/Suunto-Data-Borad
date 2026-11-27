@@ -161,8 +161,17 @@ def grouped_totals(rows, first, last, coverage, monthly=False):
             label = (start - timedelta(days=start.weekday())).isoformat()
             boundary = start + timedelta(days=7 - start.weekday())
         end = min(boundary, last + timedelta(days=1))
+        entries = grouped[label]
+        totals = period_summary(entries, midnight(start), midnight(end), coverage)
+        by_sport = defaultdict(list)
+        if not monthly:
+            for entry in entries:
+                by_sport[sport_name(entry[1])].append(entry)
         periods.append({"period": label, "start": start.isoformat(), "end": (end - timedelta(days=1)).isoformat(),
-                        **period_summary(grouped[label], midnight(start), midnight(end), coverage)})
+                        **totals, "sports": [
+                            {"name": name, **period_totals(items, totals["covered"])}
+                            for name, items in sorted(by_sport.items(), key=lambda pair: (-len(pair[1]), pair[0]))
+                        ]})
         start = end
     return list(reversed(periods))
 

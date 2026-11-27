@@ -92,6 +92,13 @@
   <button>应用筛选</button>
 </form>
 {% if not report_window.error %}
+<div id="training-view-preference" class="controls" hidden>
+  <button class="secondary" type="button" id="remember-training-view">记住此视图</button>
+  <button class="secondary" type="button" id="forget-training-view" hidden>清除已记住的视图</button>
+  <span class="meta" role="status"></span>
+</div>
+<script type="application/json" id="training-view-data">{{ remembered_scopes|tojson }}</script>
+<script src="/static/training-view.js?v=1.0.25" defer></script>
 <p class="meta">确认无训练的时段记为 0。底部标记提示同步覆盖和指标缺失，可在「查看图表数据」展开逐日或逐周状态。点击柱形可查看对应活动。</p>
 <dl class="workout-key-metrics" aria-label="所选时段汇总">
 {% for key, label in [('n', '活动次数'), ('km', '距离（km）'), ('minutes', '时长（分钟）'), ('climb', '爬升（m）')] %}
@@ -214,7 +221,7 @@
 {% set totals = training_totals %}
 <section class="table-wrap">
   <h2>{{ title }}</h2>
-  <p>点击时段查看活动。TSS 使用 Suunto 记录值，括号为有效活动数 / 总活动数。</p>
+  <p>点击时段查看活动。{% if report == 'week' %}可展开每周运动构成。{% endif %}TSS 使用 Suunto 记录值，括号为有效活动数 / 总活动数。</p>
   {% if totals %}
   <div class="table-scroll" role="region" tabindex="0" aria-label="{{ title }}">
 <table><thead><tr>{% for h in ('时间', '次数', '距离（km）', '时长（分钟）', '爬升（m）', 'TSS', '数据覆盖') %}<th scope="col">{{ h }}</th>{% endfor %}</tr></thead>
@@ -224,7 +231,22 @@
     <td>{{ item.tss if item.tss is not none else '—' }}{% if item.n %}（{{ item.tss_count }}/{{ item.n }}）{% endif %}</td>
     <td>{{ coverage_status(item, [item.km, item.minutes, item.climb, item.tss]) }}
       {% if item.confirmed_until and not item.covered %}<div>最近确认至 {{ local_time(item.confirmed_until) }}</div>{% endif %}</td>
-  </tr>{% endfor %}</tbody></table>
+  </tr>
+  {% if item.sports %}
+  <tr><td colspan="7">
+    <details id="week-{{ item.period }}"{% if open_week == item.period %} open{% endif %}>
+      <summary>{{ item.period }} 周运动构成</summary>
+      <ul class="week-sport-list">
+        {% for part in item.sports %}
+        <li><a href="{{ part.link }}">{{ part.name }} {{ part.n }} 次</a>
+          <span>{{ part.minutes if part.minutes is not none else '—' }} 分钟 · {{ part.km if part.km is not none else '—' }} km</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </details>
+  </td></tr>
+  {% endif %}
+  {% endfor %}</tbody></table>
 </div>
   {% else %}<p>所选范围暂无本地活动。</p>{% endif %}
 </section>

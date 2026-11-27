@@ -250,6 +250,28 @@ def exercise(browser, origin, fixture, width):
         expect(page.locator("#report-date-error")).to_have_text("结束日期不能早于开始日期。")
         assert page.url == current_url
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+        page.goto(origin + "/training?days=7&sport=Running&period=week")
+        breakdown = page.locator("#training-reports details[open]").first
+        drilldown = breakdown.get_by_role("link", name=r"Running")
+        expect(drilldown).to_be_visible()
+        assert "分钟" in breakdown.inner_text()
+        drilldown.click()
+        assert parse_qs(urlsplit(page.url).query)["sport"] == ["Running"]
+        page.get_by_role("link", name="返回复盘图表").click()
+        expect(breakdown).to_be_visible()
+        assert urlsplit(page.url).fragment.startswith("week-")
+        page.get_by_role("button", name="记住此视图").click()
+        expect(page.locator("#training-view-preference [role=status]")).to_contain_text("已在此浏览器记住")
+        page.goto(origin + "/training")
+        expect(page.get_by_label("运动类型")).to_have_value("Running")
+        expect(page.get_by_label("统计方式")).to_have_value("week")
+        assert parse_qs(urlsplit(page.url).query)["days"] == ["7"]
+        page.goto(origin + "/training?days=28")
+        expect(page.get_by_label("运动类型")).to_have_value("")
+        page.get_by_role("button", name="清除已记住的视图").click()
+        page.goto(origin + "/training")
+        expect(page.get_by_role("button", name="清除已记住的视图")).to_be_hidden()
+        assert not urlsplit(page.url).query
         # Distinguish empty data from script failure, and verify the server-rendered fallback.
         page.goto(origin + "/daily-activity")
         expect(page.locator(".chart-empty").first).to_contain_text("没有可用的图表数据")

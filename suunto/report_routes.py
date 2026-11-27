@@ -259,13 +259,19 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
         back = "/training?" + urlencode(params)
         add_review_links(series, sport, back + "#training-charts", last_day)
         totals = grouped_totals(current, first_day, last_day, coverage, monthly=report == "month")
+        open_week = request.query_params.get("week_details") or next((item["period"] for item in totals if item["sports"]), "")
         for item in totals:
             item["link"] = activity_link(item["start"], item["end"], sport, back + "#training-reports")
+            week_back = "/training?" + urlencode({**params, "week_details": item["period"]}) + "#week-" + item["period"]
+            for part in item["sports"]:
+                part["link"] = activity_link(item["start"], item["end"], part["name"], week_back)
         report_links = {key: "/training?" + urlencode({**params, "report": key}) + "#training-reports"
                         for key in ("week", "month")}
         acwr = acwr_series(history, first_day, last_day, coverage) if advanced else None
         report_ranges = report_date_links(request, None if start else days, (7, 28, 90, 365), **filters)
         analysis_args = {key: value for key, value in params.items() if key != "analysis"}
+        remembered_scopes = {key: str(value) for key, value in params.items()
+                             if key in {"sport", "period", "report", "days", "start", "end"} and value != ""}
         if not advanced:
             analysis_args["analysis"] = "advanced"
         range_summary = period_summary(current, midnight(first_day), window["end_at"], coverage)
@@ -281,6 +287,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
                          analysis_link="/training?" + urlencode(analysis_args) + "#training-analysis",
                          acwr_days=sum(value is not None for value in acwr["columns"]["ACWR"]) if advanced else 0,
                          report=report, training_totals=totals, report_links=report_links,
+                         open_week=open_week, remembered_scopes=remembered_scopes,
                          range_summary=range_summary, range_notice=notice,
                          streak=longest_streak(current), training_mix=sport_counts(current))
 

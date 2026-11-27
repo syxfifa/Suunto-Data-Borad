@@ -65,15 +65,44 @@
 {% else %}
 <section>
   <h2>选择导出内容</h2>
-  <form action="/export.csv" method="get">
+  <form action="/export" method="get">
     <div class="controls">
       <label>数据来源<select name="source"><option value="">全部来源</option>
-        {% for name, label in sources.items() %}<option value="{{ name }}">{{ label }}</option>{% endfor %}
+        {% for name, label in sources.items() %}<option value="{{ name }}"{% if filters.source == name %} selected{% endif %}>{{ label }}</option>{% endfor %}
       </select></label>
-      <label>开始日期<input name="start" type="text" placeholder="YYYY-MM-DD" maxlength="10"></label>
-      <label>结束日期<input name="end" type="text" placeholder="YYYY-MM-DD" maxlength="10"></label>
+      <label>开始日期<input name="start" type="text" placeholder="YYYY-MM-DD" maxlength="10" value="{{ filters.start }}"></label>
+      <label>结束日期<input name="end" type="text" placeholder="YYYY-MM-DD" maxlength="10" value="{{ filters.end }}"></label>
+      {% for key, value in criteria.items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
+      <button class="secondary">预览范围</button>
     </div>
-    <p>日期使用北京时间，包含结束当天。按日期过滤时，仅导出有时间记录的数据。</p>
+    <p class="meta">日期使用北京时间，包含结束当天。按日期过滤时，仅导出有时间记录的数据。修改后请先点「预览范围」。</p>
+  </form>
+</section>
+{% if count is not none %}
+<section>
+  <h2>已确认的导出范围</h2>
+  <dl>
+    <div><dt>数据来源</dt><dd>{{ sources.get(filters.source, '全部来源') }}</dd></div>
+    <div><dt>日期范围（北京时间）</dt><dd>
+      {% if filters.start and filters.end %}{{ filters.start }} 至 {{ filters.end }}
+      {% elif filters.start %}{{ filters.start }} 起
+      {% elif filters.end %}截至 {{ filters.end }}
+      {% else %}全部日期{% endif %}
+    </dd></div>
+    <div><dt>匹配记录</dt><dd>{{ count }} 条</dd></div>
+  </dl>
+  {% if criteria %}
+  {% set filter_labels = {'sport': '运动类型', 'q': '关键词', 'km': '最短距离（km）', 'minutes': '最短时长（分钟）', 'tss': '最低 TSS'} %}
+  <ul class="controls filter-tags" aria-label="沿用的活动筛选">
+    {% for key, value in criteria.items() %}<li class="export-filter">{{ filter_labels[key] }} {{ value }}</li>{% endfor %}
+  </ul>
+  <p><a href="/export?{{ filters|urlencode }}">清除活动筛选</a></p>
+  {% endif %}
+  {% if activities_link %}<p><a href="{{ activities_link }}">查看匹配活动</a></p>{% endif %}
+  <p class="meta">{{ '匹配数量依据本地当前记录。下载前如有同步，数量可能更新。' if count else '当前范围没有匹配记录，可以调整筛选后重新预览。' }}</p>
+  <form action="/export.csv" method="get">
+    {% for key, value in filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
+    {% for key, value in criteria.items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
     <div class="export-options">
       <div>
         <h3>分享统计</h3>
@@ -93,5 +122,6 @@
     <p class="meta">要备份整个看板，请使用<a href="/maintenance#backup">维护页的 ZIP 备份</a>。</p>
   </form>
 </section>
+{% endif %}
 {% endif %}
 {% endblock %}

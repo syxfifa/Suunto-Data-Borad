@@ -5,6 +5,7 @@ from contextlib import closing
 from datetime import date, timedelta
 from itertools import islice
 from typing import Annotated, Literal
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
@@ -13,7 +14,7 @@ from . import VERSION
 from .maintenance import backup_status, storage_size
 from .reports import midnight
 from .sync import SOURCES
-from .views import csv_cells, lower_bound
+from .views import csv_cells, export_filter, lower_bound
 from .web_shared import HOME_HEADERS, NO_CACHE, SOURCE_LABELS, TEMPLATES, local_transport
 
 
@@ -22,6 +23,22 @@ def csv_chunks(rows):
     with closing(rows):
         while chunk := "".join(islice(rows, 128)):
             yield chunk
+
+
+def export_bounds(source, start, end, km, minutes, tss):
+    if source and source not in SOURCES:
+        raise ValueError("请选择有效的数据来源。")
+    try:
+        first = date.fromisoformat(start) if start else None
+        last = date.fromisoformat(end) if end else None
+        if last == date.max or (first and last and first > last):
+            raise ValueError
+        distance, duration, stress = lower_bound(km, 100000), lower_bound(minutes, 600000), lower_bound(tss, 100000)
+    except ValueError as exc:
+        raise ValueError("请输入有效的筛选条件，日期使用 YYYY-MM-DD，结束日期须等于或晚于开始日期。") from exc
+    return (midnight(first) if first else None, midnight(last + timedelta(days=1)) if last else None,
+            {"distance": distance * 1000 if distance is not None else None,
+             "duration": duration * 60 if duration is not None else None, "tss": stress})
 
 
 def maintenance_router(store, config, access, mcp_state, prune_logs):
@@ -35,31 +52,42 @@ def maintenance_router(store, config, access, mcp_state, prune_logs):
         if purpose is not None:
             share = purpose == "share"
             format = "raw" if purpose == "archive" else "columns"
-        if (source and source not in SOURCES) or format not in ("raw", "columns"):
-            raise HTTPException(422, "导出数据源或格式无效。")
+        if format not in ("raw", "columns"):
+            raise HTTPException(422, "导出格式无效。")
         try:
-            first = date.fromisoformat(start) if start else None
-            last = date.fromisoformat(end) if end else None
-            if last == date.max or (first and last and first > last):
-                raise ValueError
-            distance, duration, stress = lower_bound(km, 100000), lower_bound(minutes, 600000), lower_bound(tss, 100000)
+            begin, finish, minimums = export_bounds(source, start, end, km, minutes, tss)
         except ValueError as exc:
-            raise HTTPException(422, "导出日期或筛选条件无效。") from exc
-        begin = midnight(first) if first else None
-        finish = midnight(last + timedelta(days=1)) if last else None
+            raise HTTPException(422, str(exc)) from exc
         rows = csv_cells(store, source, begin, finish, format=format, share=share, sport=sport, search=q.strip(),
                          hrv_field=config.read().get("wellness_fields", {}).get("hrv"),
-                         minimums={"distance": distance * 1000 if distance is not None else None,
-                                   "duration": duration * 60 if duration is not None else None, "tss": stress})
+                         minimums=minimums)
         name = "suunto-share.csv" if share else "suunto.csv"
         return StreamingResponse(csv_chunks(rows), media_type="text/csv",
                                  headers={**NO_CACHE, "Content-Disposition": f'attachment; filename="{name}"'})
 
     @router.get("/export")
-    def export_options(request: Request):
+    def export_options(request: Request, source: str = "", start: str = "", end: str = "",
+                       sport: str = "", q: str = "", km: str = "", minutes: str = "", tss: str = ""):
+        filters = {"source": source, "start": start.strip(), "end": end.strip()}
+        criteria = {key: value for key, value in (("sport", sport), ("q", q.strip()), ("km", km),
+                    ("minutes", minutes), ("tss", tss)) if value.strip()} if source == "workouts" else {}
+        count, message = None, None
+        try:
+            begin, finish, minimums = export_bounds(source, filters["start"], filters["end"], km, minutes, tss)
+            filters["start"] = begin.date().isoformat() if begin else ""
+            filters["end"] = (finish.date() - timedelta(days=1)).isoformat() if finish else ""
+            clause, parameters = export_filter(source, begin, finish, sport=sport, search=q.strip(), minimums=minimums)
+            count = store.query(f"SELECT count(*) AS n FROM records WHERE {clause}", parameters)[0]["n"]
+        except ValueError as exc:
+            message = str(exc)
+        activities_link = None
+        if source == "workouts" and count:
+            activities_link = "/activities?" + urlencode({"start": filters["start"], "end": filters["end"], **criteria})
         return TEMPLATES.TemplateResponse(request=request, name="maintenance.html",
-            context={"title": "导出数据", "sources": {name: SOURCE_LABELS[name] for name in SOURCES}},
-            headers=HOME_HEADERS)
+            context={"title": "导出数据", "sources": {name: SOURCE_LABELS[name] for name in SOURCES},
+                     "filters": filters, "criteria": criteria, "count": count, "message": message,
+                     "activities_link": activities_link},
+            headers=HOME_HEADERS, status_code=422 if message else 200)
 
     @router.get("/maintenance")
     def maintenance_page(request: Request, notice: str = ""):

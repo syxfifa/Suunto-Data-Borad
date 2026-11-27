@@ -49,9 +49,16 @@ class MaintenanceTest(unittest.TestCase):
         })])
         with TestClient(create_app(self.directory)) as browser:
             page = browser.get(f"/activities?end={self.today}&sport=Running&km=3&tss=30&q=Hidden")
-            self.assertIn("导出当前筛选", page.text)
+            self.assertIn("导出或分享当前筛选", page.text)
             self.assertIn("source=workouts", unquote(page.text))
-            response = browser.get(f"/export.csv?source=workouts&end={self.today}&sport=Running&km=3&tss=30&q=Hidden")
+            filters = f"source=workouts&end={self.today}&sport=Running&km=3&tss=30&q=Hidden"
+            preview = browser.get(f"/export?{filters}")
+            self.assertIn("已确认的导出范围", preview.text)
+            self.assertIn("<dd>1 条</dd>", preview.text)
+            self.assertIn(f"截至 {self.today}", preview.text)
+            self.assertIn("最低 TSS 30", preview.text)
+            self.assertIn("查看匹配活动", preview.text)
+            response = browser.get(f"/export.csv?{filters}")
             self.assertIn("workout-a", response.text)
             self.assertNotIn("workout-b", response.text)
             self.assertNotIn("workout-c", response.text)
@@ -75,6 +82,10 @@ class MaintenanceTest(unittest.TestCase):
             self.assertEqual(browser.get(option + "&purpose=unknown").status_code, 422)
             self.assertEqual(browser.get("/export.csv?source=unknown").status_code, 422)
             self.assertEqual(browser.get("/export.csv?start=2026-01-02&end=2026-01-01").status_code, 422)
+            invalid = browser.get("/export?start=2026-01-02&end=2026-01-01")
+            self.assertEqual(invalid.status_code, 422)
+            self.assertIn("结束日期须等于或晚于开始日期", invalid.text)
+            self.assertNotIn("下载分享 CSV", invalid.text)
 
     def test_backup_verify_and_locked_restore(self):
         self.store.commit(self.run_id, "routes", [("route-a", self.at, {"routeId": "route-a"})])

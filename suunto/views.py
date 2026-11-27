@@ -261,6 +261,20 @@ def chart(title, labels, columns, kind="line"):
     return {"title": title, "labels": labels, "columns": columns, "kind": kind}
 
 
+def export_filter(source, start, end, *, sport="", search="", minimums=None):
+    # Export includes local historical routes removed from the remote list.
+    where = ["source=?"] if source else []
+    parameters = [source] if source else []
+    for value, condition in ((start, "occurred_at>=?"), (end, "occurred_at<?")):
+        if value is not None:
+            where.append(condition)
+            parameters.append(value.isoformat())
+    clause = " AND ".join(where) or "1=1"
+    if source == "workouts":
+        return workout_filter(clause, parameters, sport, search, minimums)
+    return clause, parameters
+
+
 def csv_cells(store, source=None, start=None, end=None, *, format="raw", share=False,
               sport="", search="", minimums=None, hrv_field=None):
     buffer = StringIO()
@@ -274,19 +288,7 @@ def csv_cells(store, source=None, start=None, end=None, *, format="raw", share=F
             ("=", "+", "-", "@")) else item for item in values])
         return buffer.getvalue()
 
-    if source:
-        # The archive includes historical route entries removed remotely.
-        where = ["source=?"]
-        parameters = [source]
-    else:
-        where, parameters = ["1=1"], []
-    for value, condition in ((start, "occurred_at>=?"), (end, "occurred_at<?")):
-        if value is not None:
-            where.append(condition)
-            parameters.append(value.isoformat())
-    clause = " AND ".join(where)
-    if source == "workouts":
-        clause, parameters = workout_filter(clause, parameters, sport, search, minimums)
+    clause, parameters = export_filter(source, start, end, sport=sport, search=search, minimums=minimums)
     raw = format == "raw" and not share
     fields = ("source", "date") if share else ("source", "record_key", "occurred_at")
     columns = ("activity_type", "distance_km", "duration_min", "avg_hr_bpm", "tss", "elevation_gain_m",

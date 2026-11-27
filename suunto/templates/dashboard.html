@@ -154,7 +154,7 @@
 <div class="section-heading" id="activity-results">
 
   <p class="results-count">共 {{ result_count }} 条活动</p>
-  {% if result_count %}<a href="/export.csv?{{ export_query }}&amp;format=columns">导出当前筛选</a>{% endif %}
+  {% if result_count %}<a href="/export?{{ export_query }}">导出或分享当前筛选</a>{% endif %}
 </div>
 {% if active_filters %}
 <ul class="controls filter-tags" aria-label="已生效筛选">

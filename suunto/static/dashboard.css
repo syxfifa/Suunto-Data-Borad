@@ -308,6 +308,7 @@ code { overflow-wrap: anywhere; }
 
 .date-picker { margin-top: .35rem; }
 .filter-tags { list-style: none; padding: 0; }
+.export-filter { overflow-wrap: anywhere; }
 .filter-tags a, .report-switch a { border: 1px solid var(--line); border-radius: .4rem; padding: .35rem .65rem; overflow-wrap: anywhere; }
 .report-switch a[aria-current] { color: var(--button-ink); background: var(--nav-active); }
 .activity-detail .compare-pick { display: inline-flex; align-items: center; gap: .25rem; margin-inline-start: .6rem; min-height: 44px; }

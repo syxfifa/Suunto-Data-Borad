@@ -174,6 +174,16 @@ def exercise(browser, origin, fixture, width):
         page.get_by_role("button", name="应用筛选", exact=True).click()
         expect(page.get_by_text("共 1 条活动", exact=True)).to_be_visible()
         expect(page.get_by_role("link", name="返回复盘图表")).to_be_visible()
+        page.get_by_role("link", name="导出或分享当前筛选").click()
+        expect(page.get_by_role("heading", name="已确认的导出范围")).to_be_visible()
+        expect(page.get_by_text("1 条", exact=True)).to_be_visible()
+        expect(page.get_by_text(f"{day} 至 {day}", exact=True)).to_be_visible()
+        with page.expect_download() as share:
+            page.get_by_role("button", name="下载分享 CSV").click()
+        batch = share.value.path().read_text(encoding="utf-8-sig").splitlines()
+        assert len(batch) == 2 and day in batch[1] and "Browser fixture" not in batch[1]
+        page.go_back()
+        expect(page.get_by_text("共 1 条活动", exact=True)).to_be_visible()
         if not page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"):
             raise AssertionError(f"Dashboard exceeds {width}px page width")
         compare_nav = page.get_by_role("navigation", name="主导航").locator('a[href="/compare"]')

@@ -146,6 +146,34 @@ class MaintenanceTest(unittest.TestCase):
         with TestClient(create_app(self.directory)) as browser:
             self.assertIn("最近一次通过的隔离恢复演练", browser.get("/maintenance").text)
 
+    def test_backup_page_distinguishes_archive_age_and_exact_zip(self):
+        data = BytesIO()
+        backup(self.directory, data)
+        archive_path = self.directory / "fixture.zip"
+        archive_path.write_bytes(data.getvalue())
+        verify(archive_path, record_to=self.directory)
+        verify(data, drill=True, record_to=self.directory)
+        status_path = self.directory / "backup-status.json"
+        status = json.loads(status_path.read_bytes())
+        status["created_at"] = (datetime.now(TZ) - timedelta(days=21, minutes=5)).isoformat()
+        save_json(status_path, status)
+        self.store.finish(self.run_id, datetime.now(TZ).isoformat(), "ok")
+        with TestClient(create_app(self.directory)) as browser:
+            page = browser.get("/maintenance").text
+            self.assertIn("生成于 21 天", page)
+            self.assertIn("归档生成后已完成新的同步", page)
+            self.assertIn("使用了同一份 ZIP", page)
+            self.assertNotIn(status["archive_sha256"], page)
+            # A ZIP comment changes the archive bytes while its manifest and files stay identical.
+            other = BytesIO(data.getvalue())
+            with ZipFile(other, "a") as archive:
+                archive.comment = b"another ZIP"
+            verify(other, drill=True, record_to=self.directory)
+            self.assertIn("使用了不同的 ZIP", browser.get("/maintenance").text)
+            status.pop("archive_sha256")
+            save_json(status_path, status)
+            self.assertIn("旧结果缺少归档指纹", browser.get("/maintenance").text)
+
     def test_manifest_detects_changed_file_even_with_valid_zip_crc(self):
         settings = self.directory / "config.json"
         save_json(settings, {"sync_interval_minutes": 15})

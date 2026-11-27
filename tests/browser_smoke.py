@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from html import escape
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 import socket
 import ssl
@@ -19,6 +20,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from playwright.sync_api import expect, sync_playwright
 import uvicorn
 
+from suunto.maintenance import backup, verify
 from suunto.store import Store
 from suunto.sync import TZ
 from suunto.web import create_app
@@ -452,10 +454,16 @@ def exercise_amap(context, page, origin, store, older, newer, width):
             page.get_by_role("button", name=label).click()
         assert download.value.suggested_filename == filename
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Export overflow at {width}px"
+    snapshot = BytesIO()
+    backup(store.path.parent, snapshot)
+    verify(snapshot, record_to=store.path.parent)
+    verify(snapshot, drill=True, record_to=store.path.parent)
     page.get_by_role("link", name="维护页的 ZIP 备份").click()
     guide = page.locator("#backup")
     expect(guide.get_by_text("最近一次通过的备份验证")).to_be_visible()
     expect(guide.get_by_text("最近一次通过的隔离恢复演练")).to_be_visible()
+    expect(guide.get_by_text("最近的验证和恢复演练使用了同一份 ZIP。")).to_be_visible()
+    expect(guide.get_by_text("归档生成（北京时间）", exact=True)).to_have_count(2)
     expect(guide.get_by_role("link", name="查看 NAS 备份与恢复命令（GitHub）")).to_be_visible()
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Backup guide overflow at {width}px"
     page.goto(origin + "/settings")

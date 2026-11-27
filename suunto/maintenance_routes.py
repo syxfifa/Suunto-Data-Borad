@@ -2,7 +2,7 @@
 
 import asyncio
 from contextlib import closing
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from itertools import islice
 from typing import Annotated, Literal
 from urllib.parse import urlencode
@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from . import VERSION
 from .maintenance import backup_status, storage_size
 from .reports import midnight
-from .sync import SOURCES
+from .sync import SOURCES, TZ
 from .views import csv_cells, export_filter, lower_bound
 from .web_shared import HOME_HEADERS, NO_CACHE, SOURCE_LABELS, TEMPLATES, local_transport
 
@@ -39,6 +39,36 @@ def export_bounds(source, start, end, km, minutes, tss):
     return (midnight(first) if first else None, midnight(last + timedelta(days=1)) if last else None,
             {"distance": distance * 1000 if distance is not None else None,
              "duration": duration * 60 if duration is not None else None, "tss": stress})
+
+
+def backup_overview(data_dir, last_sync):
+    verified = backup_status(data_dir)
+    drill = backup_status(data_dir, drill=True)
+    age = None
+    newer_sync = False
+    created_at = verified["created_at"] if verified else None
+    if created_at:
+        created = datetime.fromisoformat(created_at)
+        elapsed = datetime.now(TZ) - created
+        if elapsed < timedelta():
+            age = "归档生成时间晚于当前系统时间，请检查 NAS 时钟。"
+        else:
+            hours, minutes = divmod(int(elapsed.total_seconds() // 60), 60)
+            days, hours = divmod(hours, 24)
+            duration = f"{days} 天 {hours} 小时" if days else f"{hours} 小时 {minutes} 分钟" if hours else f"{minutes} 分钟"
+            age = f"最近验证的归档生成于 {duration}前。" if elapsed >= timedelta(minutes=1) else "最近验证的归档生成于刚刚。"
+        if last_sync:
+            synced = datetime.fromisoformat(last_sync)
+            newer_sync = bool(synced.tzinfo and synced > created)
+    if not verified or not drill:
+        archive_match = "记录齐全后可核对验证和演练使用的归档。"
+    elif not verified["archive_sha256"] or not drill["archive_sha256"]:
+        archive_match = "旧结果缺少归档指纹。可用同一份 ZIP 重新记录验证和演练。"
+    elif verified["archive_sha256"] == drill["archive_sha256"]:
+        archive_match = "最近的验证和恢复演练使用了同一份 ZIP。"
+    else:
+        archive_match = "最近的验证和恢复演练使用了不同的 ZIP。可用最近验证的归档再做一次演练。"
+    return {"verified": verified, "drill": drill, "age": age, "newer_sync": newer_sync, "archive_match": archive_match}
 
 
 def maintenance_router(store, config, access, mcp_state, prune_logs):
@@ -101,7 +131,7 @@ def maintenance_router(store, config, access, mcp_state, prune_logs):
                      "counts": {name: status["counts"].get(name, 0) for name in SOURCES}, "source_labels": SOURCE_LABELS,
                      "size": round(storage_size(data_dir)/1024**2, 2), "mcp_status": mcp_state(),
                      "last_sync": status["last_success_at"],
-                     "backup_verified": backup_status(data_dir), "restore_drill": backup_status(data_dir, drill=True),
+                     "backup_overview": backup_overview(data_dir, status["last_success_at"]),
                      "protected": access.enabled(), "secure": local_transport(request)},
             headers=HOME_HEADERS)
 

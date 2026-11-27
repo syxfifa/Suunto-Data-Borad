@@ -23,15 +23,21 @@
 <section id="backup">
   <h2>备份与恢复</h2>
   <p>更新镜像前，在 NAS 上打开 Compose 项目目录，保存 ZIP 备份并验证，再用同一份 ZIP 做隔离恢复演练。</p>
+  {% if backup_overview.age %}<p>{{ backup_overview.age }}</p>{% endif %}
+  {% if backup_overview.newer_sync %}<p class="notice">归档生成后已完成新的同步。若要保留最新本地数据，请在更新前重新备份并验证。</p>{% endif %}
+  <p>{{ backup_overview.archive_match }}</p>
   {% for label, report, explanation in [
-    ('最近一次通过的备份验证', backup_verified, '检查 ZIP 归档完整性。'),
-    ('最近一次通过的隔离恢复演练', restore_drill, '在临时目录恢复数据库和设置，并检查 SQLite。可以在看板运行时执行。')
+    ('最近一次通过的备份验证', backup_overview.verified, '检查 ZIP 归档完整性。'),
+    ('最近一次通过的隔离恢复演练', backup_overview.drill, '在临时目录恢复数据库和设置，并检查 SQLite。可以在看板运行时执行。')
   ] %}
     <h3>{{ label }}</h3>
-    <p>{% if report %}<time datetime="{{ report.verified_at }}">{{ report.verified_at[:16]|replace('T', ' ') }}</time>（北京时间）
-      {% if report.created_at %} · 归档于 {{ report.created_at[:16]|replace('T', ' ') }}{% endif %}
-      {% if report.app_version %} · 镜像 V{{ report.app_version }}{% endif %}
-      {% else %}尚未记录{% endif %}</p>
+    {% if report %}
+    <dl>
+      <div><dt>归档生成（北京时间）</dt><dd>{% if report.created_at %}<time datetime="{{ report.created_at }}">{{ report.created_at[:16]|replace('T', ' ') }}</time>{% else %}未知{% endif %}</dd></div>
+      <div><dt>通过时间（北京时间）</dt><dd><time datetime="{{ report.verified_at }}">{{ report.verified_at[:16]|replace('T', ' ') }}</time></dd></div>
+      <div><dt>生成归档的镜像版本</dt><dd>{{ 'V' ~ report.app_version if report.app_version else '未知' }}</dd></div>
+    </dl>
+    {% else %}<p>尚未记录</p>{% endif %}
     <p class="meta">{{ explanation }}</p>
   {% endfor %}
   <p>归档包含数据库和已有设置。运行 <code>verify --record</code> 或 <code>drill --record</code> 后，刷新本页查看结果。</p>

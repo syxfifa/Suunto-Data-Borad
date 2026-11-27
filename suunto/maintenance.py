@@ -1,6 +1,6 @@
 """Consistent SQLite backups, explicit offline restores and local diagnostics."""
 
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -160,7 +160,8 @@ def extract_checked(archive, temporary):
 
 
 def verify(input_file, *, record_to=None, drill=False):
-    with zipfile.ZipFile(input_file) as archive, TemporaryDirectory() as temporary:
+    stream = open(input_file, "rb") if isinstance(input_file, (str, os.PathLike)) else nullcontext(input_file)
+    with stream as handle, zipfile.ZipFile(handle) as archive, TemporaryDirectory() as temporary:
         source = Path(temporary)
         components, manifest = extract_checked(archive, source)
         if drill:
@@ -172,11 +173,20 @@ def verify(input_file, *, record_to=None, drill=False):
                     restore_component(archive, source, target, "settings")
                     validate_json("settings", (target / COMPONENTS["settings"]).read_bytes())
                 check_database(target / COMPONENTS["database"])
+        if record_to is not None:
+            # Read the same stream used for verification, even if the path is replaced.
+            position = handle.tell()
+            handle.seek(0)
+            try:
+                fingerprint = hashlib.file_digest(handle, "sha256").hexdigest()
+            finally:
+                handle.seek(position)
     if record_to is not None:
         manifest = manifest or {}
         save_json(Path(record_to) / (DRILL_STATUS if drill else BACKUP_STATUS),
                   {"verified_at": datetime.now(TZ).isoformat(),
-                   "created_at": manifest.get("created_at"), "app_version": manifest.get("app_version")})
+                   "created_at": manifest.get("created_at"), "app_version": manifest.get("app_version"),
+                   "archive_sha256": fingerprint})
     return components
 
 
@@ -184,12 +194,15 @@ def backup_status(directory, *, drill=False):
     try:
         metadata = json.loads((Path(directory) / (DRILL_STATUS if drill else BACKUP_STATUS)).read_bytes())
         at = datetime.fromisoformat(metadata["verified_at"])
+        fingerprint = metadata.get("archive_sha256")
         created = datetime.fromisoformat(metadata["created_at"]) if metadata.get("created_at") else None
         if at.tzinfo is None:
             return None
         return {"verified_at": at.astimezone(TZ).isoformat(),
                 "created_at": created.astimezone(TZ).isoformat() if created and created.tzinfo else None,
-                "app_version": metadata.get("app_version")}
+                "app_version": metadata.get("app_version"),
+                "archive_sha256": fingerprint if isinstance(fingerprint, str) and len(fingerprint) == 64
+                and all(char in "0123456789abcdef" for char in fingerprint) else None}
     except (OSError, KeyError, TypeError, ValueError):
         return None
 

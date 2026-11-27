@@ -14,12 +14,46 @@ from .reports import (acwr_series, aurora_week, daily_report, dates, grouped_tot
                       sport_counts, sport_name, wellness)
 from .sync import TZ
 from .views import (covers, local_return, lower_bound, numeric, records, summary, workout_chart,
-                    workout_filter, workout_metrics, workout_page)
+                    workout_filter, workout_metrics, workout_page, workout_sql, workout_value)
 from .web_shared import HOME_HEADERS, NO_CACHE, SOURCE_LABELS, TEMPLATES
 
 
 def activity_link(start, end, sport="", return_to=""):
     return "/activities?" + urlencode({"start": start, "end": end, "sport": sport, "return_to": return_to})
+
+
+def data_notice(store, source, begin, end, *, covered, has_records, missing_metric=False, filtered=False):
+    label = SOURCE_LABELS[source]
+    args = {"source": source}
+    source_link = "/settings?" + urlencode(args) + "#source-status-" + source
+    if begin and end and begin >= end:
+        return (f"{label} · 所选日期尚未到来。", None)
+    if not covered:
+        start, finish = begin.isoformat() if begin else None, end.isoformat() if end else None
+        failure = store.query("""
+            SELECT start_at, end_at, 1 AS retryable FROM sync_windows
+            WHERE source=? AND (? IS NULL OR end_at>?) AND (? IS NULL OR start_at<?)
+            UNION ALL
+            SELECT start_at, end_at, 0 FROM sync_failures
+            WHERE source=? AND (end_at IS NULL OR ? IS NULL OR end_at>?)
+                           AND (start_at IS NULL OR ? IS NULL OR start_at<?)
+            ORDER BY retryable DESC, start_at LIMIT 1
+            """, (source, start, start, finish, finish, source, start, start, finish, finish))
+        if failure:
+            item = failure[0]
+            if item["retryable"]:
+                args.update(window_start=item["start_at"], window_end=item["end_at"])
+                source_link = "/settings?" + urlencode(args) + "#sync-window-target"
+            return (f"{label} · 所选日期有同步失败的时段。", (source_link, "查看对应同步状态"))
+        return (f"{label} · 所选日期尚未确认完整同步。", (source_link, "查看同步覆盖"))
+    if not has_records:
+        suffix = "暂无符合筛选条件的记录" if filtered else "暂无记录"
+        return (f"{label} · 已查询，所选日期{suffix}。", None)
+    if missing_metric:
+        metric = {"sleep": "有效睡眠时长", "recovery": "有效身体资源读数"}.get(source)
+        message = f"有记录，但缺少{metric}。" if metric else "部分活动缺少指标。"
+        return (f"{label} · {message}", None)
+    return None
 
 
 def add_review_links(series, sport, back, today):
@@ -125,8 +159,19 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
         selected = snapshots[(chosen - review_start).days]
         selected_end = min(today, midnight(chosen + timedelta(days=1)))
         selected["confirmed_until"] = period_summary([], midnight(chosen), selected_end, intervals)["confirmed_until"]
-        selected["sleep_covered"] = covers(store.coverage("sleep"), midnight(chosen), selected_end)
-        selected["recovery_covered"] = covers(store.coverage("recovery"), midnight(chosen), selected_end)
+        selected_begin = midnight(chosen)
+        selected["notices"] = {}
+        for source, has_records, missing_metric in (
+            ("sleep", selected["sleep_recorded"], selected["sleep"] is None),
+            ("recovery", selected["recovery_recorded"], selected["resource"] is None),
+            ("workouts", selected["n"], any(selected[key] is None for key in ("km", "minutes", "tss"))),
+        ):
+            coverage = intervals if source == "workouts" else store.coverage(source)
+            if source == "workouts" or missing_metric:
+                selected["notices"][source] = data_notice(
+                    store, source, selected_begin, selected_end, covered=covers(coverage, selected_begin, selected_end),
+                    has_records=has_records, missing_metric=missing_metric,
+                )
         data = records(store, "workouts", midnight(min(week_start, summary_start)), today)
         previous_start = midnight(week_start - timedelta(days=7))
         previous_end = today - timedelta(days=7)
@@ -223,6 +268,12 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
         analysis_args = {key: value for key, value in params.items() if key != "analysis"}
         if not advanced:
             analysis_args["analysis"] = "advanced"
+        range_summary = period_summary(current, midnight(first_day), window["end_at"], coverage)
+        notice = data_notice(
+            store, "workouts", midnight(first_day), window["end_at"], covered=range_summary["covered"],
+            has_records=current, missing_metric=any(range_summary[key] is None for key in ("km", "minutes")),
+            filtered=bool(sport),
+        )
         return dashboard(request, "训练趋势", show_period=True, weekly=weekly, report_ranges=report_ranges,
                          report_window=window, charts=series[:3], sport=sport, sports=sorted(sports), days=window["length"],
                          sport_links={name: "/training?" + urlencode({**params, "sport": name}) for name in sports},
@@ -230,7 +281,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
                          analysis_link="/training?" + urlencode(analysis_args) + "#training-analysis",
                          acwr_days=sum(value is not None for value in acwr["columns"]["ACWR"]) if advanced else 0,
                          report=report, training_totals=totals, report_links=report_links,
-                         range_summary=period_summary(current, midnight(first_day), window["end_at"], coverage),
+                         range_summary=range_summary, range_notice=notice,
                          streak=longest_streak(current), training_mix=sport_counts(current))
 
     @router.get("/activities")
@@ -285,24 +336,17 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
                       "duration": minutes * 60 if minutes is not None else None, "tss": tss})
         summary = empty_action = None
         if count == 0:
-            start_at = begin.isoformat() if begin else None
-            end_at = finish.isoformat() if finish else None
-            match = store.query("""
-                SELECT 1 FROM sync_failures WHERE source='workouts'
-                UNION ALL
-                SELECT 1 FROM sync_windows WHERE source='workouts'
-                    AND (? IS NULL OR start_at<?) AND (? IS NULL OR end_at>?)
-                LIMIT 1
-                """, (end_at, end_at, start_at, start_at))
-            if match:
-                summary = "这段日期的运动同步遇到问题，可以查看同步状态。"
-                empty_action = ("/settings#sync-details", "查看同步详情")
-            elif begin and covers(store.coverage("workouts"), begin, finish or datetime.now(TZ)):
-                summary = "这段已查询范围内没有符合筛选条件的活动。"
-                empty_action = ("/activities?start=&end=", "清除筛选")
-            else:
-                summary = "本地没有匹配记录，所选范围尚未确认完整。可以补采历史。"
-                empty_action = ("/settings#backfill", "查看历史补采")
+            if sport or q.strip() or any(value is not None for value in (km, minutes, tss)):
+                summary, empty_action = "没有符合筛选条件的活动。", (activity_link(first or "", last or ""), "清除活动筛选")
+        until = min(finish, datetime.now(TZ)) if finish else datetime.now(TZ)
+        notice = None
+        if begin or finish or not count:
+            notice = data_notice(store, "workouts", begin, until,
+                                 covered=bool(begin and covers(store.coverage("workouts"), begin, until)),
+                                 has_records=count or summary, missing_metric=any(None in row[2:6] for row in rows))
+        if count == 0 and summary is None and notice:
+            summary, empty_action = notice
+            notice = None
         export_query = urlencode({"source": "workouts", "start": first or "", "end": last or "",
                                   **{key: search_state[key] for key in ("sport", "q", "km", "minutes", "tss")}})
         current_page = "/activities?" + urlencode({"start": first or "", "end": last or "", "page": page,
@@ -328,7 +372,7 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
                          headings=("北京时间", "运动类型", "距离（km）", "时长（分钟）", "平均心率", "训练效果 PTE"),
                          rows=rows, activity_keys=keys, activity_names=names, result_count=count, page=page, pages=pages,
                          empty_message=summary, empty_action=empty_action, active_filters=active_filters,
-                         export_query=export_query)
+                         export_query=export_query, activities_notice=notice)
 
     @router.get("/workout")
     def workout(request: Request, id: str, return_to: str = ""):
@@ -346,13 +390,27 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
         back = local_return(return_to, "/activities", "/compare")
         detail_url = "/workout?" + urlencode({"id": id, "return_to": back or ""})
         compare_url = "/compare?" + urlencode({"first": id, "sport": sport_name(row), "return_to": detail_url})
+        recommended_url = None
+        stamp = found[0]["occurred_at"]
+        if stamp:
+            where, params = workout_filter("source='workouts' AND occurred_at<?", [stamp], sport=sport_name(row))
+            distance = workout_value(row, "distance")
+            ordering = "occurred_at DESC, record_key DESC"
+            if distance and distance > 0:
+                metric = workout_sql("distance")
+                ordering = f"CASE WHEN {metric} BETWEEN ? AND ? THEN 0 ELSE 1 END, " + ordering
+                params.extend((distance * .9, distance * 1.1))
+            matches = store.query(f"SELECT record_key FROM records WHERE {where} ORDER BY {ordering} LIMIT 1", params)
+            if matches:
+                recommended_url = "/compare?" + urlencode({"first": matches[0]["record_key"], "second": id,
+                                                           "sport": sport_name(row), "return_to": detail_url})
         metrics = workout_metrics(row)
         key_labels = ("距离（km）", "时长（分钟）", "平均配速（min/km）", "平均速度（km/h）", "平均心率（bpm）", "TSS")
         return dashboard(request, row.get("workoutName") or sport_name(row), workout=row, workout_id=id,
                          workout_at=found[0]["occurred_at"],
                          metrics={key: metrics[key] for key in key_labels if key in metrics},
                          extra_metrics={key: value for key, value in metrics.items() if key not in key_labels},
-                         workout_return=back, compare_url=compare_url,
+                         workout_return=back, compare_url=compare_url, recommended_url=recommended_url,
                          charts=intensity_charts(row), optional_metrics=optional)
 
     @router.get("/sleep-recovery")
@@ -397,12 +455,19 @@ def report_router(store, config, dashboard, mcp_state, retry_after, account_has_
         groups = [(key, title, [item for item in charts if item["group"] == key])
                   for key, title in (("sleep", "睡眠"), ("recovery", "恢复"), ("metrics", "HRV 与静息心率"))]
         report_ranges = report_date_links(request, None if start else days, (7, 28, 90))
+        notices = []
+        for source, has_records, has_metric in (("sleep", sleep_rows, count), ("recovery", recovery, latest_balance)):
+            begin, end = midnight(span[0]), window["end_at"]
+            if not has_metric:
+                notices.append(data_notice(store, source, begin, end,
+                    covered=covers(store.coverage(source), begin, end), has_records=has_records, missing_metric=True))
         return dashboard(request, "睡眠与恢复", charts=charts, wellness_groups=groups, report_ranges=report_ranges,
                          report_window=window, wellness_days=len(span), sleep_rows=sleep_rows, metric_states=metric_states,
                          latest_balance=latest_balance, recovery_days=len({at[:10] for at, _ in recovery}),
                          recovery_latest=recovery[-1][0][:10] if recovery else None,
                          sleep_count=count, sleep_samples=sum(at[:10] >= first for at, _ in sleep),
-                         latest_sleep=next((row for row in sleep_rows if row[-1] is not None), None))
+                         latest_sleep=next((row for row in sleep_rows if row[-1] is not None), None),
+                         wellness_notices=notices)
 
     @router.get("/daily-activity")
     def daily_activity(request: Request, source: str = "", period: str = "day",

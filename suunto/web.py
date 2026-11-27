@@ -578,9 +578,13 @@ def create_app(data_dir=None, *, client=None):
             duration = datetime.fromisoformat(row["end_at"]) - datetime.fromisoformat(row["next_at"])
             row["remaining"] = max(0, ceil(duration / SOURCES[row["source"]][1]))
         retry_times = {}
+        target_window = None
+        requested_window = tuple(request.query_params.get(key) for key in ("source", "window_start", "window_end"))
         for row in status["window_failures"]:
             source = row["source"]
             retry_times[source] = min(row["retry_at"], retry_times.get(source, row["retry_at"]))
+            if requested_window == (source, row["start_at"], row["end_at"]):
+                target_window = row
         spans = {row["source"]: row for row in status["sources"]}
         sources = [{"name": name, "label": SOURCE_LABELS[name], "span": spans.get(name),
                     "coverage": store.coverage(name), "cursor": store.cursor(name),
@@ -601,6 +605,7 @@ def create_app(data_dir=None, *, client=None):
                      "message": message, "oauth_error": oauth_error,
                      "settings_minutes": config.load(), "discovery": discovery, "sync_status": status,
                      "sources": sources, "source_labels": SOURCE_LABELS, "prefs": prefs, "bindings": bindings,
+                     "target_window": target_window,
                      "access_protected": access.enabled(), "connection": mcp_state(),
                      "account_has_data": account_has_data(),
                      "oauth_workouts_ready": request.query_params.get("authorized") == "true" and has_workouts()},

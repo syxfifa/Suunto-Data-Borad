@@ -254,6 +254,51 @@ class ReportsTest(unittest.TestCase):
                 self.assertIn('value="workout-0" selected', second)
                 self.assertIn("最远距离 12.0 km", second)
                 self.assertIn("运动对比结果", second)
+                search = browser.get("/compare", params={"sport": "Running", "first": "workout-54",
+                                                         "q": "Run 0", "day": "2026-01-01"}).text
+                self.assertIn('value="workout-54" selected', search)
+                self.assertIn('value="workout-0"', search)
+                self.assertNotIn('value="workout-1"', search)
+
+    def test_missing_days_link_to_the_overlapping_failure(self):
+        with TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.initialize()
+            start = midnight(date(2025, 6, 12))
+            end = start + timedelta(days=1)
+            run = store.start("test", start.isoformat())
+            store.commit(run, "workouts", [], interval=((start - timedelta(days=1)).isoformat(), start.isoformat()))
+            store.window_failure("workouts", start.isoformat(), end.isoformat(), "fixture remote error", end)
+            with TestClient(create_app(directory)) as browser:
+                empty = browser.get("/activities?start=2025-06-11&end=2025-06-11").text
+                self.assertIn("已查询，所选日期暂无记录", empty)
+                affected = browser.get("/activities?start=2025-06-12&end=2025-06-12").text
+                self.assertIn("所选日期有同步失败的时段", affected)
+                self.assertIn("#sync-window-target", affected)
+                query = urlencode({"source": "workouts", "window_start": start.isoformat(), "window_end": end.isoformat()})
+                self.assertIn('id="sync-window-target" tabindex="-1"', browser.get("/settings?" + query).text)
+                future = browser.get("/activities?start=2099-01-01&end=2099-01-01").text
+                self.assertIn("所选日期尚未到来", future)
+
+    def test_activity_comparison_prefers_a_recent_run_at_similar_distance(self):
+        with TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.initialize()
+            at = midnight(date(2025, 6, 12))
+            run = store.start("test", at.isoformat())
+            store.commit(run, "workouts", [
+                (name, (at + timedelta(hours=hour)).isoformat(),
+                 {"workoutName": name, "activityName": sport, "totalDistance": distance, "totalTimeSeconds": duration})
+                for name, hour, sport, distance, duration in [
+                    ("prior", 1, "Running", 5000, 1800), ("short", 2, "Running", 2500, 900),
+                    ("cycle", 3, "Cycling", 5000, 900), ("current", 4, "Running", 5000, 1740)]
+            ])
+            with TestClient(create_app(directory)) as browser:
+                detail = browser.get("/workout?id=current").text
+                self.assertIn("与近期同类活动对比", detail)
+                self.assertIn("first=prior&amp;second=current", detail)
+                comparison = browser.get("/compare?sport=Running&first=prior&second=current").text
+                self.assertIn("活动 B 每公里快 12 秒", comparison)
 
     def test_routes_page_filters_before_paginating(self):
         with TemporaryDirectory() as directory:

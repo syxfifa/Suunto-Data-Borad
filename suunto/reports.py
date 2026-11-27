@@ -91,12 +91,16 @@ def aurora_week(first, selected, today, workouts, sleep, recovery, intervals, fi
     for stamp, row in workouts:
         grouped[stamp[:10]].append((stamp, row))
     durations = defaultdict(list)
+    sleep_days = set()
     for item in sleep_sessions(sleep, fields):
+        sleep_days.add(item["day"])
         duration = item["duration"]
         if duration is not None and duration >= 0:
             durations[item["day"]].append(duration)
     balance, morning = defaultdict(list), {}
+    recovery_days = set()
     for stamp, row in recovery:
+        recovery_days.add(stamp[:10])
         data = row.get("entryData")
         value = numeric(data.get("Balance")) if isinstance(data, dict) else None
         if value is not None and 0 <= value <= 1:
@@ -121,6 +125,7 @@ def aurora_week(first, selected, today, workouts, sleep, recovery, intervals, fi
             "date": day, "n": totals["n"], "covered": covered,
             "future": day > today, "picked": day == selected, "sleep": sleep_hours,
             "resource": round(resource * 100) if resource is not None else None,
+            "sleep_recorded": key in sleep_days, "recovery_recorded": key in recovery_days,
             "resource_label": label, "km": totals["km"], "minutes": totals["minutes"], "tss": totals["tss"],
         })
     labels = [day.strftime("%m/%d") for day in days]

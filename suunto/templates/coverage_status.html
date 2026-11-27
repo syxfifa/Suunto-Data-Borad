@@ -5,3 +5,6 @@
   {% if item.n and none in values %}{% if not item.covered %} · {% endif %}部分活动缺少指标{% endif %}
   {% if item.covered and item.n and none not in values %}已确认覆盖{% endif %}
 {%- endmacro %}
+{% macro data_notice(item) -%}
+  {% if item %}<p class="meta">{{ item[0] }}{% if item[1] %} <a href="{{ item[1][0] }}">{{ item[1][1] }}</a>{% endif %}</p>{% endif %}
+{%- endmacro %}

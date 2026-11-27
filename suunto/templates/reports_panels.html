@@ -1,4 +1,5 @@
 {% from "page_controls.html" import date_links, report_dates %}
+{% from "coverage_status.html" import data_notice %}
 {% if workout is defined %}
 <section>
   {% if workout_return %}<a href="{{ workout_return }}">{{ '返回运动对比' if workout_return.startswith('/compare?') else '返回筛选后的活动列表' }}</a>{% endif %}
@@ -13,6 +14,7 @@
   </details>{% endif %}
   <p>平均速度或配速按整次活动的距离和时长计算。区间图使用 Suunto 返回的累计时长。</p>
   <div class="controls">
+    {% if recommended_url %}<a class="button" href="{{ recommended_url }}">与近期同类活动对比</a>{% endif %}
     <a href="{{ compare_url }}">加入同类运动对比</a>
     <form method="post" action="/workout-details"><input type="hidden" name="key" value="{{ workout_id }}"><button>重新读取详情</button></form>
   </div>
@@ -37,7 +39,8 @@
   <form action="/compare" class="controls">
     {% if comparison_return %}<input type="hidden" name="return_to" value="{{ comparison_return }}">{% endif %}
     <input type="hidden" name="sport" value="{{ sport }}">
-    <input type="hidden" name="page" value="{{ comparison_page }}">
+    <label>活动名称<input name="q" value="{{ comparison_search }}" maxlength="120"></label>
+    <label>活动日期<input name="day" type="date" value="{{ comparison_day }}"></label>
     {% for field, label, key in [('first', '活动 A', first), ('second', '活动 B', second)] %}
     <label>{{ label }}<select name="{{ field }}"><option value="">选择活动</option>
       {% for item in options %}<option value="{{ item.id }}" {% if item.id == key %}selected{% endif %}>{{ item.at[:16] if item.at else '—' }} {{ item.label or '未命名活动' }}</option>{% endfor %}
@@ -45,6 +48,7 @@
     {% endfor %}
     <button>应用选择</button>
   </form>
+  {% if not comparison_matched and (comparison_search or comparison_day) %}<p class="meta">未找到符合搜索条件的活动。已选活动仍可对比。</p>{% endif %}
   {% if comparison_pages > 1 %}
   <nav class="pagination" aria-label="对比候选活动分页">
     {% if comparison_page > 1 %}<a href="/compare?page={{ comparison_page-1 }}&amp;{{ comparison_query }}">上一页</a>{% endif %}
@@ -87,6 +91,7 @@
     </div>
     {% endfor %}
   </dl>
+  {% for item in wellness_notices %}{{ data_notice(item) }}{% endfor %}
   <p class="meta">所选时段有 {{ sleep_count }} 晚有效睡眠，原始睡眠样本 {{ sleep_samples }} 条。时间为北京时间。</p>
   <p class="meta">恢复记录覆盖 {{ recovery_days }} / {{ wellness_days }} 天{% if recovery_latest %}，最近采样日期 {{ recovery_latest }}{% endif %}。</p>
 </section>

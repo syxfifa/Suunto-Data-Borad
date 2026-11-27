@@ -5,10 +5,10 @@ import json
 from typing import Annotated
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from .amap import amap_ready
-from .reports import compare_metrics
+from .reports import compare_metrics, midnight
 from .views import local_return, lower_bound, record_filter, route_map_points, table_rows, workout_filter, workout_speed, workout_sql
 
 
@@ -21,8 +21,16 @@ def library_router(store, amap_config, discovery, render):
 
     @router.get("/compare")
     def compare(request: Request, sport: str = "", first: str = "", second: str = "",
-                page: Annotated[int, Query(ge=1)] = 1, return_to: str = ""):
+                page: Annotated[int, Query(ge=1)] = 1, return_to: str = "",
+                q: Annotated[str, Query(max_length=120)] = "", day: str = ""):
         size = 50
+        try:
+            picked_day = date.fromisoformat(day) if day else None
+            first_at = midnight(picked_day) if picked_day else None
+            end_at = midnight(picked_day + timedelta(days=1)) if picked_day else None
+        except (ValueError, OverflowError) as exc:
+            raise HTTPException(422, "请选择有效的活动日期。") from exc
+        q = q.strip()
         with store.connect() as db:
             db.execute("BEGIN")
             sports = [row["sport"] for row in db.execute("""
@@ -35,14 +43,18 @@ def library_router(store, amap_config, discovery, render):
                 SELECT count(*) AS total, max({workout_sql("distance")}) AS distance,
                        max({workout_sql("ascent")}) AS climb FROM records WHERE {where}
                 """, params).fetchone()
-            pages = max(1, (stats["total"] + size - 1) // size)
+            option_where, option_params = workout_filter(*record_filter("workouts", first_at, end_at),
+                                                         sport=chosen, search=q)
+            matched = db.execute(f"SELECT count(*) FROM records WHERE {option_where}", option_params).fetchone()[0] if (
+                q or picked_day) else stats["total"]
+            pages = max(1, (matched + size - 1) // size)
             page = min(page, pages)
             options = [dict(row) for row in db.execute(f"""
                 SELECT record_key AS id, occurred_at AS at,
                        coalesce(nullif(json_extract(payload, '$.workoutName'), ''),
                                 json_extract(payload, '$.activityName')) AS label
-                FROM records WHERE {where} ORDER BY occurred_at DESC, record_key DESC LIMIT ? OFFSET ?
-                """, [*params, size, (page - 1) * size])]
+                FROM records WHERE {option_where} ORDER BY occurred_at DESC, record_key DESC LIMIT ? OFFSET ?
+                """, [*option_params, size, (page - 1) * size])]
             picked = {}
             if first or second:
                 for row in db.execute(f"""
@@ -58,11 +70,12 @@ def library_router(store, amap_config, discovery, render):
         rows = [compare_metrics(picked[key]) for key in (first, second)] if (
             first != second and first in picked and second in picked) else []
         back = local_return(return_to, "/workout", "/activities")
+        query = {"sport": chosen, "first": first, "second": second, "return_to": back or "",
+                 "q": q, "day": picked_day or ""}
         deltas = []
         detail_links = []
         if rows:
-            comparison_url = "/compare?" + urlencode({"sport": chosen, "first": first, "second": second,
-                                                       "page": page, "return_to": back or ""})
+            comparison_url = "/compare?" + urlencode({**query, "page": page})
             for key in (first, second):
                 detail_links.append((picked[key].get("workoutName") or chosen,
                                      "/workout?" + urlencode({"id": key, "return_to": comparison_url})))
@@ -78,7 +91,7 @@ def library_router(store, amap_config, discovery, render):
                 if pace:
                     a, b = (sum(int(value) * factor for value, factor in zip(speed.split(":"), (60, 1)))
                             for speed in (speed_a, speed_b))
-                    difference = f"{b - a:+d} 秒/km"
+                    difference = f"活动 B 每公里{'快' if b < a else '慢'} {abs(b - a)} 秒" if b != a else "配速相同"
                 else:
                     difference = f"{speed_b - speed_a:+.2f} km/h"
             deltas.insert(2, ("平均配速" if pace else "平均配速或速度", difference))
@@ -87,8 +100,8 @@ def library_router(store, amap_config, discovery, render):
                       first=first, second=second,
                       best_km=stats["distance"] / 1000 if stats["distance"] is not None else None,
                       best_climb=stats["climb"], comparison_rows=rows, comparison_page=page,
-                      comparison_pages=pages, comparison_query=urlencode(
-                          {"sport": chosen, "first": first, "second": second, "return_to": back or ""}))
+                      comparison_pages=pages, comparison_query=urlencode(query),
+                      comparison_search=q, comparison_day=picked_day or "", comparison_matched=matched)
 
     @router.get("/routes")
     def routes(request: Request, q: str = "", sport: str = "", watch: str = "", visibility: str = "",

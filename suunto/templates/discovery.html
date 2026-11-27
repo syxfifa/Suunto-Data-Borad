@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "coverage_status.html" import coverage_status %}
+{% from "coverage_status.html" import coverage_status, data_notice %}
 {% from "page_controls.html" import date_links %}
 {% macro amount(value) -%}
 {{ '—' if value is none else value|int if value == value|int else value }}
@@ -66,9 +66,10 @@
           <div><strong>{{ amount(selected.resource) }}{% if selected.resource is not none %}<span>%</span>{% endif %}</strong>
             <small>{{ selected.resource_label if selected.resource is not none else '身体资源' }}</small></div>
         </div>
-        <dl><div><dt>睡眠时长</dt><dd>{% if selected.sleep is not none %}{{ amount(selected.sleep) }} <small>小时</small>{% else %}<small>{{ '暂无有效睡眠记录' if selected.sleep_covered else '睡眠尚未确认同步' }}</small>{% endif %}</dd></div></dl>
+        <dl><div><dt>睡眠时长</dt><dd>{% if selected.sleep is not none %}{{ amount(selected.sleep) }} <small>小时</small>{% else %}—{% endif %}</dd></div></dl>
       </div>
-      {% if selected.resource is none %}<p class="meta">{{ '当天暂无有效身体资源读数' if selected.recovery_covered else '身体资源尚未确认同步' }}。</p>{% endif %}
+      {{ data_notice(selected.notices.sleep) }}
+      {{ data_notice(selected.notices.recovery) }}
     </section>
     <section class="aurora-training" aria-labelledby="aurora-training-title">
       <div class="section-heading">
@@ -85,6 +86,7 @@
       <p class="meta">{% if selected_cutoff %}今日统计截至 {{ selected_cutoff }} · {% endif %}
       {{ '当天未训练' if selected.n == 0 and selected.covered else coverage_status(selected, [selected.km, selected.minutes, selected.tss]) }}
       {% if selected.confirmed_until and not selected.covered %} · 最近确认至 {{ selected.confirmed_until[:16]|replace('T', ' ') }}{% endif %}</p>
+      {% if selected.notices.workouts and selected.notices.workouts[1] %}{{ data_notice(selected.notices.workouts) }}{% endif %}
     </section>
   </div>
   <section class="aurora-calendar" aria-labelledby="review-calendar">

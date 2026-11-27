@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "coverage_status.html" import coverage_status %}
+{% from "coverage_status.html" import coverage_status, data_notice %}
 {% from "page_controls.html" import date_links, empty_state, report_dates %}
 {% macro local_time(value) -%}
   {% if value %}<time datetime="{{ value }}" title="{{ value }}">{{ value[:19]|replace('T', ' ') }}</time>{% else %}—{% endif %}
@@ -98,7 +98,7 @@
   <div><dt>{{ label }}</dt><dd>{{ range_summary[key] if range_summary[key] is not none else '—' }}</dd></div>
 {% endfor %}
 </dl>
-{% if not range_summary.covered %}<p class="meta">所选时段尚未确认完整覆盖，汇总基于本地已有记录。</p>{% endif %}
+{{ data_notice(range_notice) }}
 {% if training_mix %}<p class="meta">运动类型 · {% for name, count in training_mix %}
   <a href="{{ sport_links[name] }}">{{ name }} {{ count }} 次</a>{{ '、' if not loop.last else '' }}
 {% endfor %}</p>{% endif %}
@@ -143,6 +143,7 @@
 
 </section>
 {% if result_count is defined %}
+{{ data_notice(activities_notice) }}
 <div class="section-heading" id="activity-results">
 
   <p class="results-count">共 {{ result_count }} 条活动</p>
@@ -358,6 +359,7 @@
 {% endif %}
 <section class="table-wrap">
   <h2>数据覆盖</h2>
+{% if request.query_params.get('window_start') and not target_window %}<p id="sync-window-target" class="meta">该失败窗口已更新。请查看下方的最新同步状态。</p>{% endif %}
   <div class="table-scroll" role="region" tabindex="0" aria-label="数据覆盖">
 <table>
     <thead><tr><th scope="col">数据来源</th><th scope="col">已确认的查询范围（北京时间）</th><th scope="col">本地记录</th><th scope="col">同步状态</th></tr></thead>
@@ -386,7 +388,8 @@
     <table>
       <thead><tr><th scope="col">数据来源</th><th scope="col">起止时间（北京时间）</th><th scope="col">失败次数</th><th scope="col">下次自动重试</th><th scope="col">最近错误</th><th scope="col">操作</th></tr></thead>
       <tbody>{% for item in sync_status.window_failures %}
-        <tr><th scope="row">{{ source_labels.get(item.source, item.source) }}</th>
+        {% set target = item == target_window %}
+        <tr{% if target %} id="sync-window-target" tabindex="-1"{% endif %}><th scope="row">{{ source_labels.get(item.source, item.source) }}{% if target %}<small> · 所选窗口</small>{% endif %}</th>
           <td>{{ local_time(item.start_at) }} 至 {{ local_time(item.end_at) }}</td>
           <td>{{ item.attempts }}</td><td>{{ local_time(item.retry_at) }}</td><td>{{ item.message }}</td>
           <td><form method="post" action="/sync/window">

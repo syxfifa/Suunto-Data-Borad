@@ -57,13 +57,14 @@
   <h2>访问控制</h2>
   <p>本地看板密码{{ '已启用' if protected else '未启用' }}。用户名为 <code>suunto</code>。</p>
   {% if not protected %}<p class="notice">能访问看板的设备可以查看健康数据、导出 CSV 和修改设置。</p>{% endif %}
-  {% if not secure %}<p id="access-transport" class="notice">当前连接未被看板识别为 HTTPS。请使用可信 HTTPS 地址打开本页后再设置访问密码。</p>{% endif %}
-  <form action="/maintenance/access" method="post" class="controls"{% if not secure %} aria-describedby="access-transport"{% endif %}>
-    <label>{{ '更换密码' if protected else '设置密码' }}<input type="password" name="password" minlength="12" maxlength="128" autocomplete="new-password" required{% if not secure %} disabled{% endif %}></label>
-    <button name="mode" value="enable"{% if not secure %} disabled{% endif %}>{{ '更新密码' if protected else '启用密码访问' }}</button>
+  {% if http_password %}<p id="access-transport" class="notice">已允许 HTTP 密码访问。此连接中的密码和看板数据以明文传输，请仅在可信内网使用。</p>
+  {% elif not password_available %}<p id="access-transport" class="notice">当前连接未被看板识别为 HTTPS。可通过可信 HTTPS 访问，或在部署配置中显式允许 HTTP 密码。</p>{% endif %}
+  <form action="/maintenance/access" method="post" class="controls"{% if http_password or not password_available %} aria-describedby="access-transport"{% endif %}>
+    <label>{{ '更换密码' if protected else '设置密码' }}<input type="password" name="password" minlength="12" maxlength="128" autocomplete="new-password" required{% if not password_available %} disabled{% endif %}></label>
+    <button name="mode" value="enable"{% if not password_available %} disabled{% endif %}>{{ '更新密码' if protected else '启用密码访问' }}</button>
   </form>
   {% if protected %}<details><summary>关闭密码访问</summary>
-  <form action="/maintenance/access" method="post"><button class="secondary" name="mode" value="disable"{% if not secure %} disabled{% endif %}>确认关闭</button></form></details>{% endif %}
+  <form action="/maintenance/access" method="post"><button class="secondary" name="mode" value="disable"{% if not password_available %} disabled{% endif %}>确认关闭</button></form></details>{% endif %}
 </section>
 {% else %}
 <section>

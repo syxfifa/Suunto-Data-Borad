@@ -14,8 +14,10 @@ SOURCE_LABELS = dict(workouts="运动活动", sleep="睡眠", recovery="恢复",
                      routes="保存路线", workout_details="运动详情")
 
 
-def local_transport(request):
+def local_transport(request, *, allow_http=False):
     if request.url.scheme == "https":
+        return True
+    if allow_http and request.url.scheme == "http":
         return True
     try:
         return (ip_address(request.client.host).is_loopback

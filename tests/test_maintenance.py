@@ -7,7 +7,7 @@ import sys
 from tempfile import TemporaryDirectory
 from time import monotonic
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from urllib.parse import unquote
 from zipfile import ZipFile
 
@@ -279,6 +279,30 @@ class MaintenanceTest(unittest.TestCase):
             self.assertEqual(report.json()["version"], VERSION)
             for forbidden in ("secret-token", "dashboard.example.test", "30.56789", password):
                 self.assertNotIn(forbidden, report.text)
+
+    def test_explicit_http_password_opt_in_on_the_lan(self):
+        origin = "http://192.168.1.20:7383"
+        password = "fixture-password-http"
+        with patch.dict("os.environ", {"SUUNTO_ALLOW_HTTP_PASSWORD": "1"}):
+            app = create_app(self.directory)
+        with TestClient(app, base_url=origin, client=("192.168.1.40", 40000)) as browser:
+            page = browser.get("/maintenance")
+            self.assertIn("此连接中的密码和看板数据以明文传输", page.text)
+            self.assertIn('value="enable">启用密码访问</button>', page.text)
+            data = {"mode": "enable", "password": password}
+            denied = browser.post("/maintenance/access", data=data, headers={"Origin": "http://other.test"})
+            self.assertEqual(denied.status_code, 403)
+            self.assertEqual(browser.post("/maintenance/access", data=data, headers={"Origin": origin},
+                                          follow_redirects=False).status_code, 303)
+            challenge = browser.get("/")
+            self.assertEqual(challenge.status_code, 401)
+            self.assertTrue(challenge.headers["www-authenticate"].startswith("Basic "))
+            self.assertEqual(browser.get("/", auth=(USERNAME, "incorrect")).status_code, 401)
+            self.assertEqual(browser.get("/", auth=(USERNAME, password)).status_code, 200)
+            self.assertEqual(browser.get("https://192.168.1.20:7383/", auth=(USERNAME, password)).status_code, 200)
+            self.assertEqual(browser.post("/maintenance/access", data={"mode": "disable"}, auth=(USERNAME, password),
+                                          headers={"Origin": origin}, follow_redirects=False).status_code, 303)
+            self.assertEqual(browser.get("/").status_code, 200)
 
     def test_disconnect_keeps_records_and_requires_explicit_reconnect(self):
         mcp = Client(self.directory)

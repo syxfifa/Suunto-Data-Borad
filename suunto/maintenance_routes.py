@@ -132,7 +132,9 @@ def maintenance_router(store, config, access, mcp_state, prune_logs):
                      "size": round(storage_size(data_dir)/1024**2, 2), "mcp_status": mcp_state(),
                      "last_sync": status["last_success_at"],
                      "backup_overview": backup_overview(data_dir, status["last_success_at"]),
-                     "protected": access.enabled(), "secure": local_transport(request)},
+                     "protected": access.enabled(),
+                     "password_available": local_transport(request, allow_http=access.allow_http),
+                     "http_password": access.allow_http and request.url.scheme == "http"},
             headers=HOME_HEADERS)
 
     @router.get("/diagnostics.json")
@@ -158,7 +160,7 @@ def maintenance_router(store, config, access, mcp_state, prune_logs):
 
     @router.post("/maintenance/access")
     async def save_access(request: Request, mode: Annotated[str, Form()], password: Annotated[str, Form()] = ""):
-        if not local_transport(request):
+        if not local_transport(request, allow_http=access.allow_http):
             raise HTTPException(403, "请先配置可信 HTTPS 反向代理。")
         try:
             if mode == "enable":

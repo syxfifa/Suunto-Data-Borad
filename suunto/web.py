@@ -7,6 +7,7 @@ from ipaddress import ip_address
 import json
 import logging
 from math import ceil
+from os import getenv
 from pathlib import Path
 import re
 from time import monotonic, time
@@ -107,7 +108,7 @@ def create_app(data_dir=None, *, client=None):
     sync = Synchronizer(mcp, store)
     config = Config(data_dir)
     amap_config = Config(data_dir, "amap.json")
-    access = Access(data_dir)
+    access = Access(data_dir, allow_http=getenv("SUUNTO_ALLOW_HTTP_PASSWORD") == "1")
     discovery = {"status": "probing", "tools": [], "checked_at": None, "message": None}
     discovery_lock = Lock()
     task = None
@@ -286,7 +287,7 @@ def create_app(data_dir=None, *, client=None):
         if path == "/healthz" or path.startswith("/static/"):
             return await call_next(request)
         if access.enabled():
-            if not local_transport(request):
+            if not local_transport(request, allow_http=access.allow_http):
                 return JSONResponse({"detail": "已启用访问控制，请通过 HTTPS 地址访问。"}, 403, headers=NO_CACHE)
             try:
                 accepted = await asyncio.to_thread(access.accepts, request.headers.get("authorization", ""))

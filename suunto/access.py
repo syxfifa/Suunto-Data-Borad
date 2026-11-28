@@ -23,9 +23,10 @@ def derive(password, salt):
 
 
 class Access:
-    def __init__(self, directory):
+    def __init__(self, directory, *, allow_http=False):
         self.path = Path(directory) / "access.json"
         self.checks = BoundedSemaphore(2)
+        self.allow_http = allow_http
 
     def enabled(self):
         return self.path.exists()

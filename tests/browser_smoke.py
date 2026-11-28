@@ -501,6 +501,18 @@ def exercise_amap(context, page, origin, store, older, newer, width):
     expect(guide.get_by_text("最近的验证和恢复演练使用了同一份 ZIP。")).to_be_visible()
     expect(guide.get_by_text("归档生成（北京时间）", exact=True)).to_have_count(2)
     expect(guide.get_by_role("link", name="查看 NAS 备份与恢复命令（GitHub）")).to_be_visible()
+    access = page.locator("#access")
+    password = access.get_by_label("设置密码", exact=True)
+    enable = access.get_by_role("button", name="启用密码访问")
+    expect(password).to_be_visible()
+    expect(enable).to_be_visible()
+    if urlsplit(origin).hostname == "dashboard-a.test":
+        expect(password).to_be_disabled()
+        expect(enable).to_be_disabled()
+        expect(access.locator("#access-transport")).to_be_visible()
+    else:
+        expect(password).to_be_enabled()
+        expect(enable).to_be_enabled()
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Backup guide overflow at {width}px"
     page.goto(origin + "/settings")
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Settings overflow at {width}px"

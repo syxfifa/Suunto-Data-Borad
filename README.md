@@ -2,7 +2,7 @@
 
 Suunto Data Borad 是运行在 NAS、PVE 或 Linux 主机上的自托管运动看板。它通过官方 Suunto MCP 只读同步活动、睡眠、恢复、日常活动和保存路线，并把已读取的记录存入本地 SQLite。网页采用「冰川晨雾」主题，适配手机、平板和桌面。
 
-当前版本 **V1.0.34** · 默认端口 **7383** · 时区 **北京时间（Asia/Shanghai）**
+当前版本 **V1.0.35** · 默认端口 **7383** · 时区 **北京时间（Asia/Shanghai）**
 
 ## 在 NAS 上部署
 
@@ -20,18 +20,20 @@ docker compose ps
 
 项目只运行一个 `app` 容器，容器名为 `suunto-data-borad`。配置中的 `7383:7383` 左侧是 NAS 对浏览器开放的端口。遇到端口冲突，可把左侧改为其他可用端口，访问地址随之调整。服务读取网页上保存的设置，无需准备 `.env`。
 
-`./suunto-storage:/data` 把数据保存到 Compose 项目旁的 `suunto-storage` 文件夹。镜像会在启动时初始化权限，再以 UID/GID `10001:10001` 运行看板。请使用支持 Linux 文件所有权的本机可写目录。通过 NAS 防火墙把端口限制在可信内网。通过可信 HTTPS 访问时，可在 **设置 → 维护 → 访问控制** 设置密码，用户名是 `suunto`。
+`./suunto-storage:/data` 把数据保存到 Compose 项目旁的 `suunto-storage` 文件夹。镜像会在启动时初始化权限，再以 UID/GID `10001:10001` 运行看板。请使用支持 Linux 文件所有权的本机可写目录。通过 NAS 防火墙把端口限制在可信内网。
 
 ### 在内网通过 HTTP 使用访问密码
 
-若只用可信内网的 HTTP 地址，可以在现有 Compose 的 `services.app` 下添加以下配置。HTTP 上的密码与看板流量会以明文传输。
+仓库提供的 Compose 已在 `services.app` 下开启 HTTP 密码访问。HTTP 上的密码与看板流量会以明文传输，请仅在可信内网使用。
 
 ```yaml
     environment:
       SUUNTO_ALLOW_HTTP_PASSWORD: "1"
 ```
 
-重新部署容器后，用原 HTTP 地址打开 **设置 → 维护 → 访问控制**，设置密码并启用。之后浏览器登录框的用户名是 `suunto`。如移除该选项，已有密码继续生效，请改用 HTTPS 登录。
+用原 HTTP 地址打开 **设置 → 维护 → 访问控制**。页面显示「已允许 HTTP 密码访问」后，输入密码并点 **启用密码访问**。之后用用户名 `suunto` 和你设置的密码登录。
+
+已有部署可用新版 Compose 整份覆盖原配置，保留原项目目录，然后重新部署容器。若只允许通过 HTTPS 使用密码，可移除 `SUUNTO_ALLOW_HTTP_PASSWORD` 后重新部署，已有密码仍可通过 HTTPS 登录。
 
 ## 连接 Suunto
 
@@ -115,14 +117,14 @@ docker compose pull app
 docker compose up -d
 ```
 
-在 **设置 → 维护** 核对版本。想固定版本，可把 Compose 的 `image` 改为 `jjsyx123/suunto-data-borad:1.0.34` 后再执行更新命令。旧部署若使用命名卷或其他挂载路径，先从原部署备份，再在新目录恢复。旧的双服务版切换为单服务后，可在确认当前 Compose 项目时使用 `docker compose up -d --remove-orphans` 清理旧的初始化容器。回滚到 V1.0.15 或更早版本时，请用目标旧版镜像恢复升级前的归档，再启动应用。
+在 **设置 → 维护** 核对版本。想固定版本，可把 Compose 的 `image` 改为 `jjsyx123/suunto-data-borad:1.0.35` 后再执行更新命令。旧部署若使用命名卷或其他挂载路径，先从原部署备份，再在新目录恢复。旧的双服务版切换为单服务后，可在确认当前 Compose 项目时使用 `docker compose up -d --remove-orphans` 清理旧的初始化容器。回滚到 V1.0.15 或更早版本时，请用目标旧版镜像恢复升级前的归档，再启动应用。
 
 | 现象 | 怎么排查 |
 | --- | --- |
 | 浏览器打不开 | 执行 `docker compose ps` 和 `docker compose logs --tail 100 app`，检查 NAS 防火墙、端口和容器名是否被占用。 |
 | 日志提示数据目录权限错误 | 确认 `suunto-storage` 是 NAS 的本机可写目录，文件系统支持 Linux 所有权设置。部分网络共享会拒绝修改所有者。 |
 | 授权后回不到看板 | 在准备使用的看板地址重新发起授权，保持同一浏览器和访问地址。若使用反代，核对 HTTPS、代理转发信息和 `FORWARDED_ALLOW_IPS`。 |
-| 密码框和按钮呈灰色 | 内网 HTTP 可按上文显式开启密码登录。使用 HTTPS 时，从可信 HTTPS 地址进入 **设置 → 维护 → 访问控制**。如果浏览器已显示 HTTPS，核对反代是否发送 `X-Forwarded-Proto: https`，以及 `FORWARDED_ALLOW_IPS` 是否包含看板实际看到的代理 IP。 |
+| 密码框和按钮呈灰色 | 用 HTTP 时，在 NAS 容器详情里核对 `SUUNTO_ALLOW_HTTP_PASSWORD=1`。改过配置后需重新部署容器。用 HTTPS 时，核对反代是否发送 `X-Forwarded-Proto: https`，以及 `FORWARDED_ALLOW_IPS` 是否包含看板实际看到的代理 IP。 |
 | 同步限流或部分日期缺失 | 在 **设置 → 同步详情与诊断** 核对来源覆盖和下次可重试时间。历史缺口可选对应日期补采。 |
 | 看不到路线位置或某项健康指标 | 先查看页面的数据状态。无路线位置点时无法预览该路线位置。健康指标以 Suunto MCP 实际返回的字段为准。 |
 

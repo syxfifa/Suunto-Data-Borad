@@ -3,6 +3,8 @@ services:
     image: jjsyx123/suunto-data-borad:latest
     container_name: suunto-data-borad
     restart: unless-stopped
+    environment:
+      SUUNTO_ALLOW_HTTP_PASSWORD: "1"
     ports:
       - "7383:7383"
     volumes:
